@@ -1,0 +1,7 @@
+src/sentinel/.DS_Store
+.env
+
+
+.venv
+
+*.pyc

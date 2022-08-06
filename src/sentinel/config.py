@@ -1,0 +1,17 @@
+import os
+import dotenv
+import logging
+
+from sentinel.github.model import Repository
+
+dotenv.load_dotenv()
+
+GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET")
+GITHUB_PRIVATE_KEY = os.environ.get("GITHUB_PRIVATE_KEY")
+GITHUB_APP_ID = int(os.environ.get("GITHUB_APP_ID"))
+
+OVERRIDE_LOGGING = logging.getLevelName(os.environ.get("OVERRIDE_LOGGING", "WARNING"))
+
+REPO_ALLOWLIST = os.environ.get("REPO_ALLOWLIST")
+if REPO_ALLOWLIST is not None:
+    REPO_ALLOWLIST = REPO_ALLOWLIST.split(",")
