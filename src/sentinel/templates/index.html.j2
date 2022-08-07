@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Merge Sentinel - Flexible required checks for PRs</title>
+    <meta name="description"
+          content="Merge Sentinel - Flexible required checks for PRs"/>
+
+    <link rel="stylesheet" href="{{ app.url_for('static', filename='main.css') }}">
+</head>
+<body>
+
+
+<div id="main">
+
+    <div id="logo" 
+    {# style="background-image:url({{ app.url_for('static', filename='sentinel_512p.png') }});" #}
+    >
+        <img src="{{ app.url_for('static', filename='sentinel_512p.png') }}" alt="Knights Helmet"/>
+    </div>
+    <h1>Merge Sentinel</h1>
+    <h2>Flexible required checks for PRs</h2>
+
+    <section id="content">
+    
+    <p>
+    Merge Sentinel can help you define flexible requirements for required PR checks on GitHub.
+    </p>
+
+    <p>
+    You can define rules similar to GitHub Actions' filters, based on branch names and changed
+    files of the PR. (Like not requiring build jobs on docs-only changes)
+    </p>
+
+    <p>
+    Simply mark "Merge Sentinel" as the only required check in the GitHub UI, and let it do the rest.
+    </p>
+
+    <br/>
+
+    <p>
+    Merge Sentinel is currently only available on public repositories on GitHub. 
+    <a href="https://github.com/apps/merge-sentinel">Install it here!</a>
+    <br>
+    If you're interested in using it on a public repo, <a href="mailto:hello@paulgessinger.com">let me know</a>!
+    </p>
+    
+    <section>
+
+</div>
+
+</body>
+</html>

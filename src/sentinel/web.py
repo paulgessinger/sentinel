@@ -2,6 +2,7 @@ import hmac
 import logging
 import logging.config
 import asyncio
+from pathlib import Path
 
 from sanic import Sanic, response
 import aiohttp
@@ -49,6 +50,9 @@ def create_app():
 
     app = Sanic("sentinel")
     app.update_config(config)
+    app.config.TEMPLATING_PATH_TO_TEMPLATES = Path(__file__).parent / "templates"
+    app.static("/static", Path(__file__).parent / "static")
+
     sanic.log.logger.setLevel(config.OVERRIDE_LOGGING)
 
     handler = notifiers.logging.NotificationHandler(
@@ -80,8 +84,13 @@ def create_app():
         app.ctx.queue_lock = asyncio.Lock()
         app.ctx.pull_request_queue = set()
 
-    @app.route("/")
+    @app.get("/")
+    @app.ext.template("index.html.j2")
     async def index(request):
+        return {"app": app}
+
+    @app.get("/status")
+    async def status(request):
         logger.debug("status check")
         return response.text("ok")
 
