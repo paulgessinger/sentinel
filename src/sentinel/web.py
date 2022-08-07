@@ -93,7 +93,7 @@ def create_app():
             request.headers, request.body, secret=app.config.GITHUB_WEBHOOK_SECRET
         )
 
-        if event.event == "ping":
+        if event.event not in ("check_run", "pull_request"):
             return response.empty(200)
 
         assert "installation" in event.data

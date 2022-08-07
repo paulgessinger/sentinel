@@ -178,52 +178,9 @@ async def populate_check_run(
             logger.debug("- %d : [%s] %s", cr.id, cr.completed_at, cr.name)
     logger.debug("Successful check runs are: %s", successful_check_run_names)
 
-    rules: List[Rule] = []
+    changed_files = [f.filename async for f in api.get_pull_request_files(pr)]
 
-    for idx, rule in enumerate(config.rules, start=1):
-        logger.debug("Evaluate rule #%d", idx)
-        logger.debug("- have %d branch filters", len(rule.branch_filter))
-        if len(rule.branch_filter) > 0:
-            matching_filters = [
-                f for f in rule.branch_filter if fnmatch(pr.base.ref, f)
-            ]
-            if len(matching_filters) > 0:
-                for bfilter in matching_filters:
-                    logger.debug(
-                        "-- branch filter '%s' matches base branch '%s'",
-                        bfilter,
-                        pr.base.ref,
-                    )
-            else:
-                logger.debug(
-                    "-- no branch filter matches base branch '%s'", pr.base.ref
-                )
-                continue
-
-        if rule.paths is not None or rule.paths_ignore is not None:
-            if changed_files is None:
-                changed_files = [
-                    f.filename async for f in api.get_pull_request_files(pr)
-                ]
-
-            paths = rule.paths or []
-            paths_ignore = rule.paths_ignore or []
-
-            logger.debug("- have %d path filters", len(paths))
-            logger.debug("- have %d path ignore filters", len(paths_ignore))
-
-            accepted = rule_apply_changed_files(
-                changed_files, paths=rule.paths, paths_ignore=rule.paths_ignore
-            )
-
-            if not accepted:
-                logger.debug("-- path filters reject rule")
-                continue
-            else:
-                logger.debug("-- path filters accept rule")
-
-        logger.debug("Applying rule #%d", idx)
-        rules.append(rule)
+    rules = determine_rules(changed_files, pr, config.rules)
 
     logger.debug("Have %d rules to apply", len(rules))
 
@@ -408,6 +365,53 @@ async def populate_check_run(
     check_run.output.text = text
 
     return check_run
+
+
+def determine_rules(
+    changed_files: List[str], pr: PullRequest, rules: List[Rule]
+) -> List[Rule]:
+    selected_rules: List[Rule] = []
+    for idx, rule in enumerate(rules, start=1):
+        logger.debug("Evaluate rule #%d", idx)
+        logger.debug("- have %d branch filters", len(rule.branch_filter))
+        if len(rule.branch_filter) > 0:
+            matching_filters = [
+                f for f in rule.branch_filter if fnmatch(pr.base.ref, f)
+            ]
+            if len(matching_filters) > 0:
+                for bfilter in matching_filters:
+                    logger.debug(
+                        "-- branch filter '%s' matches base branch '%s'",
+                        bfilter,
+                        pr.base.ref,
+                    )
+            else:
+                logger.debug(
+                    "-- no branch filter matches base branch '%s'", pr.base.ref
+                )
+                continue
+
+        if rule.paths is not None or rule.paths_ignore is not None:
+
+            paths = rule.paths or []
+            paths_ignore = rule.paths_ignore or []
+
+            logger.debug("- have %d path filters", len(paths))
+            logger.debug("- have %d path ignore filters", len(paths_ignore))
+
+            accepted = rule_apply_changed_files(
+                changed_files, paths=rule.paths, paths_ignore=rule.paths_ignore
+            )
+
+            if not accepted:
+                logger.debug("-- path filters reject rule")
+                continue
+            else:
+                logger.debug("-- path filters accept rule")
+
+        logger.debug("Applying rule #%d", idx)
+        selected_rules.append(rule)
+    return selected_rules
 
 
 def rule_apply_changed_files(
