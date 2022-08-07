@@ -252,7 +252,9 @@ async def populate_check_run(
 
     logger.debug("Have %d rules to apply", len(rules))
 
-    check_run.started_at = min(cr.started_at for cr in check_runs)
+    check_run.started_at = min(
+        cr.started_at for cr in check_runs if cr.started_at is not None
+    )
 
     failures = {cr for cr in check_runs if cr.is_failure}
     in_progress = set()
@@ -328,13 +330,15 @@ async def populate_check_run(
         if cr.is_in_progress:
             icon = ":yellow_circle:"
             status = cr.status
-            duration = datetime.now(pytz.UTC) - cr.started_at
+            duration = datetime.utcnow() - cr.started_at.replace(tzinfo=None)
             duration = "running for **" + humanize.naturaldelta(duration) + "**"
         elif cr.status == "completed":
             status = cr.conclusion
             duration = (
                 "completed **"
-                + humanize.naturaltime(cr.completed_at.replace(tzinfo=None))
+                + humanize.naturaltime(
+                    cr.completed_at.replace(tzinfo=None), when=datetime.utcnow()
+                )
                 + "** in **"
                 + humanize.naturaldelta(cr.completed_at - cr.started_at)
                 + "**"
@@ -408,9 +412,9 @@ async def populate_check_run(
         check_run.conclusion = None
         check_run.completed_at = None
         if len(in_progress_names) == 1:
-            title = "waiting for 1 job"
+            title = "Waiting for 1 job"
         else:
-            title = f"waiting for {len(in_progress_names)} jobs"
+            title = f"Waiting for {len(in_progress_names)} jobs"
         if len(in_progress_names) <= 3:
             title += ": " + ", ".join(in_progress_names)
         check_run.output = CheckRunOutput(title=title)
@@ -418,7 +422,9 @@ async def populate_check_run(
         logger.debug("Processing as success")
         check_run.status = "completed"
         check_run.conclusion = "success"
-        check_run.output = CheckRunOutput(title="All required jobs successful")
+        check_run.output = CheckRunOutput(
+            title=f"All {len(all_required)} required jobs successful"
+        )
         check_run.completed_at = max(
             cr.completed_at for cr in check_runs if cr.completed_at is not None
         )
