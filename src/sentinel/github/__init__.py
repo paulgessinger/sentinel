@@ -61,8 +61,9 @@ async def get_config_from_repo(api: API, repo: Repository) -> Optional[Config]:
 
         decoded_content = content.decoded_content()
 
-        with open("test_config.yml") as fh:
-            decoded_content = fh.read()
+        if app_config.OVERRIDE_CONFIG is not None:
+            with open(app_config.OVERRIDE_CONFIG) as fh:
+                decoded_content = fh.read()
 
         buf = io.StringIO(decoded_content)
         data = yaml.safe_load(buf)
