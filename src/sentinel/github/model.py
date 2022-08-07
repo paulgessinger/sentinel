@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from functools import cached_property
 from typing import List, Literal, Optional, Type, TypeVar
 import base64
@@ -118,6 +118,7 @@ class CheckSuite(PartialCheckSuite):
     url: str
     created_at: datetime
     updated_at: datetime
+    check_runs_url: str
 
 
 class CheckRunOutput(Model):
@@ -149,6 +150,7 @@ class CheckRun(Model):
     app: Optional[App] = None
     check_suite: Optional[PartialCheckSuite] = None
     output: Optional[CheckRunOutput] = None
+    html_url: Optional[str] = None
 
     @property
     def is_failure(self) -> bool:
@@ -156,6 +158,14 @@ class CheckRun(Model):
             "cancelled",
             "failure",
         )
+
+    @property
+    def is_in_progress(self) -> bool:
+        return self.status in ("queued", "in_progress")
+
+    @property
+    def is_success(self) -> bool:
+        return self.status == "completed" and self.conclusion == "success"
 
     def __hash__(self):
         return self.id
@@ -178,6 +188,21 @@ class ActionsJob(Model):
     url: str
     run_id: int
     run_url: str
+    status: Literal["completed", "queued", "in_progress"]
+    conclusion: Optional[
+        Literal[
+            "action_required",
+            "cancelled",
+            "failure",
+            "neutral",
+            "success",
+            "skipped",
+            "stale",
+            "timed_out",
+        ]
+    ]
+    name: str
+    run_attempt: int
 
 
 class ActionsRun(Model):
@@ -201,3 +226,5 @@ class ActionsRun(Model):
     ]
     workflow_id: int
     check_suite_id: int
+    created_at: datetime
+    updated_at: datetime

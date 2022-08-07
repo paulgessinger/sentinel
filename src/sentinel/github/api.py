@@ -24,19 +24,21 @@ class API:
         self.gh = gh
 
     async def post_check_run(self, repo_url: str, check_run: CheckRun) -> None:
-        fields = {"name", "head_sha", "status", "output"}
+        fields = {"name", "head_sha", "status", "output", "started_at"}
         if check_run.completed_at is not None:
             fields.add("completed_at")
 
         if check_run.conclusion is not None:
             fields.add("conclusion")
-        payload = check_run.dict(include=fields, exclude_none=True)
+        payload = check_run.dict(include=fields, exclude_none=False)
 
         payload["actions"] = []
 
         for k, v in payload.items():
             if isinstance(v, datetime):
                 payload[k] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # print(payload)
 
         if check_run.id is not None:
             url = f"{repo_url}/check-runs/{check_run.id}"
@@ -60,6 +62,14 @@ class API:
         async for item in self.gh.getiter(url, iterable_key="check_runs"):
             yield CheckRun.parse_obj(item)
 
+    async def get_check_suites_for_ref(
+        self, repo: Repository, ref: str
+    ) -> AsyncIterator[CheckSuite]:
+        url = f"{repo.url}/commits/{ref}/check-suites"
+        logger.debug("Get check runs for ref %s", url)
+        async for item in self.gh.getiter(url, iterable_key="check_suites"):
+            yield CheckSuite.parse_obj(item)
+
     async def get_content(self, repo_url: str, path: str) -> Content:
         url = f"{repo_url}/contents/{path}"
         logger.debug("Get file content: %s", url)
@@ -80,3 +90,8 @@ class API:
     async def get_actions_job(self, repo_url: str, id: int) -> ActionsJob:
         url = f"{repo_url}/actions/jobs/{id}"
         return ActionsJob.parse_obj(await self.gh.getitem(url))
+
+    async def get_repository(self, repo_url: str) -> Repository:
+        return Repository.parse_obj(await self.gh.getitem(repo_url))
+
+    # async def get_pull_request(self)

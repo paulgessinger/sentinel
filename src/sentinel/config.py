@@ -15,3 +15,6 @@ OVERRIDE_LOGGING = logging.getLevelName(os.environ.get("OVERRIDE_LOGGING", "WARN
 REPO_ALLOWLIST = os.environ.get("REPO_ALLOWLIST")
 if REPO_ALLOWLIST is not None:
     REPO_ALLOWLIST = REPO_ALLOWLIST.split(",")
+
+
+MAX_PR_FREQUENCY = float(os.environ.get("MAX_PR_FREQUENCY", 1 / 10.0))

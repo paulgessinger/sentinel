@@ -56,6 +56,9 @@ def create_app():
         app_info = await gh.getitem("/app", jwt=jwt)
         app.ctx.app_info = app_info
 
+        app.ctx.queue_lock = asyncio.Lock()
+        app.ctx.pull_request_queue = set()
+
     @app.route("/")
     async def index(request):
         logger.debug("status check")
