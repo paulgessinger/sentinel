@@ -564,6 +564,29 @@ async def enqueue_pull_request(pr: PullRequest, api: API, app: Sanic):
     app.add_task(pull_request_update_task(pr, api, app))
 
 
+async def validate_source_repo(api: API, repo: Repository, pr: PullRequest) -> bool:
+    if repo.private:
+        if app_config.REPO_ALLOWLIST is not None:
+            if repo.full_name in app_config.REPO_ALLOWLIST:
+                return True
+        logger.warning("Webhook triggered on private repository: %s", repo.html_url)
+        await api.post_check_run(
+            repo.url,
+            CheckRun.make_app_check_run(
+                head_sha=pr.head.sha,
+                status="completed",
+                conclusion="neutral",
+                output=CheckRunOutput(
+                    title="Not available for private repositories",
+                    summary="Not available for private repositories",
+                ),
+            ),
+        )
+        return False
+
+    return True
+
+
 def create_router():
     router = Router()
 
@@ -579,20 +602,7 @@ def create_router():
 
         repo = Repository.parse_obj(event.data["repository"])
 
-        if repo.private:
-            logger.warning("Webhook triggered on private repository: %s", repo.html_url)
-            await api.post_check_run(
-                repo.url,
-                CheckRun.make_app_check_run(
-                    head_sha=pr.head.sha,
-                    status="completed",
-                    conclusion="neutral",
-                    output=CheckRunOutput(
-                        title="Not available for private repositories",
-                        summary="Not available for private repositories",
-                    ),
-                ),
-            )
+        if not await validate_source_repo(api, repo, pr):
             return
 
         if action not in ("synchronize", "opened", "reopened"):
@@ -608,8 +618,10 @@ def create_router():
             logger.debug("Check run from us, skip handling")
             return
 
+        repo = Repository.parse_obj(event.data["repository"])
+
         for pr in check_run.pull_requests:
-            # print(pr.number)
-            await enqueue_pull_request(pr, api, app)
+            if await validate_source_repo(api, repo, pr):
+                await enqueue_pull_request(pr, api, app)
 
     return router

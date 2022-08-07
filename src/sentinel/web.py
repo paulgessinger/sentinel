@@ -103,14 +103,6 @@ def create_app():
         repo = Repository.parse_obj(event.data["repository"])
         logger.debug("Repository %s", repo.full_name)
 
-        if config.REPO_ALLOWLIST is not None:
-            if repo.full_name not in config.REPO_ALLOWLIST:
-                logger.warning(
-                    "Webhook triggered on repository that's not in allowlist: %s",
-                    repo.html_url,
-                )
-                return response.empty(200)
-
         gh = await client_for_installation(app, installation_id)
 
         api = API(gh)
