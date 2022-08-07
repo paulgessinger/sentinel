@@ -200,46 +200,21 @@ async def populate_check_run(
                 )
                 continue
 
-        logger.debug("- have %d path filters", len(rule.path_filter))
-        if len(rule.path_filter) > 0:
+        if rule.paths is not None or rule.paths_ignore is not None:
             if changed_files is None:
-                changed_files = [f async for f in api.get_pull_request_files(pr)]
+                changed_files = [
+                    f.filename async for f in api.get_pull_request_files(pr)
+                ]
 
-            accepted = True
-            for path_filter in rule.path_filter:
-                path_filter = path_filter.strip()
-                if path_filter.startswith("!"):
-                    path_filter = path_filter[1:]
-                    logger.debug(
-                        "-- checking negative filter '%s' against %d files",
-                        path_filter,
-                        len(changed_files),
-                    )
+            paths = rule.paths or []
+            paths_ignore = rule.paths_ignore or []
 
-                    filter_accepted = not any(
-                        fnmatch(file.filename, path_filter) for file in changed_files
-                    )
-                    logger.debug(
-                        "--- negative path filter %s",
-                        "accepts" if filter_accepted else "does not accept",
-                    )
-                    accepted = accepted and filter_accepted
-                else:
-                    logger.debug(
-                        "-- checking positive filter '%s' against %d files",
-                        path_filter,
-                        len(changed_files),
-                    )
+            logger.debug("- have %d path filters", len(paths))
+            logger.debug("- have %d path ignore filters", len(paths_ignore))
 
-                    filter_accepted = all(
-                        fnmatch(file.filename, path_filter) for file in changed_files
-                    )
-
-                    logger.debug(
-                        "--- positive path filter %s",
-                        "accepts" if filter_accepted else "does not accept",
-                    )
-                    accepted = accepted and filter_accepted
+            accepted = rule_apply_changed_files(
+                changed_files, paths=rule.paths, paths_ignore=rule.paths_ignore
+            )
 
             if not accepted:
                 logger.debug("-- path filters reject rule")
@@ -435,6 +410,31 @@ async def populate_check_run(
     return check_run
 
 
+def rule_apply_changed_files(
+    changed_files: List[str],
+    paths: Optional[List[str]] = None,
+    paths_ignore: Optional[List[str]] = None,
+) -> bool:
+    if paths is None and paths_ignore is None:
+        raise ValueError("Provide at least one filter argument")
+
+    accepted = True
+
+    if paths is not None:
+        accepted = (
+            accepted
+            and len(paths) > 0
+            and any(fnmatch(f, p) for f in changed_files for p in paths)
+        )
+
+    if paths_ignore is not None:
+        matches = [any(fnmatch(f, p) for p in paths_ignore) for f in changed_files]
+        # print(matches)
+        accepted = accepted and (len(paths_ignore) == 0 or not all(matches))
+
+    return accepted
+
+
 async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
     logger.debug("Begin handling PR %d", pr.id)
     # get check runs for PR head_sha on base repo
@@ -496,13 +496,13 @@ async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
         config = await get_config_from_repo(api, pr.base.repo)
     except InvalidConfig as e:
         # print(e)
-        logger.debug("Invalid config file")
-        check_run = check_run or CheckRun.make_app_check_run(
-            head_sha=pr.head.sha,
-            status="completed",
-            conclusion="failure",
-            started_at=datetime.now(),
-        )
+        logger.debug("Invalid config file: \n%s", e)
+        check_run = check_run or CheckRun.make_app_check_run()
+        check_run.head_sha = pr.head.sha
+        check_run.status = "completed"
+        check_run.conclusion = "failure"
+        check_run.started_at = datetime.now()
+        check_run.completed_at = datetime.now()
         check_run.output = CheckRunOutput(
             title="Invalid config file",
             summary=f"### :x: Config parsing failed with the following error:\n\n```\n{str(e)}\n```"
@@ -544,6 +544,7 @@ async def pull_request_update_task(pr: PullRequest, api: API, app: Sanic):
             )
             await asyncio.sleep(min_duration - duration)
     except:
+        logger.error("Exception raised when processing pull request", exc_info=True)
         raise
     finally:
         async with app.ctx.queue_lock:
@@ -571,6 +572,24 @@ def create_router():
 
         action = event.data["action"]
         logger.debug("Action: %s", action)
+
+        repo = Repository.parse_obj(event.data["repository"])
+
+        if repo.private:
+            logger.warning("Webhook triggered on private repository: %s", repo.html_url)
+            await api.post_check_run(
+                repo.url,
+                CheckRun.make_app_check_run(
+                    head_sha=pr.head.sha,
+                    status="completed",
+                    conclusion="neutral",
+                    output=CheckRunOutput(
+                        title="Not available for private repositories",
+                        summary="Not available for private repositories",
+                    ),
+                ),
+            )
+            return
 
         if action not in ("synchronize", "opened", "reopened"):
             return

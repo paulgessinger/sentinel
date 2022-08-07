@@ -1,19 +1,29 @@
 import hmac
 import logging
+import logging.config
+import asyncio
 
 from sanic import Sanic, response
 import aiohttp
 from gidgethub import sansio
 from gidgethub.apps import get_installation_access_token, get_jwt
 from gidgethub import aiohttp as gh_aiohttp
+
 from sanic.log import logger
+import sanic.log
 import cachetools
-import json
-import asyncio
+import notifiers.logging
 
 from sentinel import config
 from sentinel.github import create_router
 from sentinel.github.api import API
+from sentinel.github.model import Repository
+
+# logger = logging.getLogger("merge-sentinel")
+
+# logging.basicConfig(
+#     level=config.OVERRIDE_LOGGING, format="%(levelname)s %(name)s %(message)s"
+# )
 
 
 async def client_for_installation(app, installation_id):
@@ -39,7 +49,18 @@ def create_app():
 
     app = Sanic("sentinel")
     app.update_config(config)
-    logger.setLevel(config.OVERRIDE_LOGGING)
+    sanic.log.logger.setLevel(config.OVERRIDE_LOGGING)
+
+    handler = notifiers.logging.NotificationHandler(
+        "telegram",
+        defaults={
+            "token": config.TELEGRAM_TOKEN,
+            "chat_id": config.TELEGRAM_CHAT_ID,
+        },
+    )
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(logger.handlers[0].formatter)
+    logger.addHandler(handler)
 
     app.ctx.cache = cachetools.LRUCache(maxsize=500)
     app.ctx.github_router = create_router()
@@ -79,11 +100,15 @@ def create_app():
         installation_id = event.data["installation"]["id"]
         logger.debug("Installation id: %s", installation_id)
 
-        logger.debug("Repository %s", event.data["repository"]["full_name"])
+        repo = Repository.parse_obj(event.data["repository"])
+        logger.debug("Repository %s", repo.full_name)
 
         if config.REPO_ALLOWLIST is not None:
-            if event.data["repository"]["full_name"] not in config.REPO_ALLOWLIST:
-                logger.debug("Repository not in allowlist")
+            if repo.full_name not in config.REPO_ALLOWLIST:
+                logger.warning(
+                    "Webhook triggered on repository that's not in allowlist: %s",
+                    repo.html_url,
+                )
                 return response.empty(200)
 
         gh = await client_for_installation(app, installation_id)
@@ -91,7 +116,10 @@ def create_app():
         api = API(gh)
 
         logger.debug("Dispatching event %s", event.event)
-        await app.ctx.github_router.dispatch(event, api, app=app)
+        try:
+            await app.ctx.github_router.dispatch(event, api, app=app)
+        except:
+            logger.error("Exception raised when dispatching event", exc_info=True)
 
         return response.empty(200)
 

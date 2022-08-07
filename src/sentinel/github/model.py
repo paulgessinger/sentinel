@@ -51,8 +51,10 @@ class Content(Model):
 class Repository(Model):
     id: int
     name: str
-    # full_name: str
+    full_name: Optional[str]
     url: str
+    html_url: Optional[str]
+    private: Optional[bool]
 
 
 class PartialPrConnection(Model):

@@ -24,13 +24,16 @@ class API:
         self.gh = gh
 
     async def post_check_run(self, repo_url: str, check_run: CheckRun) -> None:
-        fields = {"name", "head_sha", "status", "output", "started_at"}
+        fields = {"name", "head_sha", "status", "started_at"}
         if check_run.completed_at is not None:
             fields.add("completed_at")
 
         if check_run.conclusion is not None:
             fields.add("conclusion")
         payload = check_run.dict(include=fields, exclude_none=False)
+
+        if check_run.output is not None:
+            payload["output"] = check_run.output.dict(exclude_none=True)
 
         payload["actions"] = []
 

@@ -18,3 +18,6 @@ if REPO_ALLOWLIST is not None:
 
 
 MAX_PR_FREQUENCY = float(os.environ.get("MAX_PR_FREQUENCY", 1 / 10.0))
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
