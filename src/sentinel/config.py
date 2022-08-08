@@ -23,3 +23,5 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 OVERRIDE_CONFIG = os.environ.get("OVERRIDE_CONFIG")
+
+PROCESS_START_PAUSE = float(os.environ.get("PROCESS_START_PAUSE", 5))

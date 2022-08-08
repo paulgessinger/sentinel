@@ -82,7 +82,7 @@ def create_app():
         app.ctx.app_info = app_info
 
         app.ctx.queue_lock = asyncio.Lock()
-        app.ctx.pull_request_queue = set()
+        app.ctx.pull_request_queue = {}
 
     @app.get("/")
     @app.ext.template("index.html.j2")

@@ -532,9 +532,8 @@ async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
 
 
 async def pull_request_update_task(pr: PullRequest, api: API, app: Sanic):
-    async with app.ctx.queue_lock:
-        app.ctx.pull_request_queue.add(pr.id)
     try:
+        await asyncio.sleep(app_config.PROCESS_START_PAUSE)
         start = datetime.now()
         await process_pull_request(pr, api, app)
         duration = (datetime.now() - start).total_seconds()
@@ -548,21 +547,24 @@ async def pull_request_update_task(pr: PullRequest, api: API, app: Sanic):
                 min_duration - duration,
             )
             await asyncio.sleep(min_duration - duration)
+    except asyncio.CancelledError:
+        logger.debug("Task cancelled")
     except:
         logger.error("Exception raised when processing pull request", exc_info=True)
         raise
     finally:
         async with app.ctx.queue_lock:
-            app.ctx.pull_request_queue.remove(pr.id)
+            app.ctx.pull_request_queue.pop(pr.id, None)
 
 
 async def enqueue_pull_request(pr: PullRequest, api: API, app: Sanic):
     async with app.ctx.queue_lock:
-        if pr.id in app.ctx.pull_request_queue:
-            logger.debug("Pull request id %s is already updating", pr.id)
-            return
-
-    app.add_task(pull_request_update_task(pr, api, app))
+        if task := app.ctx.pull_request_queue.pop(pr.id, None):
+            logger.debug("Pull request id %s is already updating, cancelling", pr.id)
+            task.cancel()
+        app.ctx.pull_request_queue[pr.id] = app.add_task(
+            pull_request_update_task(pr, api, app)
+        )
 
 
 async def validate_source_repo(api: API, repo: Repository, pr: PullRequest) -> bool:
