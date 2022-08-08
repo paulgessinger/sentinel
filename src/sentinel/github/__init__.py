@@ -329,9 +329,9 @@ async def populate_check_run(
         logger.debug("Processing as failure")
         check_run.status = "completed"
         check_run.conclusion = "failure"
-        check_run.completed_at = max(
-            cr.completed_at for cr in check_runs if cr.completed_at is not None
-        )
+        all_completed_at = [for cr in check_runs if cr.completed_at is not None]
+        if any(all_completed_at):
+          check_run.completed_at = max(all_completed_at)
         if len(failures) == 1:
             title = "1 job has failed"
         else:
