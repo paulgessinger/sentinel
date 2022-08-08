@@ -97,7 +97,7 @@ class PartialCheckSuite(Model):
 
 
 class CheckSuite(PartialCheckSuite):
-    head_branch: str
+    head_branch: Optional[str]
     head_sha: CommitSha
     status: Optional[
         Literal[
