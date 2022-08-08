@@ -152,12 +152,13 @@ async def populate_check_run(
     check_runs_filtered: Dict[str, CheckRun] = {}
     for cr in check_runs:
         if ex_cr := check_runs_filtered.get(cr.name):
-            if cr.completed_at is None:
+            if cr.completed_at is None or ex_cr.completed_at is None:
                 check_runs_filtered[cr.name] = cr
             elif (
                 ex_cr.completed_at is not None and cr.completed_at > ex_cr.completed_at
             ):
                 check_runs_filtered[cr.name] = cr
+
         else:
             check_runs_filtered[cr.name] = cr
 
@@ -283,7 +284,7 @@ async def populate_check_run(
             elif cr.conclusion == "cancelled":
                 icon = ":white_circle:"
             elif cr.conclusion == "success":
-                icon = ":heavy_check_mark:"
+                icon = ":white_check_mark:"
             else:
                 icon = ":question:"
 
@@ -443,7 +444,7 @@ def rule_apply_changed_files(
 
 
 async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
-    logger.debug("Begin handling PR %d", pr.id)
+    logger.info("Begin handling PR %d (#%d)", pr.id, pr.number)
     # get check runs for PR head_sha on base repo
     check_suites = [
         cs async for cs in api.get_check_suites_for_ref(pr.base.repo, pr.head.sha)
@@ -471,17 +472,25 @@ async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
     logger.debug("All check runs:")
     if logger.getEffectiveLevel() == logging.DEBUG:
         for cr in all_check_runs:
-            logger.debug("- %d : [%s] %s", cr.id, cr.completed_at, cr.name)
+            logger.debug(
+                "- %d : [%s] %s (PRs: %s)",
+                cr.id,
+                cr.completed_at,
+                cr.name,
+                cr.pull_requests,
+            )
 
     # all_check_runs = {
     #     cr async for cr in api.get_check_runs_for_ref(pr.base.repo, pr.head.sha)
     # }
 
-    check_runs = {
-        cr
-        for cr in all_check_runs
-        if len(cr.pull_requests) > 0 and cr.app.id != app_config.GITHUB_APP_ID
-    }
+    check_runs = set(all_check_runs)
+
+    # check_runs = {cr for cr in check_runs if len(cr.pull_requests) > 0}
+    # logger.debug("Have %d check runs after PR filter", len(check_runs))
+
+    check_runs = {cr for cr in check_runs if cr.app.id != app_config.GITHUB_APP_ID}
+    logger.debug("Have %d check runs after app id filter", len(check_runs))
 
     # check_runs = list(
     #     more_itertools.unique_justseen(
@@ -528,9 +537,10 @@ async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
     )
 
     # print(check_run.output.title)
+    logger.debug("Posting check run for PR %d (#%d)", pr.id, pr.number)
     await api.post_check_run(pr.base.repo.url, check_run)
 
-    logger.debug("Finished handling PR %d", pr.id)
+    logger.info("Finished handling PR %d (#%d)", pr.id, pr.number)
 
 
 async def pull_request_update_task(pr: PullRequest, api: API, app: Sanic):
