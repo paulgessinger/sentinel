@@ -185,9 +185,9 @@ async def populate_check_run(
 
     logger.debug("Have %d rules to apply", len(rules))
 
-    check_run.started_at = min(
-        cr.started_at for cr in check_runs if cr.started_at is not None
-    )
+    all_started_at = [cr.started_at for cr in check_runs if cr.started_at is not None]
+    if any(all_started_at):
+        check_run.started_at = min(all_started_at)
 
     failures = {cr for cr in check_runs if cr.is_failure}
     in_progress = set()
