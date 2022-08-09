@@ -137,7 +137,7 @@ def create_app():
         api = API(gh)
         repo_url = "https://api.github.com/repos/acts-project/acts"
         pr = await api.get_pull(repo_url, number)
-        print(pr)
+        # print(pr)
 
         await process_pull_request(pr, api, app)
 

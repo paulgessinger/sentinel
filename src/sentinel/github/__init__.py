@@ -1,14 +1,18 @@
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from fnmatch import fnmatch
 import hmac
-from importlib.resources import path
+from importlib.resources import is_resource, path
 import io
 import logging
+from multiprocessing.sharedctypes import Value
 from tabnanny import check
 from tracemalloc import start
 from typing import Any, AsyncIterable, AsyncIterator, Dict, List, Mapping, Optional, Set
 import json
+from typing_extensions import Required
 import gidgethub
 import dateutil.parser
 from pprint import pprint
@@ -39,10 +43,86 @@ from sentinel.github.model import (
     CheckRun,
     CheckRunOutput,
     CheckSuite,
+    CommitStatus,
     PullRequest,
     Repository,
 )
 from sentinel.model import Config, Rule
+
+
+class ResultStatus(Enum):
+    success = 1
+    pending = 2
+    failure = 3
+    missing = 4
+    neutral = 5
+
+
+@dataclass
+class ResultItem:
+    name: str
+    status: ResultStatus
+
+    url: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    required: bool = False
+
+    def __hash__(self):
+        return hash(self.name)
+
+    def __str__(self):
+        if self.url is None:
+            return self.name
+        else:
+            return f"[{self.name}]({self.url})"
+
+    @classmethod
+    def from_check_run(cls, cr: CheckRun, **kwargs) -> "ResultItem":
+        if cr.is_failure:
+            status = ResultStatus.failure
+        elif cr.is_in_progress:
+            status = ResultStatus.pending
+        elif cr.is_success:
+            status = ResultStatus.success
+        elif cr.status == "completed" and cr.conclusion in ("neutral", "skipped"):
+            status = ResultStatus.neutral
+        else:
+            raise ValueError("Unknown status %s %s", cr.status, cr.conclusion)
+        return ResultItem(
+            name=cr.name,
+            url=cr.html_url,
+            status=status,
+            started_at=cr.started_at,
+            completed_at=cr.completed_at,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_status(cls, cs: CommitStatus, **kwargs) -> "ResultItem":
+        started_at = None
+        completed_at = None
+        if cs.state == "success":
+            status = ResultStatus.success
+            started_at = cs.created_at
+            completed_at = cs.updated_at
+        elif cs.state == "pending":
+            started_at = cs.created_at
+            status = ResultStatus.pending
+        elif cs.state == "failure":
+            status = ResultStatus.failure
+            started_at = cs.created_at
+            completed_at = cs.updated_at
+        else:
+            raise ValueError(f"Invalid commit status state {cs.state}")
+        return ResultItem(
+            name=cs.context,
+            url=cs.state,
+            status=status,
+            started_at=started_at,
+            completed_at=completed_at,
+            **kwargs,
+        )
 
 
 class InvalidConfig(Exception):
@@ -200,108 +280,125 @@ async def populate_check_run(
     if any(all_started_at):
         check_run.started_at = min(all_started_at)
 
-    failures = {cr for cr in check_runs if cr.is_failure}
-    in_progress = set()
-    missing_checks = set()
-    successful = set()
+    result_items: Set[ResultItem] = {
+        ResultItem.from_check_run(cr, required=False) for cr in check_runs
+    }
 
-    all_required: Set[str] = set()
+    for status in statuses:
+        result_items.add(ResultItem.from_status(status))
 
     for rule in rules:
         if len(rule.required_checks) > 0:
             logger.debug("- required checks: %s", rule.required_checks)
 
-            all_required |= rule.required_checks
+            seen_results = set()
 
-            rule_missing_checks = rule.required_checks - successful_check_run_names
-            if len(rule_missing_checks) == 0:
-                logger.debug("-- no missing successful checks")
-            else:
-                logger.debug("-- missing successful checks: %s", rule_missing_checks)
+            # for required_check in rule.required_checks:
+            for ri in result_items:
+                if ri.name in rule.required_checks:
+                    ri.required = True
+                    logger.debug("Item %s is required", ri.name)
+                    seen_results.add(ri.name)
 
-            successful |= {
-                check_runs_by_name[n]
-                for n in rule.required_checks & successful_check_run_names
-            }
-
-            for missing_check in list(rule_missing_checks):
-                logger.debug("Find missing check '%s'", missing_check)
-                if check := check_runs_by_name.get(missing_check):
-                    logger.debug("--- missing check found: '%s'", check.name)
-                    if check.is_failure:
-                        failures.add(check)
-                        rule_missing_checks.remove(missing_check)
-                    else:
-                        in_progress.add(check)
-                        rule_missing_checks.remove(missing_check)
-            missing_checks |= rule_missing_checks
+            for missing in rule.required_checks - seen_results:
+                result_items.add(
+                    ResultItem(name=missing, status=ResultStatus.missing, required=True)
+                )
 
         if len(rule.required_pattern) > 0:
             logger.debug("- required patterns: %s", rule.required_pattern)
-            for cr in check_runs:
-                matching_patterns = list(
-                    filter(lambda p: fnmatch(cr.name, p), rule.required_pattern)
-                )
-                if len(matching_patterns) == 0:
-                    continue
+            for pattern in rule.required_pattern:
+                matched = False
+                for ri in result_items:
+                    if fnmatch(ri.name, pattern):
+                        logger.debug("Item %s is required", ri.name)
+                        ri.required = True
+                        matched = True
+                if not matched:
+                    result_items.add(
+                        ResultItem(
+                            name=pattern, required=True, status=ResultStatus.failure
+                        )
+                    )
+    successful = {
+        ri for ri in result_items if ri.status == ResultStatus.success and ri.required
+    }
+    logger.debug(
+        "Have %d required successes and %d extra successes",
+        len(successful),
+        len(
+            [
+                ri
+                for ri in result_items
+                if ri.status == ResultStatus.success and not ri.required
+            ]
+        ),
+    )
 
-                logger.debug(
-                    "-- check run %s matches pattern(s): %s", cr.name, matching_patterns
-                )
+    failures = {ri for ri in result_items if ri.status == ResultStatus.failure}
+    logger.debug(
+        "Have %d failures",
+        len(failures),
+    )
 
-                all_required.add(cr.name)
+    in_progress = {
+        ri for ri in result_items if ri.status == ResultStatus.pending and ri.required
+    }
+    logger.debug(
+        "Have %d required pending checks and %d not required ones",
+        len(in_progress),
+        len(
+            [
+                ri
+                for ri in result_items
+                if ri.status == ResultStatus.pending and not ri.required
+            ]
+        ),
+    )
 
-                if cr.is_failure:
-                    failures.add(cr)
-                elif cr.is_in_progress:
-                    in_progress.add(cr)
-                elif cr.is_success:
-                    successful.add(cr)
-                elif cr.status == "completed" and cr.conclusion == "skipped":
-                    pass
-                else:
-                    logger.error("Not sure what to do with cr %s", cr)
-
-    logger.debug("Have %d required successes", len(successful))
-    logger.debug("Have %d failures", len(failures))
-    logger.debug("Have %d in progress checks", len(in_progress))
-    logger.debug("Have %d checks that are unaccounted for", len(missing_checks))
+    missing = {ri for ri in result_items if ri.status == ResultStatus.missing}
+    in_progress |= missing
+    logger.debug(
+        "Have %d checks that are unaccounted for",
+        len(missing),
+    )
 
     text = "# Checks\n"
 
     rows = []
-    for cr in sorted(check_runs, key=lambda cr: cr.name):
-        if cr.is_in_progress:
+    for ri in sorted(result_items, key=lambda ri: ri.name):
+        status = ri.status.name
+        duration = ""
+        if ri.status == ResultStatus.pending:
             icon = ":yellow_circle:"
-            status = cr.status
-            duration = datetime.utcnow() - cr.started_at.replace(tzinfo=None)
-            duration = "running for **" + humanize.naturaldelta(duration) + "**"
-        elif cr.status == "completed":
-            status = cr.conclusion
-            duration = (
-                "completed **"
-                + humanize.naturaltime(
-                    cr.completed_at.replace(tzinfo=None), when=datetime.utcnow()
-                )
-                + "** in **"
-                + humanize.naturaldelta(cr.completed_at - cr.started_at)
-                + "**"
-            )
-            if cr.conclusion == "skipped":
-                icon = ":fast_forward:"
-            elif cr.conclusion == "failure":
-                icon = ":x:"
-            elif cr.conclusion == "cancelled":
-                icon = ":white_circle:"
-            elif cr.conclusion == "success":
-                icon = ":white_check_mark:"
-            else:
-                icon = ":question:"
+        elif ri.status == ResultStatus.success:
+            icon = ":white_check_mark:"
+        elif ri.status == ResultStatus.failure:
+            icon = ":x:"
+        elif ri.status == ResultStatus.neutral:
+            icon = ":white_circle:"
+        elif ri.status == ResultStatus.missing:
+            icon = ":question:"
 
-        is_required = "yes" if cr.name in all_required else "no"
-        rows.append(
-            (icon, f"[{cr.name}]({cr.html_url})", status, duration, is_required)
-        )
+        if ri.started_at is not None:
+            if ri.completed_at is not None:
+                duration = (
+                    "completed **"
+                    + humanize.naturaltime(
+                        ri.completed_at.replace(tzinfo=None), when=datetime.utcnow()
+                    )
+                    + "** in **"
+                    + humanize.naturaldelta(ri.completed_at - ri.started_at)
+                    + "**"
+                )
+            else:
+                duration = datetime.utcnow() - ri.started_at.replace(tzinfo=None)
+                duration = "running for **" + humanize.naturaldelta(duration) + "**"
+
+        if ri.status == ResultStatus.neutral:
+            duration = ""
+        is_required = "yes" if ri.required else "no"
+        rows.append((icon, f"{ri}", status, duration, is_required))
 
     text += tabulate(
         rows,
@@ -309,31 +406,19 @@ async def populate_check_run(
         tablefmt="github",
     )
 
-    if len(missing_checks) > 0:
-        text += "\n".join(
-            ["", "# Missing required checks:"]
-            + ["- :question: " + c for c in sorted(missing_checks)]
-        )
-
     summary = []
 
-    failures = list(sorted(failures, key=lambda f: f.name))
-    in_progress_names = list(sorted(missing_checks) + [c.name for c in in_progress])
-    successful = list(sorted(successful, key=lambda cr: cr.name))
-
     if len(failures) > 0:
-        summary += [f":x: failed: {', '.join(cr.name for cr in failures)}"]
+        summary += [f":x: failed: {', '.join(str(ri) for ri in failures)}"]
 
-    if len(in_progress) > 0 or len(missing_checks) > 0:
+    if len(in_progress) > 0:
         s = f":yellow_circle: waiting for: "
-        names = list(missing_checks) + [
-            f"[{cr.name}]({cr.html_url})" for cr in in_progress
-        ]
+        names = [f"{ri}" for ri in in_progress]
         summary += [s + ", ".join(sorted(names))]
     if len(successful) > 0:
         summary += [
-            ":heavy_check_mark: successful required checks: "
-            f"{', '.join(f'[{cr.name}]({cr.html_url})' for cr in successful)}"
+            ":white_check_mark: successful required checks: "
+            f"{', '.join(f'{ri}' for ri in successful)}"
         ]
 
     if len(failures) > 0:
@@ -350,26 +435,26 @@ async def populate_check_run(
         else:
             title = f"{len(failures)} jobs have failed"
         check_run.output = CheckRunOutput(title=title)
-    elif len(in_progress) > 0 or len(missing_checks) > 0:
+    elif len(in_progress):
         logger.debug("Processing as in progress")
         if check_run.status != "in_progress":
             check_run.id = None  # unset id to make new check run
         check_run.status = "in_progress"
         check_run.conclusion = None
         check_run.completed_at = None
-        if len(in_progress_names) == 1:
+        if len(in_progress) == 1:
             title = "Waiting for 1 job"
         else:
-            title = f"Waiting for {len(in_progress_names)} jobs"
-        if len(in_progress_names) <= 3:
-            title += ": " + ", ".join(in_progress_names)
+            title = f"Waiting for {len(in_progress)} jobs"
+        if len(in_progress) <= 3:
+            title += ": " + ", ".join(sorted([ri.name for ri in in_progress]))
         check_run.output = CheckRunOutput(title=title)
     else:
         logger.debug("Processing as success")
         check_run.status = "completed"
         check_run.conclusion = "success"
         check_run.output = CheckRunOutput(
-            title=f"All {len(all_required)} required jobs successful"
+            title=f"All {len([ri for ri in result_items if ri.required])} required jobs successful"
         )
         check_run.completed_at = max(
             cr.completed_at for cr in check_runs if cr.completed_at is not None
@@ -547,6 +632,9 @@ async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
     )
 
     # print(check_run.output.title)
+    # print(check_run.output.summary)
+    # print(check_run.output.text)
+
     logger.debug("Posting check run for PR %d (#%d)", pr.id, pr.number)
     await api.post_check_run(pr.base.repo.url, check_run)
 
@@ -562,6 +650,9 @@ async def pull_request_update_task(pr: PullRequest, api: API, app: Sanic):
             pr.url,
         )
         await asyncio.sleep(app_config.PROCESS_START_PAUSE)
+        await asyncio.sleep(
+            0.1
+        )  # I think this is needed to allow cancellation in between
         await asyncio.shield(process_pull_request(pr, api, app))
         duration = (datetime.now() - start).total_seconds()
         # print(app_config.MAX_PR_FREQUENCY)
@@ -587,8 +678,9 @@ async def pull_request_update_task(pr: PullRequest, api: API, app: Sanic):
 async def enqueue_pull_request(pr: PullRequest, api: API, app: Sanic):
     async with app.ctx.queue_lock:
         if task := app.ctx.pull_request_queue.pop(pr.id, None):
-            logger.debug("Pull request id %s is already updating, cancelling", pr.id)
+            logger.info("Pull request id %s is already updating, cancelling", pr.id)
             task.cancel()
+        logger.info("Queuing pull request id %s", pr.id)
         app.ctx.pull_request_queue[pr.id] = app.add_task(
             pull_request_update_task(pr, api, app)
         )
