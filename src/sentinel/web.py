@@ -16,7 +16,7 @@ import cachetools
 import notifiers.logging
 
 from sentinel import config
-from sentinel.github import create_router
+from sentinel.github import create_router, process_pull_request
 from sentinel.github.api import API
 from sentinel.github.model import Repository
 
@@ -53,6 +53,7 @@ def create_app():
     app.config.TEMPLATING_PATH_TO_TEMPLATES = Path(__file__).parent / "templates"
     app.static("/static", Path(__file__).parent / "static")
 
+    # print(config.OVERRIDE_LOGGING, logging.DEBUG)
     sanic.log.logger.setLevel(config.OVERRIDE_LOGGING)
 
     handler = notifiers.logging.NotificationHandler(
@@ -69,17 +70,22 @@ def create_app():
     app.ctx.cache = cachetools.LRUCache(maxsize=500)
     app.ctx.github_router = create_router()
 
+    logger.info("min_duration: %.2f", 1.0 / config.MAX_PR_FREQUENCY)
+
     @app.listener("before_server_start")
     async def init(app, loop):
         logger.debug("Creating aiohttp session")
         app.ctx.aiohttp_session = aiohttp.ClientSession(loop=loop)
 
         gh = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
+
         jwt = get_jwt(
             app_id=app.config.GITHUB_APP_ID, private_key=app.config.GITHUB_PRIVATE_KEY
         )
         app_info = await gh.getitem("/app", jwt=jwt)
         app.ctx.app_info = app_info
+
+        rate_limit = await gh.getitem("/rate_limit")
 
         app.ctx.queue_lock = asyncio.Lock()
         app.ctx.pull_request_queue = {}
@@ -121,6 +127,19 @@ def create_app():
             await app.ctx.github_router.dispatch(event, api, app=app)
         except:
             logger.error("Exception raised when dispatching event", exc_info=True)
+
+        return response.empty(200)
+
+    @app.route("/test/<number>")
+    async def test(request, number: int):
+        installation_id = 28062916
+        gh = await client_for_installation(app, installation_id)
+        api = API(gh)
+        repo_url = "https://api.github.com/repos/acts-project/acts"
+        pr = await api.get_pull(repo_url, number)
+        print(pr)
+
+        await process_pull_request(pr, api, app)
 
         return response.empty(200)
 

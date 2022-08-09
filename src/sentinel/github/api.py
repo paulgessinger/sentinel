@@ -1,6 +1,6 @@
 from datetime import datetime
 from tabnanny import check
-from typing import AsyncIterator
+from typing import AsyncIterator, List
 from gidgethub.abc import GitHubAPI
 import base64
 
@@ -8,6 +8,7 @@ from sentinel.github.model import (
     ActionsJob,
     CheckRun,
     CheckSuite,
+    CommitStatus,
     Content,
     PrFile,
     PullRequest,
@@ -51,9 +52,10 @@ class API:
                 data=payload,
             )
         else:
-            logger.debug("Creating check run")
+            url = f"{repo_url}/check-runs"
+            logger.debug("Creating check run %s on sha %s", url, check_run.head_sha)
             await self.gh.post(
-                f"{repo_url}/check-runs",
+                url,
                 data=payload,
             )
 
@@ -64,6 +66,15 @@ class API:
         logger.debug("Get check runs for ref %s", url)
         async for item in self.gh.getiter(url, iterable_key="check_runs"):
             yield CheckRun.parse_obj(item)
+
+    async def get_status_for_ref(
+        self, repo: Repository, ref: str
+    ) -> List[CommitStatus]:
+        url = f"{repo.url}/commits/{ref}/status"
+        logger.debug("Get commit status for ref %s", url)
+        data = await self.gh.getitem(url)
+        for item in data["statuses"]:
+            yield CommitStatus(sha=data["sha"], **item)
 
     async def get_check_suites_for_ref(
         self, repo: Repository, ref: str
@@ -96,5 +107,15 @@ class API:
 
     async def get_repository(self, repo_url: str) -> Repository:
         return Repository.parse_obj(await self.gh.getitem(repo_url))
+
+    async def get_pulls(self, repo_url: str) -> AsyncIterator[PullRequest]:
+        async for item in self.gh.getiter(f"{repo_url}/pulls"):
+            yield PullRequest.parse_obj(item)
+
+    async def get_pull(self, repo_url: str, number: int) -> PullRequest:
+        url = f"{repo_url}/pulls/{number}"
+        logger.debug("Get pull %s", url)
+        item = await self.gh.getitem(url)
+        return PullRequest.parse_obj(item)
 
     # async def get_pull_request(self)

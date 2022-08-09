@@ -230,3 +230,13 @@ class ActionsRun(Model):
     check_suite_id: int
     created_at: datetime
     updated_at: datetime
+
+
+class CommitStatus(Model):
+    url: str
+    id: int
+    state: Literal["failure", "pending", "success"]
+    created_at: datetime
+    updated_at: datetime
+    sha: str
+    context: str

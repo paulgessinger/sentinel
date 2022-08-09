@@ -14,6 +14,9 @@ import dateutil.parser
 from pprint import pprint
 import textwrap
 import io
+from aiolimiter import AsyncLimiter
+import aiocache
+import re
 
 from gidgethub.routing import Router
 from sanic.log import logger
@@ -103,9 +106,9 @@ async def populate_check_run(
         )
     }
 
-    print("GHA Jobs")
-    for aj in actions_jobs.values():
-        print("-", aj.id, aj.run_id, aj.status, aj.conclusion, aj.name)
+    # print("GHA Jobs")
+    # for aj in actions_jobs.values():
+    #     print("-", aj.id, aj.run_id, aj.status, aj.conclusion, aj.name)
 
     actions_runs = {
         r["id"]: ActionsRun.parse_obj(r)
@@ -171,6 +174,13 @@ async def populate_check_run(
         for cr in check_runs
         if cr.completed_at is not None and cr.conclusion == "success"
     }
+
+    statuses = [s async for s in api.get_status_for_ref(pr.base.repo, ref=pr.head.sha)]
+
+    logger.debug("Considered statuses:")
+    if logger.getEffectiveLevel() == logging.DEBUG:
+        for s in statuses:
+            logger.debug("- %d : [%s] %s", s.id, s.updated_at, s.context)
 
     check_runs_by_name = {cr.name: cr for cr in check_runs}
 
@@ -444,7 +454,7 @@ def rule_apply_changed_files(
 
 
 async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
-    logger.info("Begin handling PR %d (#%d)", pr.id, pr.number)
+    logger.info("Begin handling PR %d (#%d), %s", pr.id, pr.number, pr.url)
     # get check runs for PR head_sha on base repo
     check_suites = [
         cs async for cs in api.get_check_suites_for_ref(pr.base.repo, pr.head.sha)
@@ -540,14 +550,19 @@ async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
     logger.debug("Posting check run for PR %d (#%d)", pr.id, pr.number)
     await api.post_check_run(pr.base.repo.url, check_run)
 
-    logger.info("Finished handling PR %d (#%d)", pr.id, pr.number)
+    logger.info("Finished handling PR %d (#%d), %s", pr.id, pr.number, pr.url)
 
 
 async def pull_request_update_task(pr: PullRequest, api: API, app: Sanic):
     try:
-        await asyncio.sleep(app_config.PROCESS_START_PAUSE)
         start = datetime.now()
-        await process_pull_request(pr, api, app)
+        logger.debug(
+            "Waiting %f.2s before beginning with PR %s",
+            app_config.PROCESS_START_PAUSE,
+            pr.url,
+        )
+        await asyncio.sleep(app_config.PROCESS_START_PAUSE)
+        await asyncio.shield(process_pull_request(pr, api, app))
         duration = (datetime.now() - start).total_seconds()
         # print(app_config.MAX_PR_FREQUENCY)
         min_duration = 1.0 / app_config.MAX_PR_FREQUENCY
@@ -558,9 +573,9 @@ async def pull_request_update_task(pr: PullRequest, api: API, app: Sanic):
                 min_duration,
                 min_duration - duration,
             )
-            await asyncio.sleep(min_duration - duration)
+            await asyncio.shield(asyncio.sleep(min_duration - duration))
     except asyncio.CancelledError:
-        logger.debug("Task cancelled")
+        logger.info("Task cancelled for PR %d", pr.number)
     except:
         logger.error("Exception raised when processing pull request", exc_info=True)
         raise
@@ -602,6 +617,22 @@ async def validate_source_repo(api: API, repo: Repository, pr: PullRequest) -> b
     return True
 
 
+check_run_limiter = AsyncLimiter(60)
+# pr_cache = aiocache.Cache()
+
+
+def _key_builder(fn, api, repo_url):
+    # print(fn, args, kwargs)
+    return repo_url
+
+
+@aiocache.cached(ttl=120, key_builder=_key_builder)
+async def get_pull_requests(api: API, repo_url: str) -> List[PullRequest]:
+    logger.info("Getting all PRs for repo %s", repo_url)
+    result = [pr async for pr in api.get_pulls(repo_url)]
+    return result
+
+
 def create_router():
     router = Router()
 
@@ -633,10 +664,25 @@ def create_router():
             logger.debug("Check run from us, skip handling")
             return
 
+        if app_config.CHECK_RUN_NAME_FILTER is not None:
+            if re.match(app_config.CHECK_RUN_NAME_FILTER, check_run.name):
+                logger.debug(
+                    "Skipping check run '%s' due to filter '%s'",
+                    check_run.name,
+                    app_config.CHECK_RUN_NAME_FILTER,
+                )
+                return
+
         repo = Repository.parse_obj(event.data["repository"])
 
-        for pr in check_run.pull_requests:
-            if await validate_source_repo(api, repo, pr):
-                await enqueue_pull_request(pr, api, app)
+        async with check_run_limiter:
+            # async for pr in api.get_pulls(repo.url):
+            for pr in await get_pull_requests(api, repo.url):
+                if check_run.head_sha == pr.head.sha:
+                    logger.info(
+                        "- Triggering check run %s on PR %s", check_run.name, pr.url
+                    )
+                    await enqueue_pull_request(pr, api, app)
+                    break
 
     return router
