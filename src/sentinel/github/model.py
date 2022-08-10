@@ -82,6 +82,7 @@ class PullRequest(PartialPullRequest):
     updated_at: datetime
     base: PrConnection
     head: PrConnection
+    html_url: Optional[str]
 
     def __str__(self) -> str:
         name = self.base.repo.name

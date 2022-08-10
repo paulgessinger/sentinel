@@ -33,3 +33,5 @@ WORKER_SLEEP = float(os.environ.get("WORKER_SLEEP", 1))
 ACCESS_TOKEN_TTL = float(os.environ.get("ACCESS_TOKEN_TTL", 300))
 
 PRS_TTL = float(os.environ.get("PRS_TTL", 60))
+
+DRY_RUN = os.environ.get("DRY_RUN", "false") == "true"

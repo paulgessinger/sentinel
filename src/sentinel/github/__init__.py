@@ -39,7 +39,7 @@ import pytz
 import diskcache
 
 from sentinel import config as app_config
-from sentinel.cache import Cache, QueueItem
+from sentinel.cache import Cache, QueueItem, get_cache
 from sentinel.github.api import API
 from sentinel.github.model import (
     ActionsJob,
@@ -703,8 +703,8 @@ def create_router():
         if action not in ("synchronize", "opened", "reopened"):
             return
 
-        dcache: Cache = app.ctx.dcache
-        await dcache.push_pr(QueueItem(pr, api.installation))
+        with get_cache() as dcache:
+            await dcache.push_pr(QueueItem(pr, api.installation))
 
     @router.register("check_run")
     async def on_check_run(event: Event, api: API, app: Sanic):
@@ -725,18 +725,22 @@ def create_router():
 
         repo = Repository.parse_obj(event.data["repository"])
 
-        dcache: Cache = app.ctx.dcache
-        async with dcache.lock:
-            if hit := dcache.get(f"cached_prs_repo_{repo.id}"):
-                prs = hit
-            else:
-                logger.info("Getting all PRs for repo %s", repo.url)
-                prs = [pr async for pr in api.get_pulls(repo.url)]
-                dcache.set(f"cached_prs_repo_{repo.id}", prs, expire=app_config.PRS_TTL)
+        with get_cache() as dcache:
+            async with dcache.lock:
+                if hit := dcache.get(f"cached_prs_repo_{repo.id}"):
+                    prs = hit
+                else:
+                    logger.info("Getting all PRs for repo %s", repo.url)
+                    prs = [pr async for pr in api.get_pulls(repo.url)]
+                    dcache.set(
+                        f"cached_prs_repo_{repo.id}", prs, expire=app_config.PRS_TTL
+                    )
 
-        for pr in prs:
-            if check_run.head_sha == pr.head.sha:
-                logger.info("- Check run %s triggers pushing %s", check_run.name, pr)
-                await dcache.push_pr(QueueItem(pr, api.installation))
+            for pr in prs:
+                if check_run.head_sha == pr.head.sha:
+                    logger.info(
+                        "- Check run %s triggers pushing %s", check_run.name, pr
+                    )
+                    await dcache.push_pr(QueueItem(pr, api.installation))
 
     return router

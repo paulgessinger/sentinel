@@ -38,13 +38,15 @@ class Cache(diskcache.Cache):
             if self.in_queue(item.pr):
                 logger.info("%s already in queue, skipping", item.pr)
                 return
+
             prs = self.get(self.pr_key, set())
             prs.add(item.pr.id)
             self.set(self.pr_key, prs)
+
             self.set(
                 f"{self.pr_cooldown_key}_{item.pr.id}",
                 datetime.now(),
-                expire=config.PR_TIMEOUT * 5,
+                expire=60 * 60,
             )
             # self.push(item, prefix=self.queue_key)
             self.deque.append(item)
@@ -57,37 +59,33 @@ class Cache(diskcache.Cache):
                 logger.debug("Empty queue")
                 return None
 
-            # value = self.deque.popleft()
-
-            # if value is None:
-            #     return None
+            cooldown = timedelta(seconds=config.PR_TIMEOUT)
 
             # find first element that is not in cooldown
             for _ in range(len(self.deque)):
                 candidate = self.deque.popleft()
-                if last_dt := self.get(f"{self.pr_cooldown_key}_{candidate.pr.id}"):
-                    delta = datetime.now() - last_dt
-                    cooldown = timedelta(seconds=config.PR_TIMEOUT)
-                    if delta < cooldown:
-                        logger.debug(
-                            "%s is in cooldown (%s), putting back onto queue",
-                            candidate.pr,
-                            cooldown - delta,
-                        )
-                        self.deque.append(candidate)
-                    else:
-                        logger.debug("%s is good, returning", candidate.pr)
-                        # good, remove from set, return
-                        prs: Set[int] = self.get(self.pr_key, set())
-                        if candidate.pr.id in prs:
-                            prs.remove(candidate.pr.id)
-                        self.set(self.pr_key, prs)
+                last_dt = self.get(f"{self.pr_cooldown_key}_{candidate.pr.id}")
 
-                        return candidate
+                if last_dt is not None and datetime.now() - last_dt < cooldown:
+                    logger.debug(
+                        "%s is in cooldown (%s), putting back onto queue",
+                        candidate.pr,
+                        cooldown - (datetime.now() - last_dt),
+                    )
+                    self.deque.append(candidate)
+                else:
+                    logger.debug("%s is good, returning", candidate.pr)
+                    # good, remove from set, return
+                    prs: Set[int] = self.get(self.pr_key, set())
+                    if candidate.pr.id in prs:
+                        prs.remove(candidate.pr.id)
+                    self.set(self.pr_key, prs)
+
+                    return candidate
 
             return None
 
 
 def get_cache():
-    logger.info("Opening cache dir: %s", config.DISKCACHE_DIR)
+    # logger.info("Opening cache dir: %s", config.DISKCACHE_DIR)
     return Cache(config.DISKCACHE_DIR)

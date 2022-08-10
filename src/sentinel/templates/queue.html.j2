@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Merge Sentinel - Flexible required checks for PRs</title>
+    <meta name="description"
+          content="Merge Sentinel - Flexible required checks for PRs"/>
+
+</head>
+<body>
+
+<h1>Update queue</h1>
+
+<ol>
+
+{% for pr, delta in prs %}
+<li><a href="{{ pr.html_url }}">{{ pr.base.repo.full_name }}#{{ pr.number }}</a> [ready: {{ delta }}]</li>
+{% endfor %}
+
+</ol>
+
+
+</body>
+</html>

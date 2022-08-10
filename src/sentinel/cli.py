@@ -21,7 +21,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sentinel")
 
-cache = get_cache()
+# cache = get_cache()
 
 
 async def job_loop():
@@ -33,21 +33,23 @@ async def job_loop():
             logger.debug("Sleeping for %d", config.WORKER_SLEEP)
             await asyncio.sleep(config.WORKER_SLEEP)
 
-            if i == 60 or i == 0:
-                i = 0
-                logger.info("Queue size: %d", len(cache.deque))
-            i += 1
-            logger.debug("Getting item from PR queue")
-            item = await cache.pull_pr()
-            if item is None:
-                logger.debug("Queue empty")
-                continue
+            with get_cache() as cache:
+                if i == 60 or i == 0:
+                    i = 0
+                    logger.info("Queue size: %d", len(cache.deque))
+                i += 1
+                logger.debug("Getting item from PR queue")
+                item = await cache.pull_pr()
+                if item is None:
+                    logger.debug("Queue empty")
+                    continue
 
-            logger.info("Processing %s", item.pr)
+                logger.info("Processing %s", item.pr)
 
-            async with installation_client(item.installation_id) as gh:
-                api = API(gh, item.installation_id)
-                await process_pull_request(item.pr, api)
+                if not config.DRY_RUN:
+                    async with installation_client(item.installation_id) as gh:
+                        api = API(gh, item.installation_id)
+                        await process_pull_request(item.pr, api)
 
         except (KeyboardInterrupt, asyncio.exceptions.CancelledError):
             raise
@@ -108,7 +110,8 @@ def queue_pr(repo: str, number: int, installation: int):
                 await gh.getitem(f"/repos/{repo}/pulls/{number}")
             )
 
-            # print("in_queue:", await cache.in_queue(pr))
-            await cache.push_pr(QueueItem(pr, installation))
+            with get_cache() as cache:
+                # print("in_queue:", await cache.in_queue(pr))
+                await cache.push_pr(QueueItem(pr, installation))
 
     asyncio.run(handle())

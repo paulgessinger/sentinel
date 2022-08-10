@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 import hmac
 import json
 import logging
@@ -10,7 +11,7 @@ import aiohttp
 from gidgethub import sansio
 from gidgethub.apps import get_installation_access_token, get_jwt
 from gidgethub import aiohttp as gh_aiohttp
-
+import humanize
 from sanic.log import logger
 import sanic.log
 import cachetools
@@ -74,8 +75,6 @@ def create_app():
     app.ctx.cache = cachetools.LRUCache(maxsize=500)
     app.ctx.github_router = create_router()
 
-    get_cache()
-
     @app.listener("before_server_start")
     async def init(app, loop):
         logger.debug("Creating aiohttp session")
@@ -88,8 +87,6 @@ def create_app():
         )
         app_info = await gh.getitem("/app", jwt=jwt)
         app.ctx.app_info = app_info
-
-        app.ctx.dcache = get_cache()
 
     @app.get("/")
     @app.ext.template("index.html.j2")
@@ -130,6 +127,29 @@ def create_app():
             logger.error("Exception raised when dispatching event", exc_info=True)
 
         return response.empty(200)
+
+    @app.route("/queue")
+    @app.ext.template("queue.html.j2")
+    async def queue(request):
+        with get_cache() as dcache:
+
+            cooldown = timedelta(seconds=config.PR_TIMEOUT)
+            data = []
+            for item in dcache.deque:
+                delta = None
+                last_dt = dcache.get(f"{dcache.pr_cooldown_key}_{item.pr.id}")
+                data.append(
+                    (
+                        item.pr,
+                        humanize.naturaltime(last_dt + cooldown)
+                        if last_dt is not None
+                        else None
+                        if delta is not None
+                        else None,
+                    )
+                )
+
+            return {"prs": data}
 
     # @app.route("/test/<installation_id>/<number>")
     # async def test(request, installation_id: int, number: int):
