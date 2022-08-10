@@ -2,8 +2,6 @@ import os
 import dotenv
 import logging
 
-from sentinel.github.model import Repository
-
 dotenv.load_dotenv()
 
 GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET")
@@ -27,3 +25,13 @@ OVERRIDE_CONFIG = os.environ.get("OVERRIDE_CONFIG")
 PROCESS_START_PAUSE = float(os.environ.get("PROCESS_START_PAUSE", 5))
 
 CHECK_RUN_NAME_FILTER = os.environ.get("CHECK_RUN_NAME_FILTER")
+
+DISKCACHE_DIR = os.environ["DISKCACHE_DIR"]
+
+PR_TIMEOUT = float(os.environ.get("PR_TIMEOUT", 10))
+
+WORKER_SLEEP = 1
+
+ACCESS_TOKEN_TTL = 300
+
+PRS_TTL = 60

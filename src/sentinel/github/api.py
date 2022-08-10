@@ -20,9 +20,11 @@ from sanic.log import logger
 
 class API:
     gh: GitHubAPI
+    installation: int
 
-    def __init__(self, gh: GitHubAPI):
+    def __init__(self, gh: GitHubAPI, installation: int):
         self.gh = gh
+        self.installation = installation
 
     async def post_check_run(self, repo_url: str, check_run: CheckRun) -> None:
         fields = {"name", "head_sha", "status", "started_at"}

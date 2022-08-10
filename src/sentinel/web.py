@@ -1,4 +1,5 @@
 import hmac
+import json
 import logging
 import logging.config
 import asyncio
@@ -16,9 +17,11 @@ import cachetools
 import notifiers.logging
 
 from sentinel import config
-from sentinel.github import create_router, process_pull_request
+from sentinel.github import create_router, get_access_token, process_pull_request
 from sentinel.github.api import API
-from sentinel.github.model import Repository
+from sentinel.github.model import PullRequest, Repository
+from sentinel.logger import get_log_handlers
+from sentinel.cache import Cache, QueueItem, get_cache
 
 # logger = logging.getLogger("merge-sentinel")
 
@@ -29,14 +32,15 @@ from sentinel.github.model import Repository
 
 async def client_for_installation(app, installation_id):
     gh_pre = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
-    access_token_response = await get_installation_access_token(
-        gh_pre,
-        installation_id=installation_id,
-        app_id=app.config.GITHUB_APP_ID,
-        private_key=app.config.GITHUB_PRIVATE_KEY,
-    )
+    # access_token_response = await get_installation_access_token(
+    #     gh_pre,
+    #     installation_id=installation_id,
+    #     app_id=app.config.GITHUB_APP_ID,
+    #     private_key=app.config.GITHUB_PRIVATE_KEY,
+    # )
 
-    token = access_token_response["token"]
+    # token = access_token_response["token"]
+    token = await get_access_token(gh_pre, installation_id)
 
     return gh_aiohttp.GitHubAPI(
         app.ctx.aiohttp_session,
@@ -44,6 +48,11 @@ async def client_for_installation(app, installation_id):
         oauth_token=token,
         cache=app.ctx.cache,
     )
+
+
+logging.basicConfig(
+    format="%(asctime)s %(name)s %(levelname)s - %(message)s", level=logging.INFO
+)
 
 
 def create_app():
@@ -54,18 +63,13 @@ def create_app():
     app.static("/static", Path(__file__).parent / "static")
 
     # print(config.OVERRIDE_LOGGING, logging.DEBUG)
-    sanic.log.logger.setLevel(config.OVERRIDE_LOGGING)
+    logging.getLogger().setLevel(config.OVERRIDE_LOGGING)
+    # sanic.log.logger.setLevel(logging.INFO)
 
-    handler = notifiers.logging.NotificationHandler(
-        "telegram",
-        defaults={
-            "token": config.TELEGRAM_TOKEN,
-            "chat_id": config.TELEGRAM_CHAT_ID,
-        },
-    )
-    handler.setLevel(logging.WARNING)
-    handler.setFormatter(logger.handlers[0].formatter)
-    logger.addHandler(handler)
+    sanic.log.logger.handlers = []
+
+    for handler in get_log_handlers(sanic.log.logger):
+        handler.addFormatter(logger.handlers[0].formatter)
 
     app.ctx.cache = cachetools.LRUCache(maxsize=500)
     app.ctx.github_router = create_router()
@@ -85,10 +89,7 @@ def create_app():
         app_info = await gh.getitem("/app", jwt=jwt)
         app.ctx.app_info = app_info
 
-        rate_limit = await gh.getitem("/rate_limit")
-
-        app.ctx.queue_lock = asyncio.Lock()
-        app.ctx.pull_request_queue = {}
+        app.ctx.dcache = get_cache()
 
     @app.get("/")
     @app.ext.template("index.html.j2")
@@ -120,7 +121,7 @@ def create_app():
 
         gh = await client_for_installation(app, installation_id)
 
-        api = API(gh)
+        api = API(gh, installation_id)
 
         logger.debug("Dispatching event %s", event.event)
         try:
@@ -130,16 +131,19 @@ def create_app():
 
         return response.empty(200)
 
-    @app.route("/test/<number>")
-    async def test(request, number: int):
-        installation_id = 28062916
+    @app.route("/test/<installation_id>/<number>")
+    async def test(request, installation_id: int, number: int):
         gh = await client_for_installation(app, installation_id)
-        api = API(gh)
+        api = API(gh, installation_id)
         repo_url = "https://api.github.com/repos/acts-project/acts"
-        pr = await api.get_pull(repo_url, number)
+        # pr = await api.get_pull(repo_url, number)
         # print(pr)
 
-        await process_pull_request(pr, api, app)
+        with open("pr1407.json") as fh:
+            pr = PullRequest.parse_obj(json.load(fh))
+
+        dcache: Cache = app.ctx.dcache
+        await dcache.push_pr(QueueItem(pr, api.installation))
 
         return response.empty(200)
 

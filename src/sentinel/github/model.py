@@ -83,6 +83,12 @@ class PullRequest(PartialPullRequest):
     base: PrConnection
     head: PrConnection
 
+    def __str__(self) -> str:
+        name = self.base.repo.name
+        if self.base.repo.full_name is not None:
+            name = self.base.repo.full_name
+        return f"PR({name}#{self.number}, {self.id})"
+
 
 class App(Model):
     id: int

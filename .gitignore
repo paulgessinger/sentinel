@@ -5,3 +5,7 @@ src/sentinel/.DS_Store
 .venv
 
 *.pyc
+
+cache
+
+settings.json

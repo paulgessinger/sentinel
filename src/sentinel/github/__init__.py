@@ -27,15 +27,19 @@ from sanic.log import logger
 from sanic import Sanic
 from gidgethub.abc import GitHubAPI
 from gidgethub.sansio import Event
+from gidgethub import aiohttp as gh_aiohttp
 from gidgethub import BadRequest
 import aiohttp
 import yaml
+from gidgethub.apps import get_installation_access_token, get_jwt
 import pydantic
 from tabulate import tabulate
 import humanize
 import pytz
+import diskcache
 
 from sentinel import config as app_config
+from sentinel.cache import Cache, QueueItem
 from sentinel.github.api import API
 from sentinel.github.model import (
     ActionsJob,
@@ -133,6 +137,20 @@ class InvalidConfig(Exception):
         self.raw_config = kwargs.pop("raw_config")
         self.source_url = kwargs.pop("source_url")
         super().__init__(*args, **kwargs)
+
+
+@aiocache.cached(ttl=app_config.ACCESS_TOKEN_TTL, key_builder=lambda fn, gh, id: id)
+async def get_access_token(gh: gh_aiohttp.GitHubAPI, installation_id: int) -> str:
+    logger.debug("Getting NEW installation access token for %d", installation_id)
+    access_token_response = await get_installation_access_token(
+        gh,
+        installation_id=installation_id,
+        app_id=app_config.GITHUB_APP_ID,
+        private_key=app_config.GITHUB_PRIVATE_KEY,
+    )
+
+    token = access_token_response["token"]
+    return token
 
 
 async def get_config_from_repo(api: API, repo: Repository) -> Optional[Config]:
@@ -538,7 +556,7 @@ def rule_apply_changed_files(
     return accepted
 
 
-async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
+async def process_pull_request(pr: PullRequest, api: API):
     logger.info("Begin handling PR %d (#%d), %s", pr.id, pr.number, pr.url)
     # get check runs for PR head_sha on base repo
     check_suites = [
@@ -641,51 +659,6 @@ async def process_pull_request(pr: PullRequest, api: API, app: Sanic):
     logger.info("Finished handling PR %d (#%d), %s", pr.id, pr.number, pr.url)
 
 
-async def pull_request_update_task(pr: PullRequest, api: API, app: Sanic):
-    try:
-        start = datetime.now()
-        logger.debug(
-            "Waiting %f.2s before beginning with PR %s",
-            app_config.PROCESS_START_PAUSE,
-            pr.url,
-        )
-        await asyncio.sleep(app_config.PROCESS_START_PAUSE)
-        await asyncio.sleep(
-            0.1
-        )  # I think this is needed to allow cancellation in between
-        await asyncio.shield(process_pull_request(pr, api, app))
-        duration = (datetime.now() - start).total_seconds()
-        # print(app_config.MAX_PR_FREQUENCY)
-        min_duration = 1.0 / app_config.MAX_PR_FREQUENCY
-        if duration < min_duration:
-            logger.debug(
-                "Update duration %.2f shorter than min duration %.2f, sleeping for %.2f",
-                duration,
-                min_duration,
-                min_duration - duration,
-            )
-            await asyncio.shield(asyncio.sleep(min_duration - duration))
-    except asyncio.CancelledError:
-        logger.info("Task cancelled for PR %d", pr.number)
-    except:
-        logger.error("Exception raised when processing pull request", exc_info=True)
-        raise
-    finally:
-        async with app.ctx.queue_lock:
-            app.ctx.pull_request_queue.pop(pr.id, None)
-
-
-async def enqueue_pull_request(pr: PullRequest, api: API, app: Sanic):
-    async with app.ctx.queue_lock:
-        if task := app.ctx.pull_request_queue.pop(pr.id, None):
-            logger.info("Pull request id %s is already updating, cancelling", pr.id)
-            task.cancel()
-        logger.info("Queuing pull request id %s", pr.id)
-        app.ctx.pull_request_queue[pr.id] = app.add_task(
-            pull_request_update_task(pr, api, app)
-        )
-
-
 async def validate_source_repo(api: API, repo: Repository, pr: PullRequest) -> bool:
     if repo.private:
         if app_config.REPO_ALLOWLIST is not None:
@@ -709,22 +682,6 @@ async def validate_source_repo(api: API, repo: Repository, pr: PullRequest) -> b
     return True
 
 
-check_run_limiter = AsyncLimiter(60)
-# pr_cache = aiocache.Cache()
-
-
-def _key_builder(fn, api, repo_url):
-    # print(fn, args, kwargs)
-    return repo_url
-
-
-@aiocache.cached(ttl=120, key_builder=_key_builder)
-async def get_pull_requests(api: API, repo_url: str) -> List[PullRequest]:
-    logger.info("Getting all PRs for repo %s", repo_url)
-    result = [pr async for pr in api.get_pulls(repo_url)]
-    return result
-
-
 def create_router():
     router = Router()
 
@@ -746,7 +703,8 @@ def create_router():
         if action not in ("synchronize", "opened", "reopened"):
             return
 
-        await enqueue_pull_request(pr, api, app)
+        dcache: Cache = app.ctx.dcache
+        await dcache.push_pr(QueueItem(pr, api.installation))
 
     @router.register("check_run")
     async def on_check_run(event: Event, api: API, app: Sanic):
@@ -767,14 +725,19 @@ def create_router():
 
         repo = Repository.parse_obj(event.data["repository"])
 
-        async with check_run_limiter:
-            # async for pr in api.get_pulls(repo.url):
-            for pr in await get_pull_requests(api, repo.url):
-                if check_run.head_sha == pr.head.sha:
-                    logger.info(
-                        "- Triggering check run %s on PR %s", check_run.name, pr.url
-                    )
-                    await enqueue_pull_request(pr, api, app)
-                    break
+        dcache: Cache = app.ctx.dcache
+        prs = None
+        async with dcache.lock:
+            if hit := dcache.get(f"cached_prs_repo_{repo.id}"):
+                prs = hit
+            if prs is None:
+                logger.info("Getting all PRs for repo %s", repo.url)
+                prs = [pr async for pr in api.get_pulls(repo.url)]
+                dcache.set(f"cached_prs_repo_{repo.id}", prs, expire=app_config.PRS_TTL)
+
+        for pr in prs:
+            if check_run.head_sha == pr.head.sha:
+                logger.info("- Check run %s triggers pushing %s", check_run.name, pr)
+                await dcache.push_pr(QueueItem(pr, api.installation))
 
     return router
