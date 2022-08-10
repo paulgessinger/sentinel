@@ -726,11 +726,10 @@ def create_router():
         repo = Repository.parse_obj(event.data["repository"])
 
         dcache: Cache = app.ctx.dcache
-        prs = None
         async with dcache.lock:
             if hit := dcache.get(f"cached_prs_repo_{repo.id}"):
                 prs = hit
-            if prs is None:
+            else:
                 logger.info("Getting all PRs for repo %s", repo.url)
                 prs = [pr async for pr in api.get_pulls(repo.url)]
                 dcache.set(f"cached_prs_repo_{repo.id}", prs, expire=app_config.PRS_TTL)
