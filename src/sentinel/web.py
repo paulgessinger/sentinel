@@ -149,7 +149,8 @@ def create_app():
                     )
                 )
 
-            return {"prs": data}
+            print(request.args.get("inner"))
+            return {"app": app, "prs": data, "inner": request.args.get("inner")}
 
     # @app.route("/test/<repo>/<installation_id>/<number>")
     # async def test(request, repo: str, installation_id: int, number: int):
