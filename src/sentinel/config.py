@@ -15,8 +15,6 @@ if REPO_ALLOWLIST is not None:
     REPO_ALLOWLIST = REPO_ALLOWLIST.split(",")
 
 
-MAX_PR_FREQUENCY = float(os.environ.get("MAX_PR_FREQUENCY", 1 / 10.0))
-
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -30,8 +28,8 @@ DISKCACHE_DIR = os.environ["DISKCACHE_DIR"]
 
 PR_TIMEOUT = float(os.environ.get("PR_TIMEOUT", 10))
 
-WORKER_SLEEP = 1
+WORKER_SLEEP = float(os.environ.get("WORKER_SLEEP"), 1)
 
-ACCESS_TOKEN_TTL = 300
+ACCESS_TOKEN_TTL = float(os.environ.get("ACCESS_TOKEN_TTL", 300))
 
-PRS_TTL = 60
+PRS_TTL = float(os.environ.get("PRS_TTL", 60))

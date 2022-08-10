@@ -74,8 +74,6 @@ def create_app():
     app.ctx.cache = cachetools.LRUCache(maxsize=500)
     app.ctx.github_router = create_router()
 
-    logger.info("min_duration: %.2f", 1.0 / config.MAX_PR_FREQUENCY)
-
     @app.listener("before_server_start")
     async def init(app, loop):
         logger.debug("Creating aiohttp session")
