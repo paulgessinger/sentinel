@@ -28,7 +28,7 @@ DISKCACHE_DIR = os.environ["DISKCACHE_DIR"]
 
 PR_TIMEOUT = float(os.environ.get("PR_TIMEOUT", 10))
 
-WORKER_SLEEP = float(os.environ.get("WORKER_SLEEP"), 1)
+WORKER_SLEEP = float(os.environ.get("WORKER_SLEEP", 1))
 
 ACCESS_TOKEN_TTL = float(os.environ.get("ACCESS_TOKEN_TTL", 300))
 
