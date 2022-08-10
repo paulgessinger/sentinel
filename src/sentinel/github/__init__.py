@@ -241,14 +241,14 @@ async def populate_check_run(
     for cr in list(check_runs):
         if job := actions_jobs.get(cr.id):
             run = actions_runs[job.run_id]
-            # if run.event not in ("pull_request", "pull_request_target"):
-            #     logger.debug(
-            #         "Removing check run %d %s due to trigger event %s",
-            #         cr.id,
-            #         cr.name,
-            #         run.event,
-            #     )
-            #     check_runs.remove(cr)
+            if run.event not in ("pull_request", "pull_request_target"):
+                logger.debug(
+                    "Removing check run %d %s due to trigger event %s",
+                    cr.id,
+                    cr.name,
+                    run.event,
+                )
+                check_runs.remove(cr)
 
     check_runs_filtered: Dict[str, CheckRun] = {}
     for cr in check_runs:
