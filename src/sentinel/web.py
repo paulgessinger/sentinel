@@ -69,7 +69,7 @@ def create_app():
     sanic.log.logger.handlers = []
 
     for handler in get_log_handlers(sanic.log.logger):
-        handler.addFormatter(logger.handlers[0].formatter)
+        handler.setFormatter(logger.handlers[0].formatter)
 
     app.ctx.cache = cachetools.LRUCache(maxsize=500)
     app.ctx.github_router = create_router()
