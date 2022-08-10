@@ -18,6 +18,7 @@ import cachetools
 import notifiers.logging
 
 from sentinel import config
+from sentinel.cli import installation_client
 from sentinel.github import create_router, get_access_token, process_pull_request
 from sentinel.github.api import API
 from sentinel.github.model import PullRequest, Repository
@@ -151,20 +152,17 @@ def create_app():
 
             return {"prs": data}
 
-    # @app.route("/test/<installation_id>/<number>")
-    # async def test(request, installation_id: int, number: int):
-    #     gh = await client_for_installation(app, installation_id)
-    #     api = API(gh, installation_id)
-    #     repo_url = "https://api.github.com/repos/acts-project/acts"
-    #     # pr = await api.get_pull(repo_url, number)
-    #     # print(pr)
+    @app.route("/test/<repo>/<installation_id>/<number>")
+    async def test(request, repo: str, installation_id: int, number: int):
+        async with installation_client(installation_id) as gh:
 
-    #     with open("pr1407.json") as fh:
-    #         pr = PullRequest.parse_obj(json.load(fh))
+            pr = PullRequest.parse_obj(
+                await gh.getitem(f"/repos/{repo.replace('__', '/')}/pulls/{number}")
+            )
 
-    #     dcache: Cache = app.ctx.dcache
-    #     await dcache.push_pr(QueueItem(pr, api.installation))
-
-    #     return response.empty(200)
+            with get_cache() as cache:
+                # print("in_queue:", await cache.in_queue(pr))
+                await cache.push_pr(QueueItem(pr, installation_id))
+        return response.empty(200)
 
     return app
