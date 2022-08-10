@@ -39,9 +39,10 @@ class Cache(diskcache.Cache):
                 logger.info("%s already in queue, skipping", item.pr)
                 return
 
-            prs = self.get(self.pr_key, set())
-            prs.add(item.pr.id)
-            self.set(self.pr_key, prs)
+            with self.transact():
+                prs = self.get(self.pr_key, set())
+                prs.add(item.pr.id)
+                self.set(self.pr_key, prs)
 
             self.set(
                 f"{self.pr_cooldown_key}_{item.pr.id}",
