@@ -416,11 +416,11 @@ async def populate_check_run(
         if ri.status == ResultStatus.neutral:
             duration = ""
         is_required = "yes" if ri.required else "no"
-        rows.append((icon, f"{ri}", status, duration, is_required))
+        rows.append((icon, f"{ri}", status, is_required))
 
     text += tabulate(
         rows,
-        headers=("", "Check", "Status", "Duration", "Required?"),
+        headers=("", "Check", "Status", "Required?"),
         tablefmt="github",
     )
 
