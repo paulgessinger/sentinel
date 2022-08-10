@@ -131,20 +131,20 @@ def create_app():
 
         return response.empty(200)
 
-    @app.route("/test/<installation_id>/<number>")
-    async def test(request, installation_id: int, number: int):
-        gh = await client_for_installation(app, installation_id)
-        api = API(gh, installation_id)
-        repo_url = "https://api.github.com/repos/acts-project/acts"
-        # pr = await api.get_pull(repo_url, number)
-        # print(pr)
+    # @app.route("/test/<installation_id>/<number>")
+    # async def test(request, installation_id: int, number: int):
+    #     gh = await client_for_installation(app, installation_id)
+    #     api = API(gh, installation_id)
+    #     repo_url = "https://api.github.com/repos/acts-project/acts"
+    #     # pr = await api.get_pull(repo_url, number)
+    #     # print(pr)
 
-        with open("pr1407.json") as fh:
-            pr = PullRequest.parse_obj(json.load(fh))
+    #     with open("pr1407.json") as fh:
+    #         pr = PullRequest.parse_obj(json.load(fh))
 
-        dcache: Cache = app.ctx.dcache
-        await dcache.push_pr(QueueItem(pr, api.installation))
+    #     dcache: Cache = app.ctx.dcache
+    #     await dcache.push_pr(QueueItem(pr, api.installation))
 
-        return response.empty(200)
+    #     return response.empty(200)
 
     return app

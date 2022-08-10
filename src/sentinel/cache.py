@@ -30,15 +30,14 @@ class Cache(diskcache.Cache):
         self.lock = asyncio.Lock()
         self.deque = diskcache.Deque(directory=self.directory + "/dequeue")
 
-    async def in_queue(self, pr: PullRequest) -> bool:
-        async with self.lock:
-            return pr.id in self.get(f"{self.pr_key}", set())
+    def in_queue(self, pr: PullRequest) -> bool:
+        return pr.id in self.get(f"{self.pr_key}", set())
 
     async def push_pr(self, item: QueueItem) -> None:
-        if await self.in_queue(item.pr):
-            logger.info("%s already in queue, skipping", item.pr)
-            return
         async with self.lock:
+            if self.in_queue(item.pr):
+                logger.info("%s already in queue, skipping", item.pr)
+                return
             prs = self.get(self.pr_key, set())
             prs.add(item.pr.id)
             self.set(self.pr_key, prs)
