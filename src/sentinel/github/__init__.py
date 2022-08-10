@@ -743,4 +743,34 @@ def create_router():
                     )
                     await dcache.push_pr(QueueItem(pr, api.installation))
 
+    @router.register("status")
+    async def on_status(event: Event, api: API, app: Sanic):
+        status = CommitStatus.parse_obj(event.data)
+        if app_config.CHECK_RUN_NAME_FILTER is not None:
+            if re.match(app_config.CHECK_RUN_NAME_FILTER, status.context):
+                logger.debug(
+                    "Skipping status '%s' due to filter '%s'",
+                    status.context,
+                    app_config.CHECK_RUN_NAME_FILTER,
+                )
+                return
+
+        repo = Repository.parse_obj(event.data["repository"])
+
+        with get_cache() as dcache:
+            async with dcache.lock:
+                if hit := dcache.get(f"cached_prs_repo_{repo.id}"):
+                    prs = hit
+                else:
+                    logger.info("Getting all PRs for repo %s", repo.url)
+                    prs = [pr async for pr in api.get_pulls(repo.url)]
+                    dcache.set(
+                        f"cached_prs_repo_{repo.id}", prs, expire=app_config.PRS_TTL
+                    )
+
+            for pr in prs:
+                if status.sha == pr.head.sha:
+                    logger.info("- Status %s triggers pushing %s", status.context, pr)
+                    await dcache.push_pr(QueueItem(pr, api.installation))
+
     return router
