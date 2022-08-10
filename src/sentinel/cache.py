@@ -76,10 +76,11 @@ class Cache(diskcache.Cache):
                 else:
                     logger.debug("%s is good, returning", candidate.pr)
                     # good, remove from set, return
-                    prs: Set[int] = self.get(self.pr_key, set())
-                    if candidate.pr.id in prs:
-                        prs.remove(candidate.pr.id)
-                    self.set(self.pr_key, prs)
+                    with self.transact():
+                        prs: Set[int] = self.get(self.pr_key, set())
+                        if candidate.pr.id in prs:
+                            prs.remove(candidate.pr.id)
+                        self.set(self.pr_key, prs)
 
                     return candidate
 
