@@ -89,4 +89,5 @@ class Cache(diskcache.Cache):
 
 
 def get_cache():
+    logger.info("Opening cache dir: %s", config.DISKCACHE_DIR)
     return Cache(config.DISKCACHE_DIR)
