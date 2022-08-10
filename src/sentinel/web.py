@@ -18,7 +18,6 @@ import cachetools
 import notifiers.logging
 
 from sentinel import config
-from sentinel.cli import installation_client
 from sentinel.github import create_router, get_access_token, process_pull_request
 from sentinel.github.api import API
 from sentinel.github.model import PullRequest, Repository
@@ -152,17 +151,17 @@ def create_app():
 
             return {"prs": data}
 
-    @app.route("/test/<repo>/<installation_id>/<number>")
-    async def test(request, repo: str, installation_id: int, number: int):
-        async with installation_client(installation_id) as gh:
+    # @app.route("/test/<repo>/<installation_id>/<number>")
+    # async def test(request, repo: str, installation_id: int, number: int):
+    #     async with installation_client(installation_id) as gh:
 
-            pr = PullRequest.parse_obj(
-                await gh.getitem(f"/repos/{repo.replace('__', '/')}/pulls/{number}")
-            )
+    #         pr = PullRequest.parse_obj(
+    #             await gh.getitem(f"/repos/{repo.replace('__', '/')}/pulls/{number}")
+    #         )
 
-            with get_cache() as cache:
-                # print("in_queue:", await cache.in_queue(pr))
-                await cache.push_pr(QueueItem(pr, installation_id))
-        return response.empty(200)
+    #         with get_cache() as cache:
+    #             # print("in_queue:", await cache.in_queue(pr))
+    #             await cache.push_pr(QueueItem(pr, installation_id))
+    #     return response.empty(200)
 
     return app

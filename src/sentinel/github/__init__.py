@@ -241,14 +241,14 @@ async def populate_check_run(
     for cr in list(check_runs):
         if job := actions_jobs.get(cr.id):
             run = actions_runs[job.run_id]
-            if run.event not in ("pull_request", "pull_request_target"):
-                logger.debug(
-                    "Removing check run %d %s due to trigger event %s",
-                    cr.id,
-                    cr.name,
-                    run.event,
-                )
-                check_runs.remove(cr)
+            # if run.event not in ("pull_request", "pull_request_target"):
+            #     logger.debug(
+            #         "Removing check run %d %s due to trigger event %s",
+            #         cr.id,
+            #         cr.name,
+            #         run.event,
+            #     )
+            #     check_runs.remove(cr)
 
     check_runs_filtered: Dict[str, CheckRun] = {}
     for cr in check_runs:
@@ -582,7 +582,7 @@ async def process_pull_request(pr: PullRequest, api: API):
         sum(await asyncio.gather(*(load_check_runs(cs) for cs in check_suites)), [])
     )
 
-    logger.debug("All check runs:")
+    logger.debug("All check runs (%d):", len(all_check_runs))
     if logger.getEffectiveLevel() == logging.DEBUG:
         for cr in all_check_runs:
             logger.debug(
@@ -590,7 +590,7 @@ async def process_pull_request(pr: PullRequest, api: API):
                 cr.id,
                 cr.completed_at,
                 cr.name,
-                cr.pull_requests,
+                [i.id for i in cr.pull_requests],
             )
 
     # all_check_runs = {
