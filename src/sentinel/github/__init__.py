@@ -557,7 +557,7 @@ def rule_apply_changed_files(
 
 
 async def process_pull_request(pr: PullRequest, api: API):
-    logger.info("Begin handling PR %d (#%d), %s", pr.id, pr.number, pr.url)
+    logger.info("Begin handling %s", pr)
     # get check runs for PR head_sha on base repo
     check_suites = [
         cs async for cs in api.get_check_suites_for_ref(pr.base.repo, pr.head.sha)
@@ -656,7 +656,7 @@ async def process_pull_request(pr: PullRequest, api: API):
     logger.debug("Posting check run for PR %d (#%d)", pr.id, pr.number)
     await api.post_check_run(pr.base.repo.url, check_run)
 
-    logger.info("Finished handling PR %d (#%d), %s", pr.id, pr.number, pr.url)
+    logger.info("Finished handling %s", pr)
 
 
 async def validate_source_repo(api: API, repo: Repository, pr: PullRequest) -> bool:
