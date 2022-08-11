@@ -15,3 +15,7 @@ webhook_skipped_counter = Counter(
 
 
 queue_size = Gauge("sentinel_queue_size", "Size of the PR queue")
+
+error_counter = Counter(
+    "sentinel_error_counter", "Total number of errors", labelnames=["context"]
+)

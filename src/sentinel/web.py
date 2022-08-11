@@ -25,7 +25,7 @@ from sentinel.github.api import API
 from sentinel.github.model import PullRequest, Repository
 from sentinel.logger import get_log_handlers
 from sentinel.cache import Cache, QueueItem, get_cache
-from sentinel.metric import request_counter, webhook_counter, queue_size
+from sentinel.metric import request_counter, webhook_counter, queue_size, error_counter
 
 
 async def client_for_installation(app, installation_id):
@@ -131,6 +131,7 @@ def create_app():
         try:
             await app.ctx.github_router.dispatch(event, api, app=app)
         except:
+            error_counter.labels(context="event_dispatch").inc()
             logger.error("Exception raised when dispatching event", exc_info=True)
 
         return response.empty(200)

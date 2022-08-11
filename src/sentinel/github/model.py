@@ -240,7 +240,7 @@ class ActionsRun(Model):
 
 
 class CommitStatus(Model):
-    url: str
+    url: Optional[str]
     id: int
     state: Literal["failure", "pending", "success"]
     created_at: datetime

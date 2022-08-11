@@ -122,7 +122,7 @@ class ResultItem:
             raise ValueError(f"Invalid commit status state {cs.state}")
         return ResultItem(
             name=cs.context,
-            url=cs.state,
+            url=cs.url,
             status=status,
             started_at=started_at,
             completed_at=completed_at,
