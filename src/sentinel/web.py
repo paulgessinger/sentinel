@@ -6,7 +6,7 @@ import logging.config
 import asyncio
 from pathlib import Path
 
-from sanic import Sanic, response
+from sanic import Sanic, response, Request
 import aiohttp
 from gidgethub import sansio
 from gidgethub.apps import get_installation_access_token, get_jwt
@@ -16,6 +16,8 @@ from sanic.log import logger
 import sanic.log
 import cachetools
 import notifiers.logging
+from prometheus_client import core
+from prometheus_client.exposition import generate_latest
 
 from sentinel import config
 from sentinel.github import create_router, get_access_token, process_pull_request
@@ -23,12 +25,7 @@ from sentinel.github.api import API
 from sentinel.github.model import PullRequest, Repository
 from sentinel.logger import get_log_handlers
 from sentinel.cache import Cache, QueueItem, get_cache
-
-# logger = logging.getLogger("merge-sentinel")
-
-# logging.basicConfig(
-#     level=config.OVERRIDE_LOGGING, format="%(levelname)s %(name)s %(message)s"
-# )
+from sentinel.metric import request_counter, webhook_counter, queue_size
 
 
 async def client_for_installation(app, installation_id):
@@ -75,6 +72,8 @@ def create_app():
     app.ctx.cache = cachetools.LRUCache(maxsize=500)
     app.ctx.github_router = create_router()
 
+    # app.register_middleware(make_asgi_app())
+
     @app.listener("before_server_start")
     async def init(app, loop):
         logger.debug("Creating aiohttp session")
@@ -87,6 +86,12 @@ def create_app():
         )
         app_info = await gh.getitem("/app", jwt=jwt)
         app.ctx.app_info = app_info
+
+    @app.on_request
+    async def on_request(request: Request):
+        if request.path == "/metrics":
+            return
+        request_counter.labels(path=request.path).inc()
 
     @app.get("/")
     @app.ext.template("index.html.j2")
@@ -106,7 +111,9 @@ def create_app():
             request.headers, request.body, secret=app.config.GITHUB_WEBHOOK_SECRET
         )
 
-        if event.event not in ("check_run", "pull_request"):
+        webhook_counter.labels(event=event.event).inc()
+
+        if event.event not in ("check_run", "status", "pull_request"):
             return response.empty(200)
 
         assert "installation" in event.data
@@ -151,6 +158,19 @@ def create_app():
 
             print(request.args.get("inner"))
             return {"app": app, "prs": data, "inner": request.args.get("inner")}
+
+    @app.get("/metrics")
+    def metrics(request):
+        with get_cache() as dcache:
+            queue_size.set(len(dcache.deque))
+        # if not self._multiprocess_on:
+        registry = core.REGISTRY
+        # else:
+        #     registry = CollectorRegistry()
+        #     multiprocess.MultiProcessCollector(registry)
+        data = generate_latest(registry)
+        print(data)
+        return response.raw(data)
 
     # @app.route("/test/<repo>/<installation_id>/<number>")
     # async def test(request, repo: str, installation_id: int, number: int):

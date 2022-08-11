@@ -52,6 +52,7 @@ from sentinel.github.model import (
     Repository,
 )
 from sentinel.model import Config, Rule
+from sentinel.metric import webhook_skipped_counter
 
 
 class ResultStatus(Enum):
@@ -712,6 +713,7 @@ def create_router():
 
         if check_run.app.id == app_config.GITHUB_APP_ID:
             logger.debug("Check run from us, skip handling")
+            webhook_skipped_counter.labels(name=check_run.name, event="check_run").inc()
             return
 
         if app_config.CHECK_RUN_NAME_FILTER is not None:
@@ -721,6 +723,9 @@ def create_router():
                     check_run.name,
                     app_config.CHECK_RUN_NAME_FILTER,
                 )
+                webhook_skipped_counter.labels(
+                    name=check_run.name, event="check_run"
+                ).inc()
                 return
 
         repo = Repository.parse_obj(event.data["repository"])
@@ -753,6 +758,9 @@ def create_router():
                     status.context,
                     app_config.CHECK_RUN_NAME_FILTER,
                 )
+                webhook_skipped_counter.labels(
+                    name=status.context, event="status"
+                ).inc()
                 return
 
         repo = Repository.parse_obj(event.data["repository"])
