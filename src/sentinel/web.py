@@ -25,7 +25,13 @@ from sentinel.github.api import API
 from sentinel.github.model import PullRequest, Repository
 from sentinel.logger import get_log_handlers
 from sentinel.cache import Cache, QueueItem, get_cache
-from sentinel.metric import request_counter, webhook_counter, queue_size, error_counter
+from sentinel.metric import (
+    request_counter,
+    webhook_counter,
+    queue_size,
+    error_counter,
+    api_call_count,
+)
 
 
 async def client_for_installation(app, installation_id):
@@ -161,9 +167,12 @@ def create_app():
             return {"app": app, "prs": data, "inner": request.args.get("inner")}
 
     @app.get("/metrics")
-    def metrics(request):
+    async def metrics(request):
         with get_cache() as dcache:
-            queue_size.set(len(dcache.deque))
+            async with dcache.lock:
+                queue_size.set(len(dcache.deque))
+                api_call_count._value.set(dcache.get("num_api_requests"))
+
         # if not self._multiprocess_on:
         registry = core.REGISTRY
         # else:

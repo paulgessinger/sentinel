@@ -215,6 +215,7 @@ async def populate_check_run(
             *(api.gh.getitem(url) for url in {j.run_url for j in actions_jobs.values()})
         )
     }
+    api.call_count += len(actions_jobs.values())
 
     active_actions_runs: Dict[int, ActionsRun] = {}
 
@@ -570,6 +571,7 @@ async def process_pull_request(pr: PullRequest, api: API):
             logger.debug("- %d", cs.id)
 
     async def load_check_runs(cs: CheckSuite) -> AsyncIterator[CheckRun]:
+        api.call_count += 1
         check_runs = [
             CheckRun.parse_obj(raw)
             async for raw in api.gh.getiter(
@@ -657,7 +659,7 @@ async def process_pull_request(pr: PullRequest, api: API):
     logger.debug("Posting check run for PR %d (#%d)", pr.id, pr.number)
     await api.post_check_run(pr.base.repo.url, check_run)
 
-    logger.info("Finished handling %s", pr)
+    logger.info("Finished handling %s, API calls: %d", pr, api.call_count)
 
 
 async def validate_source_repo(api: API, repo: Repository, pr: PullRequest) -> bool:

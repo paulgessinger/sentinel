@@ -19,3 +19,6 @@ queue_size = Gauge("sentinel_queue_size", "Size of the PR queue")
 error_counter = Counter(
     "sentinel_error_counter", "Total number of errors", labelnames=["context"]
 )
+
+
+api_call_count = Counter("sentinel_num_api_calls", "Total number of GitHub API calls")

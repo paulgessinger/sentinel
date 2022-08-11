@@ -11,7 +11,7 @@ from sentinel.github import get_access_token, process_pull_request, API
 
 from sentinel.logger import get_log_handlers
 from sentinel import config
-from sentinel.cache import QueueItem, get_cache
+from sentinel.cache import Cache, QueueItem, get_cache
 from sentinel.web import client_for_installation
 from sentinel.github.model import PullRequest
 
@@ -28,6 +28,8 @@ async def job_loop():
     logger.info("Entering job loop")
     i = 0
     while True:
+
+        call_count = 0
 
         try:
             logger.debug("Sleeping for %d", config.WORKER_SLEEP)
@@ -49,13 +51,23 @@ async def job_loop():
                 if not config.DRY_RUN:
                     async with installation_client(item.installation_id) as gh:
                         api = API(gh, item.installation_id)
-                        await process_pull_request(item.pr, api)
+                        try:
+                            await process_pull_request(item.pr, api)
+                        except:
+                            raise
+                        finally:
+                            call_count = api.call_count
 
         except (KeyboardInterrupt, asyncio.exceptions.CancelledError):
             raise
         except:
             logger.error("Job loop encountered error", exc_info=True)
             pass
+        finally:
+            dcache: Cache
+            with get_cache() as dcache:
+                async with dcache.lock:
+                    dcache.incr("num_api_requests", call_count)
 
 
 app = typer.Typer()
