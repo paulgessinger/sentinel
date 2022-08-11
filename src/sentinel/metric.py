@@ -15,5 +15,3 @@ webhook_skipped_counter = Counter(
 
 
 queue_size = Gauge("sentinel_queue_size", "Size of the PR queue")
-
-webhook_skipped_counter.labels(event="manual", name="blub").inc()
