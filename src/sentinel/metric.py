@@ -19,6 +19,12 @@ pr_update_trigger_counter = Counter(
     labelnames=["event", "name"],
 )
 
+pr_update_accept_counter = Counter(
+    "sentinel_num_pr_update_accepted",
+    "Number of PR updates accepted into queue",
+    labelnames=["event", "name"],
+)
+
 queue_size = Gauge("sentinel_queue_size", "Size of the PR queue")
 
 error_counter = Counter(

@@ -52,7 +52,11 @@ from sentinel.github.model import (
     Repository,
 )
 from sentinel.model import Config, Rule
-from sentinel.metric import webhook_skipped_counter, pr_update_trigger_counter
+from sentinel.metric import (
+    webhook_skipped_counter,
+    pr_update_trigger_counter,
+    pr_update_accept_counter,
+)
 
 
 class ResultStatus(Enum):
@@ -707,10 +711,9 @@ def create_router():
             return
 
         with get_cache() as dcache:
+            pr_update_trigger_counter.labels(event="pull_request", name=action).inc()
             if await dcache.push_pr(QueueItem(pr, api.installation)):
-                pr_update_trigger_counter.labels(
-                    event="pull_request", name=action
-                ).inc()
+                pr_update_accept_counter.labels(event="pull_request", name=action).inc()
 
     @router.register("check_run")
     async def on_check_run(event: Event, api: API, app: Sanic):
@@ -751,8 +754,11 @@ def create_router():
                     logger.info(
                         "- Check run %s triggers pushing %s", check_run.name, pr
                     )
+                    pr_update_trigger_counter.labels(
+                        event="check_run", name=check_run.name
+                    ).inc()
                     if await dcache.push_pr(QueueItem(pr, api.installation)):
-                        pr_update_trigger_counter.labels(
+                        pr_update_accept_counter.labels(
                             event="check_run", name=check_run.name
                         ).inc()
 
@@ -787,8 +793,11 @@ def create_router():
             for pr in prs:
                 if status.sha == pr.head.sha:
                     logger.info("- Status %s triggers pushing %s", status.context, pr)
+                    pr_update_trigger_counter.labels(
+                        event="status", name=status.context
+                    ).inc()
                     if await dcache.push_pr(QueueItem(pr, api.installation)):
-                        pr_update_trigger_counter.labels(
+                        pr_update_accept_counter.labels(
                             event="status", name=status.context
                         ).inc()
 
