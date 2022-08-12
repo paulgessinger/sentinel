@@ -5,7 +5,7 @@ request_counter = Counter(
     "sentinel_num_req", "Total number of requests", labelnames=["path"]
 )
 webhook_counter = Counter(
-    "sentinel_num_webhook", "Total number of webhook", labelnames=["event"]
+    "sentinel_num_webhook", "Total number of webhook", labelnames=["event", "name"]
 )
 webhook_skipped_counter = Counter(
     "sentinel_num_webhook_skipped",

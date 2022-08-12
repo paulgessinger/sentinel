@@ -33,11 +33,11 @@ class Cache(diskcache.Cache):
     def in_queue(self, pr: PullRequest) -> bool:
         return pr.id in self.get(f"{self.pr_key}", set())
 
-    async def push_pr(self, item: QueueItem) -> None:
+    async def push_pr(self, item: QueueItem) -> bool:
         async with self.lock:
             if self.in_queue(item.pr):
                 logger.info("%s already in queue, skipping", item.pr)
-                return
+                return False
 
             with self.transact():
                 prs = self.get(self.pr_key, set())
@@ -52,6 +52,7 @@ class Cache(diskcache.Cache):
             # self.push(item, prefix=self.queue_key)
             self.deque.append(item)
             logger.info("Pushing %s", item.pr)
+            return True
 
     async def pull_pr(self) -> Optional[QueueItem]:
         async with self.lock:

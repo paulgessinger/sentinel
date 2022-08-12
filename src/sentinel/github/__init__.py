@@ -707,9 +707,10 @@ def create_router():
             return
 
         with get_cache() as dcache:
-            await dcache.push_pr(QueueItem(pr, api.installation))
-
-        pr_update_trigger_counter.labels(event="pull_request", name=action).inc()
+            if await dcache.push_pr(QueueItem(pr, api.installation)):
+                pr_update_trigger_counter.labels(
+                    event="pull_request", name=action
+                ).inc()
 
     @router.register("check_run")
     async def on_check_run(event: Event, api: API, app: Sanic):
@@ -750,10 +751,10 @@ def create_router():
                     logger.info(
                         "- Check run %s triggers pushing %s", check_run.name, pr
                     )
-                    pr_update_trigger_counter.labels(
-                        event="check_run", name=check_run.name
-                    ).inc()
-                    await dcache.push_pr(QueueItem(pr, api.installation))
+                    if await dcache.push_pr(QueueItem(pr, api.installation)):
+                        pr_update_trigger_counter.labels(
+                            event="check_run", name=check_run.name
+                        ).inc()
 
     @router.register("status")
     async def on_status(event: Event, api: API, app: Sanic):
@@ -786,9 +787,9 @@ def create_router():
             for pr in prs:
                 if status.sha == pr.head.sha:
                     logger.info("- Status %s triggers pushing %s", status.context, pr)
-                    pr_update_trigger_counter.labels(
-                        event="status", name=status.context
-                    ).inc()
-                    await dcache.push_pr(QueueItem(pr, api.installation))
+                    if await dcache.push_pr(QueueItem(pr, api.installation)):
+                        pr_update_trigger_counter.labels(
+                            event="status", name=status.context
+                        ).inc()
 
     return router

@@ -117,7 +117,16 @@ def create_app():
             request.headers, request.body, secret=app.config.GITHUB_WEBHOOK_SECRET
         )
 
-        webhook_counter.labels(event=event.event).inc()
+        name = "unknown"
+
+        if event.event == "check_run":
+            name = event.data["check_run"]["name"]
+        elif event.event == "status":
+            name = event.data["context"]
+        elif event.event == "pull_request":
+            name = event.data["action"]
+
+        webhook_counter.labels(event=event.event, name=name).inc()
 
         if event.event not in ("check_run", "status", "pull_request"):
             return response.empty(200)
