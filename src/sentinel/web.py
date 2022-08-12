@@ -188,8 +188,8 @@ def create_app():
         #     registry = CollectorRegistry()
         #     multiprocess.MultiProcessCollector(registry)
         data = generate_latest(registry)
-        print(data)
-        return response.raw(data)
+        # print(data)
+        return response.text(data.decode("utf-8"))
 
     # @app.route("/test/<repo>/<installation_id>/<number>")
     # async def test(request, repo: str, installation_id: int, number: int):
