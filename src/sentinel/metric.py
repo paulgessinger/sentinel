@@ -13,6 +13,11 @@ webhook_skipped_counter = Counter(
     labelnames=["event", "name"],
 )
 
+pr_update_trigger_counter = Counter(
+    "sentinel_num_pr_update_triggered",
+    "Number of PR updates triggered",
+    labelnames=["event", "name"],
+)
 
 queue_size = Gauge("sentinel_queue_size", "Size of the PR queue")
 
