@@ -685,6 +685,9 @@ async def process_pull_request(pr: PullRequest, api: API):
     for key, pred in diffs.items():
         if pred(orig_check_run) != pred(check_run):
             diff = key
+            logger.info(
+                "difference [%s] %s | %s", key, pred(orig_check_run), pred(check_run)
+            )
             break
 
     if diff is None:
