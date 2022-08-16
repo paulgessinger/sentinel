@@ -56,6 +56,7 @@ from sentinel.metric import (
     webhook_skipped_counter,
     pr_update_trigger_counter,
     pr_update_accept_counter,
+    check_run_post,
 )
 
 
@@ -442,7 +443,7 @@ async def populate_check_run(
     if len(successful) > 0:
         summary += [
             ":white_check_mark: successful required checks: "
-            f"{', '.join(f'{ri}' for ri in successful)}"
+            f"{', '.join(f'{ri}' for ri in sorted(successful, key=lambda ri: ri.name))}"
         ]
 
     if len(failures) > 0:
@@ -652,16 +653,33 @@ async def process_pull_request(pr: PullRequest, api: API):
         logger.debug("No config file found on base repository, not reacting to this PR")
         return
 
+    orig_check_run = check_run.copy() if check_run is not None else None
+
     check_run = await populate_check_run(
         api, pr, config, check_runs=check_runs, check_run=check_run
     )
+
+    # print("same?", check_run == orig_check_run)
+
+    # print(orig_check_run.status, orig_check_run.conclusion)
+    # print("---")
+    # print(check_run.status, orig_check_run.conclusion)
+    # print("title", check_run.output.title == orig_check_run.output.title)
+    # print("summary", check_run.output.summary == orig_check_run.output.summary)
+    # print(check_run.output.summary, "\n---\n", orig_check_run.output.summary)
+    # print("text", check_run.output.text == orig_check_run.output.text)
 
     # print(check_run.output.title)
     # print(check_run.output.summary)
     # print(check_run.output.text)
 
-    logger.debug("Posting check run for PR %d (#%d)", pr.id, pr.number)
-    await api.post_check_run(pr.base.repo.url, check_run)
+    if check_run == orig_check_run:
+        logger.debug("Check remains identical, not posting update on %s", pr)
+        check_run_post.labels(skipped=True).inc()
+    else:
+        logger.debug("Posting check run for PR %d (#%d)", pr.id, pr.number)
+        check_run_post.labels(skipped=False).inc()
+        await api.post_check_run(pr.base.repo.url, check_run)
 
     logger.info("Finished handling %s, API calls: %d", pr, api.call_count)
 

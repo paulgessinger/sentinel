@@ -35,3 +35,5 @@ ACCESS_TOKEN_TTL = float(os.environ.get("ACCESS_TOKEN_TTL", 300))
 PRS_TTL = float(os.environ.get("PRS_TTL", 60))
 
 DRY_RUN = os.environ.get("DRY_RUN", "false") == "true"
+
+PUSH_GATEWAY = os.environ.get("PUSH_GATEWAY")
