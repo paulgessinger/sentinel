@@ -180,7 +180,7 @@ def create_app():
         with get_cache() as dcache:
             async with dcache.lock:
                 queue_size.set(len(dcache.deque))
-                api_call_count._value.set(dcache.get("num_api_requests"))
+                # api_call_count._value.set(dcache.get("num_api_requests"))
 
         # if not self._multiprocess_on:
         registry = core.REGISTRY
