@@ -673,12 +673,26 @@ async def process_pull_request(pr: PullRequest, api: API):
     # print(check_run.output.summary)
     # print(check_run.output.text)
 
-    if check_run == orig_check_run:
+    diffs = {
+        "status": lambda cr: cr.status,
+        "conclusion": lambda cr: cr.conclusion,
+        "title": lambda cr: cr.output.title,
+        "summary": lambda cr: cr.output.summary,
+        "text": lambda cr: cr.output.text,
+    }
+
+    diff: Optional[str] = None
+    for key, pred in diffs.items():
+        if pred(orig_check_run) != pred(check_run):
+            diff = key
+            break
+
+    if diff is None:
         logger.debug("Check remains identical, not posting update on %s", pr)
-        check_run_post.labels(skipped=True).inc()
+        check_run_post.labels(skipped=True, difference=diff).inc()
     else:
         logger.debug("Posting check run for PR %d (#%d)", pr.id, pr.number)
-        check_run_post.labels(skipped=False).inc()
+        check_run_post.labels(skipped=False, difference=diff).inc()
         await api.post_check_run(pr.base.repo.url, check_run)
 
     logger.info("Finished handling %s, API calls: %d", pr, api.call_count)

@@ -40,7 +40,7 @@ api_call_count = Counter(
 check_run_post = Counter(
     "sentinel_check_run_post",
     "Number of check run update posts",
-    labelnames=["skipped"],
+    labelnames=["skipped", "difference"],
     registry=push_registry,
 )
 
