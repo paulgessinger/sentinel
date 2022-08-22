@@ -811,13 +811,14 @@ def create_router():
                     pr_update_trigger_counter.labels(
                         event="check_run", name=check_run.name
                     ).inc()
+
+                    async with dcache.lock:
+                        dcache.set(
+                            cr_key,
+                            check_run,
+                            expire=app_config.CHECK_RUN_DEBOUNCE_WINDOW,
+                        )
                     if await dcache.push_pr(QueueItem(pr, api.installation)):
-                        async with dcache.lock:
-                            dcache.set(
-                                cr_key,
-                                check_run,
-                                expire=app_config.CHECK_RUN_DEBOUNCE_WINDOW,
-                            )
                         pr_update_accept_counter.labels(
                             event="check_run", name=check_run.name
                         ).inc()
@@ -842,7 +843,7 @@ def create_router():
         status_key = f"check_run_{status.sha}_{status.context}"
         with get_cache() as dcache:
             async with dcache.lock:
-                status_hit: Status
+                status_hit: CommitStatus
                 if status_hit := dcache.get(status_key):
                     if (
                         status_hit.sha == status.sha
@@ -869,13 +870,14 @@ def create_router():
                     pr_update_trigger_counter.labels(
                         event="status", name=status.context
                     ).inc()
+
+                    async with dcache.lock:
+                        dcache.set(
+                            status_key,
+                            status,
+                            expire=app_config.CHECK_RUN_DEBOUNCE_WINDOW,
+                        )
                     if await dcache.push_pr(QueueItem(pr, api.installation)):
-                        async with dcache.lock:
-                            dcache.set(
-                                status_key,
-                                status,
-                                expire=app_config.CHECK_RUN_DEBOUNCE_WINDOW,
-                            )
                         pr_update_accept_counter.labels(
                             event="status", name=status.context
                         ).inc()
