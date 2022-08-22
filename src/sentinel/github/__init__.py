@@ -840,7 +840,7 @@ def create_router():
 
         repo = Repository.parse_obj(event.data["repository"])
 
-        status_key = f"check_run_{status.sha}_{status.context}"
+        status_key = f"status_{status.sha}_{status.context}"
         with get_cache() as dcache:
             async with dcache.lock:
                 status_hit: CommitStatus
