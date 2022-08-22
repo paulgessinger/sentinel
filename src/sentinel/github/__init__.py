@@ -57,6 +57,7 @@ from sentinel.metric import (
     pr_update_trigger_counter,
     pr_update_accept_counter,
     check_run_post,
+    pr_update_duplicate,
 )
 
 
@@ -774,7 +775,25 @@ def create_router():
         repo = Repository.parse_obj(event.data["repository"])
 
         with get_cache() as dcache:
+
+            cr_key = f"check_run_{check_run.head_sha}_{check_run.name}"
+
             async with dcache.lock:
+
+                # check if we've seen this check run for this commit with this status
+                cr_hit: CheckRun
+                if cr_hit := dcache.get(cr_key):
+                    if (
+                        cr_hit.head_sha == check_run.head_sha
+                        and cr_hit.name == check_run.name
+                        and cr_hit.conclusion == check_run.conclusion
+                        and cr_hit.status == check_run.status
+                    ):
+                        pr_update_duplicate.labels(
+                            event="check_run", name=check_run.name
+                        ).inc()
+                        return
+
                 if hit := dcache.get(f"cached_prs_repo_{repo.id}"):
                     prs = hit
                 else:
@@ -793,6 +812,12 @@ def create_router():
                         event="check_run", name=check_run.name
                     ).inc()
                     if await dcache.push_pr(QueueItem(pr, api.installation)):
+                        async with dcache.lock:
+                            dcache.set(
+                                cr_key,
+                                check_run,
+                                expire=app_config.CHECK_RUN_DEBOUNCE_WINDOW,
+                            )
                         pr_update_accept_counter.labels(
                             event="check_run", name=check_run.name
                         ).inc()
@@ -814,8 +839,21 @@ def create_router():
 
         repo = Repository.parse_obj(event.data["repository"])
 
+        status_key = f"check_run_{status.sha}_{status.context}"
         with get_cache() as dcache:
             async with dcache.lock:
+                status_hit: Status
+                if status_hit := dcache.get(status_key):
+                    if (
+                        status_hit.sha == status.sha
+                        and status_hit.context == status.context
+                        and status_hit.state == status.state
+                    ):
+                        pr_update_duplicate.labels(
+                            event="status", name=status.context
+                        ).inc()
+                        return
+
                 if hit := dcache.get(f"cached_prs_repo_{repo.id}"):
                     prs = hit
                 else:
@@ -832,6 +870,12 @@ def create_router():
                         event="status", name=status.context
                     ).inc()
                     if await dcache.push_pr(QueueItem(pr, api.installation)):
+                        async with dcache.lock:
+                            dcache.set(
+                                status_key,
+                                status,
+                                expire=app_config.CHECK_RUN_DEBOUNCE_WINDOW,
+                            )
                         pr_update_accept_counter.labels(
                             event="status", name=status.context
                         ).inc()

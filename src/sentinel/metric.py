@@ -25,6 +25,12 @@ pr_update_accept_counter = Counter(
     labelnames=["event", "name"],
 )
 
+pr_update_duplicate = Counter(
+    "sentinel_pr_update_duplicate",
+    "Number of duplicate items received",
+    labelnames=["event", "name"],
+)
+
 queue_size = Gauge("sentinel_queue_size", "Size of the PR queue")
 
 error_counter = Counter(
