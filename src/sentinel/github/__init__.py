@@ -783,21 +783,22 @@ def create_router():
                 # check if we've seen this check run for this commit with this status
                 cr_hit: CheckRun
                 if cr_hit := dcache.get(cr_key):
-                    # logger.info("Check run hit:")
-                    # logger.info("        - hit: %s", cr_hit)
-                    # logger.info("        - current: %s", check_run)
-                    # if (
-                    #     cr_hit.head_sha == check_run.head_sha
-                    #     and cr_hit.name == check_run.name
-                    #     and cr_hit.conclusion == check_run.conclusion
-                    #     and cr_hit.status == check_run.status
-                    # ):
-                    # logger.info("Reject duplicate")
-                    pr_update_duplicate.labels(
-                        event="check_run", name=check_run.name
-                    ).inc()
-                    return
-                    # logger.info("Accept as new")
+                    if (
+                        cr_hit.conclusion == "success"
+                        and check_run.conclusion
+                        not in (
+                            "failure",
+                            "timed_out",
+                            "cancelled",
+                        )
+                    ) or (
+                        cr_hit.conclusion == check_run.conclusion
+                        and cr_hit.status == check_run.status
+                    ):
+                        pr_update_duplicate.labels(
+                            event="check_run", name=check_run.name
+                        ).inc()
+                        return
 
                 if hit := dcache.get(f"cached_prs_repo_{repo.id}"):
                     prs = hit

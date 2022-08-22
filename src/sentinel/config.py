@@ -38,4 +38,4 @@ DRY_RUN = os.environ.get("DRY_RUN", "false") == "true"
 
 PUSH_GATEWAY = os.environ.get("PUSH_GATEWAY")
 
-CHECK_RUN_DEBOUNCE_WINDOW = float(os.environ.get("CHECK_RUN_DEBOUNCE_WINDOW", 60 * 10))
+CHECK_RUN_DEBOUNCE_WINDOW = float(os.environ.get("CHECK_RUN_DEBOUNCE_WINDOW", 60 * 60))
