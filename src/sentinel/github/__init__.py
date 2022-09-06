@@ -120,7 +120,7 @@ class ResultItem:
         elif cs.state == "pending":
             started_at = cs.created_at
             status = ResultStatus.pending
-        elif cs.state == "failure":
+        elif cs.state in ("failure", "error"):
             status = ResultStatus.failure
             started_at = cs.created_at
             completed_at = cs.updated_at
