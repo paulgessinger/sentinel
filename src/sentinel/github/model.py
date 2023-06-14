@@ -111,6 +111,7 @@ class CheckSuite(PartialCheckSuite):
             "queued",
             "in_progress",
             "completed",
+            "pending",
         ]
     ]
     conclusion: Optional[
