@@ -186,7 +186,7 @@ class CheckRun(Model):
 
 
 class PrFile(Model):
-    sha: str
+    sha: Optional[str]
     filename: str
     status: Literal[
         "added", "removed", "modified", "renamed", "copied", "changed", "unchanged"
