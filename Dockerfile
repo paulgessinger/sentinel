@@ -9,7 +9,7 @@ COPY poetry.lock .
 COPY src src
 
 RUN pip install poetry uvicorn[standard] \
-&& poetry export -o requirements.txt \
+&& ~/.local/bin/poetry export -o requirements.txt \
 && pip install -r requirements.txt
 
 COPY CHECKS .
