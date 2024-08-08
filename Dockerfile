@@ -8,7 +8,9 @@ COPY pyproject.toml .
 COPY poetry.lock .
 COPY src src
 
-RUN pip install . uvicorn[standard]
+RUN pip install poetry uvicorn[standard] \
+&& poetry export -o requirements.txt \
+&& pip install -r requirements.txt
 
 COPY CHECKS .
 COPY Procfile .
