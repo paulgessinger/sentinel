@@ -12,7 +12,8 @@ COPY src src
 
 RUN pip install poetry poetry-plugin-export uvicorn[standard] \
 && poetry export -o /tmp/requirements.txt \
-&& pip install -r /tmp/requirements.txt
+&& pip install -r /tmp/requirements.txt \
+&& pip install .
 
 COPY CHECKS .
 COPY Procfile .
