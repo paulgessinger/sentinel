@@ -16,5 +16,3 @@ RUN pip install poetry poetry-plugin-export uvicorn[standard] \
 
 COPY CHECKS .
 COPY Procfile .
-
-COPY nginx.conf.sigil .
