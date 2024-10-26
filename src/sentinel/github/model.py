@@ -123,6 +123,7 @@ class CheckSuite(PartialCheckSuite):
             "skipped",
             "timed_out",
             "action_required",
+            "startup_failure",
         ]
     ]
     url: str
