@@ -199,7 +199,7 @@ class ActionsJob(Model):
     url: str
     run_id: int
     run_url: str
-    status: Literal["completed", "queued", "in_progress"]
+    status: Literal["completed", "queued", "in_progress", "pending"]
     conclusion: Optional[
         Literal[
             "action_required",
@@ -222,7 +222,7 @@ class ActionsRun(Model):
     head_sha: str
     run_number: int
     event: str
-    status: Literal["completed", "queued", "in_progress"] = "queued"
+    status: Literal["completed", "queued", "in_progress", "pending"] = "queued"
     conclusion: Optional[
         Literal[
             "action_required",
