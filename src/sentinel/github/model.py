@@ -142,7 +142,7 @@ class CheckRun(Model):
     id: Optional[int]
     name: str
     head_sha: CommitSha
-    status: Literal["completed", "queued", "in_progress"] = "queued"
+    status: Literal["completed", "queued", "in_progress", "pending"] = "queued"
     conclusion: Optional[
         Literal[
             "action_required",
