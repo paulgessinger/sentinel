@@ -38,10 +38,10 @@ class API:
 
         if check_run.conclusion is not None:
             fields.add("conclusion")
-        payload = check_run.dict(include=fields, exclude_none=False)
+        payload = check_run.model_dump(include=fields, exclude_none=False)
 
         if check_run.output is not None:
-            payload["output"] = check_run.output.dict(exclude_none=True)
+            payload["output"] = check_run.output.model_dump(exclude_none=True)
 
         payload["actions"] = []
 
