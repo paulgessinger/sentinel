@@ -20,4 +20,4 @@ USER $USER
 
 COPY CHECKS .
 COPY Procfile .
-CMD sanic sentinel.web:create_app --factory --port 5000 --host 0.0.0.0
+# CMD sanic sentinel.web:create_app --factory --port 5000 --host 0.0.0.0
