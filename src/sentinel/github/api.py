@@ -50,7 +50,7 @@ class API:
                 payload[k] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
                 logger.debug("Converting datetime: %s -> %s", v, payload[k])
 
-        # print(payload)
+        logger.debug("payload: %s", payload)
 
         if check_run.id is not None:
             url = f"{repo_url}/check-runs/{check_run.id}"
