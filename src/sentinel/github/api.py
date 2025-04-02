@@ -50,22 +50,25 @@ class API:
                 payload[k] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
                 logger.debug("Converting datetime: %s -> %s", v, payload[k])
 
-        logger.debug("payload: %s", payload)
+        try:
 
-        if check_run.id is not None:
-            url = f"{repo_url}/check-runs/{check_run.id}"
-            logger.debug("Updating check run %d, %s", check_run.id, url)
-            await self.gh.patch(
-                url,
-                data=payload,
-            )
-        else:
-            url = f"{repo_url}/check-runs"
-            logger.debug("Creating check run %s on sha %s", url, check_run.head_sha)
-            await self.gh.post(
-                url,
-                data=payload,
-            )
+            if check_run.id is not None:
+                url = f"{repo_url}/check-runs/{check_run.id}"
+                logger.debug("Updating check run %d, %s", check_run.id, url)
+                await self.gh.patch(
+                    url,
+                    data=payload,
+                )
+            else:
+                url = f"{repo_url}/check-runs"
+                logger.debug("Creating check run %s on sha %s", url, check_run.head_sha)
+                await self.gh.post(
+                    url,
+                    data=payload,
+                )
+        except:
+            logger.error("Error patch/post with payload: %s", payload)
+            raise
 
     async def get_check_runs_for_ref(
         self, repo: Repository, ref: str
