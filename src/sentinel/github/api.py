@@ -4,6 +4,7 @@ from tabnanny import check
 from typing import AsyncIterator, List
 from gidgethub.abc import GitHubAPI
 import base64
+import copy
 
 from sentinel.github.model import (
     ActionsJob,
@@ -43,6 +44,8 @@ class API:
         if check_run.output is not None:
             payload["output"] = check_run.output.dict(exclude_none=True)
 
+        payload_pre = copy.deepcopy(payload)
+
         payload["actions"] = []
 
         for k, v in payload.items():
@@ -68,6 +71,7 @@ class API:
                 )
         except:
             logger.error("Error patch/post with payload: %s", payload)
+            logger.error("           -> pre payload was: %s", payload_pre)
             raise
 
     async def get_check_runs_for_ref(
