@@ -48,6 +48,7 @@ class API:
         for k, v in payload.items():
             if isinstance(v, datetime):
                 payload[k] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
+                logger.debug("Converting datetime: %s -> %s", v, payload[k])
 
         # print(payload)
 
