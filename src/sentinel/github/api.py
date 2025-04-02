@@ -50,7 +50,17 @@ class API:
 
         for k, v in payload.items():
             if isinstance(v, datetime):
-                payload[k] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
+                # Have issue with datetime 1-01-01T00:00:00Z
+                # Not sure where this came from but let's not push it to the GH API
+                if (datetime.now() - v).days > 100 * 365 * 100:
+                    payload[k] = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+                    logger.warning(
+                        "Skipping datetime: %s (very old, possibly invalid), using %s instead",
+                        v,
+                        payload[k],
+                    )
+                else:
+                    payload[k] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
                 logger.debug("Converting datetime: %s -> %s", v, payload[k])
 
         try:
