@@ -81,14 +81,15 @@ def create_app():
     # app.register_middleware(make_asgi_app())
 
     @app.listener("before_server_start")
-    async def init(app, loop):
+    async def init(app):
         logger.debug("Creating aiohttp session")
-        app.ctx.aiohttp_session = aiohttp.ClientSession(loop=loop)
+        app.ctx.aiohttp_session = aiohttp.ClientSession()
 
         gh = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
 
         jwt = get_jwt(
-            app_id=app.config.GITHUB_APP_ID, private_key=app.config.GITHUB_PRIVATE_KEY
+            app_id=str(app.config.GITHUB_APP_ID),
+            private_key=app.config.GITHUB_PRIVATE_KEY,
         )
         app_info = await gh.getitem("/app", jwt=jwt)
         app.ctx.app_info = app_info

@@ -102,7 +102,8 @@ async def installation_client(installation: int):
         gh = gh_aiohttp.GitHubAPI(session, __name__)
 
         jwt = get_jwt(
-            app_id=config.GITHUB_APP_ID, private_key=config.GITHUB_PRIVATE_KEY
+            app_id=str(config.GITHUB_APP_ID),
+            private_key=config.GITHUB_PRIVATE_KEY,
         )
 
         app_info = await gh.getitem("/app", jwt=jwt)
