@@ -49,11 +49,20 @@ WEBHOOK_DB_RETENTION_DAYS = int(os.environ.get("WEBHOOK_DB_RETENTION_DAYS", 30))
 WEBHOOK_DB_EVENTS = tuple(
     part.strip()
     for part in os.environ.get(
-        "WEBHOOK_DB_EVENTS", "check_run,status,pull_request"
+        "WEBHOOK_DB_EVENTS", "check_run,check_suite,workflow_run,status,pull_request"
     ).split(",")
     if part.strip()
 )
 
 WEBHOOK_DISPATCH_ENABLED = (
     os.environ.get("WEBHOOK_DISPATCH_ENABLED", "false").lower() == "true"
+)
+
+WEBHOOK_FILTER_SELF_APP_ID = (
+    os.environ.get("WEBHOOK_FILTER_SELF_APP_ID", "true").lower() == "true"
+)
+WEBHOOK_FILTER_APP_IDS = tuple(
+    int(part.strip())
+    for part in os.environ.get("WEBHOOK_FILTER_APP_IDS", "").split(",")
+    if part.strip()
 )

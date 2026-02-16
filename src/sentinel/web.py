@@ -50,6 +50,11 @@ async def client_for_installation(app, installation_id):
 def webhook_display_name(event: sansio.Event) -> str:
     if event.event == "check_run":
         return event.data["check_run"]["name"]
+    if event.event == "check_suite":
+        return event.data.get("action", "check_suite")
+    if event.event == "workflow_run":
+        workflow_run = event.data.get("workflow_run") or {}
+        return workflow_run.get("name", event.data.get("action", "workflow_run"))
     if event.event == "status":
         return event.data["context"]
     if event.event == "pull_request":
@@ -67,19 +72,43 @@ def should_skip_event_by_name_filter(event: sansio.Event, pattern: str | None) -
     return False
 
 
-def persist_webhook_event(app: Sanic, request: Request, event: sansio.Event):
+def event_source_app_id(event: sansio.Event) -> int | None:
+    event_data = event.data
+    if event.event == "check_run":
+        app = (event_data.get("check_run") or {}).get("app") or {}
+        return app.get("id")
+    if event.event == "check_suite":
+        app = (event_data.get("check_suite") or {}).get("app") or {}
+        return app.get("id")
+    if event.event == "workflow_run":
+        app = (event_data.get("workflow_run") or {}).get("app") or {}
+        return app.get("id")
+    app = event_data.get("app") or {}
+    return app.get("id")
+
+
+def excluded_app_ids_for_event(app: Sanic) -> set[int]:
+    cfg = getattr(app, "config", None)
+    excluded = set(getattr(cfg, "WEBHOOK_FILTER_APP_IDS", ()) or ())
+    if getattr(cfg, "WEBHOOK_FILTER_SELF_APP_ID", True):
+        app_id = getattr(cfg, "GITHUB_APP_ID", None)
+        if app_id is not None:
+            excluded.add(app_id)
+    return excluded
+
+
+def persist_webhook_event(
+    app: Sanic, event: sansio.Event, delivery_id: str, payload_json: str
+):
     store: WebhookStore = app.ctx.webhook_store
     logger.debug("Should persist webhook event %s", event.event)
     if not store.should_persist(event.event):
         logger.debug("Skipping webhook event %s", event.event)
         return None
 
-    delivery_id = request.headers.get("X-GitHub-Delivery", "")
     if delivery_id == "":
         logger.warning("Missing X-GitHub-Delivery for event %s", event.event)
         return None
-
-    payload_json = request.body.decode("utf-8", errors="replace")
 
     logger.debug("Persisting webhook event %s", event.event)
     result = store.persist_event(
@@ -94,10 +123,23 @@ def persist_webhook_event(app: Sanic, request: Request, event: sansio.Event):
 
 
 async def process_github_event(
-    app: Sanic, request: Request, event: sansio.Event
+    app: Sanic, event: sansio.Event, delivery_id: str, payload_json: str
 ) -> None:
     name = webhook_display_name(event)
     webhook_counter.labels(event=event.event, name=name).inc()
+    source_app_id = event_source_app_id(event)
+    excluded_app_ids = excluded_app_ids_for_event(app)
+
+    if source_app_id is not None and source_app_id in excluded_app_ids:
+        webhook_skipped_counter.labels(event=event.event, name=name).inc()
+        logger.debug(
+            "Skipping webhook event %s name=%s due to source app id=%s",
+            event.event,
+            name,
+            source_app_id,
+        )
+        return
+
     name_filter = getattr(getattr(app, "config", None), "CHECK_RUN_NAME_FILTER", None)
 
     if should_skip_event_by_name_filter(event, name_filter):
@@ -112,7 +154,7 @@ async def process_github_event(
 
     if app.ctx.webhook_store.enabled:
         try:
-            persist_webhook_event(app, request, event)
+            persist_webhook_event(app, event, delivery_id, payload_json)
         except Exception:  # noqa: BLE001
             error_counter.labels(context="webhook_persist").inc()
             logger.error(
@@ -143,6 +185,20 @@ async def process_github_event(
     except Exception:  # noqa: BLE001
         error_counter.labels(context="event_dispatch").inc()
         logger.error("Exception raised when dispatching event", exc_info=True)
+
+
+async def process_github_event_background(
+    app: Sanic, event: sansio.Event, delivery_id: str, payload_json: str
+) -> None:
+    try:
+        await process_github_event(app, event, delivery_id, payload_json)
+    except Exception:  # noqa: BLE001
+        error_counter.labels(context="event_background").inc()
+        logger.error(
+            "Unhandled exception in background webhook processing for event %s",
+            event.event,
+            exc_info=True,
+        )
 
 
 def create_app():
@@ -217,8 +273,12 @@ def create_app():
         event = sansio.Event.from_http(
             request.headers, request.body, secret=app.config.GITHUB_WEBHOOK_SECRET
         )
+        delivery_id = request.headers.get("X-GitHub-Delivery", "")
+        payload_json = request.body.decode("utf-8", errors="replace")
 
-        await process_github_event(app, request, event)
+        app.add_task(
+            process_github_event_background(app, event, delivery_id, payload_json)
+        )
 
         return response.empty(200)
 

@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS webhook_events (
 
 CREATE TABLE IF NOT EXISTS check_runs_current (
     repo_id INTEGER NOT NULL,
+    repo_full_name TEXT NULL,
     check_run_id INTEGER NOT NULL,
     head_sha TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -49,8 +50,49 @@ CREATE TABLE IF NOT EXISTS check_runs_current (
     PRIMARY KEY (repo_id, check_run_id)
 );
 
+CREATE TABLE IF NOT EXISTS check_suites_current (
+    repo_id INTEGER NOT NULL,
+    repo_full_name TEXT NULL,
+    check_suite_id INTEGER NOT NULL,
+    head_sha TEXT NOT NULL,
+    head_branch TEXT NULL,
+    status TEXT NULL,
+    conclusion TEXT NULL,
+    app_id INTEGER NULL,
+    app_slug TEXT NULL,
+    created_at TEXT NULL,
+    updated_at TEXT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_delivery_id TEXT NOT NULL,
+    PRIMARY KEY (repo_id, check_suite_id)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_runs_current (
+    repo_id INTEGER NOT NULL,
+    repo_full_name TEXT NULL,
+    workflow_run_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    event TEXT NULL,
+    status TEXT NULL,
+    conclusion TEXT NULL,
+    head_sha TEXT NOT NULL,
+    run_number INTEGER NULL,
+    workflow_id INTEGER NULL,
+    check_suite_id INTEGER NULL,
+    app_id INTEGER NULL,
+    app_slug TEXT NULL,
+    created_at TEXT NULL,
+    updated_at TEXT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_delivery_id TEXT NOT NULL,
+    PRIMARY KEY (repo_id, workflow_run_id)
+);
+
 CREATE TABLE IF NOT EXISTS commit_status_current (
     repo_id INTEGER NOT NULL,
+    repo_full_name TEXT NULL,
     sha TEXT NOT NULL,
     context TEXT NOT NULL,
     status_id INTEGER NOT NULL,
@@ -66,6 +108,7 @@ CREATE TABLE IF NOT EXISTS commit_status_current (
 
 CREATE TABLE IF NOT EXISTS pr_heads_current (
     repo_id INTEGER NOT NULL,
+    repo_full_name TEXT NULL,
     pr_id INTEGER NOT NULL,
     pr_number INTEGER NOT NULL,
     state TEXT NOT NULL,
@@ -81,6 +124,10 @@ CREATE INDEX IF NOT EXISTS idx_webhook_events_event_received_at
     ON webhook_events (event, received_at);
 CREATE INDEX IF NOT EXISTS idx_check_runs_current_repo_head_name
     ON check_runs_current (repo_id, head_sha, name);
+CREATE INDEX IF NOT EXISTS idx_check_suites_current_repo_head_sha
+    ON check_suites_current (repo_id, head_sha);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_current_repo_head_name
+    ON workflow_runs_current (repo_id, head_sha, name);
 CREATE INDEX IF NOT EXISTS idx_commit_status_current_repo_sha_context
     ON commit_status_current (repo_id, sha, context);
 CREATE INDEX IF NOT EXISTS idx_pr_heads_current_repo_head_sha
@@ -115,7 +162,16 @@ class WebhookStore:
         self.enabled = enabled
         self.events = {
             event.strip()
-            for event in (events or ("check_run", "status", "pull_request"))
+            for event in (
+                events
+                or (
+                    "check_run",
+                    "check_suite",
+                    "workflow_run",
+                    "status",
+                    "pull_request",
+                )
+            )
             if event.strip()
         }
         self.prune_every = max(1, prune_every)
@@ -274,6 +330,12 @@ class WebhookStore:
         if event == "check_run":
             self._project_check_run(conn, payload, now, delivery_id)
             return "check_run"
+        if event == "check_suite":
+            self._project_check_suite(conn, payload, now, delivery_id)
+            return "check_suite"
+        if event == "workflow_run":
+            self._project_workflow_run(conn, payload, now, delivery_id)
+            return "workflow_run"
         if event == "status":
             self._project_status(conn, payload, now, delivery_id)
             return "status"
@@ -300,6 +362,7 @@ class WebhookStore:
             """
             INSERT INTO check_runs_current (
                 repo_id,
+                repo_full_name,
                 check_run_id,
                 head_sha,
                 name,
@@ -313,8 +376,9 @@ class WebhookStore:
                 first_seen_at,
                 last_seen_at,
                 last_delivery_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(repo_id, check_run_id) DO UPDATE SET
+                repo_full_name = excluded.repo_full_name,
                 head_sha = excluded.head_sha,
                 name = excluded.name,
                 status = excluded.status,
@@ -329,6 +393,7 @@ class WebhookStore:
             """,
             (
                 repo["id"],
+                repo.get("full_name"),
                 check_run["id"],
                 check_run["head_sha"],
                 check_run["name"],
@@ -358,6 +423,7 @@ class WebhookStore:
             """
             INSERT INTO commit_status_current (
                 repo_id,
+                repo_full_name,
                 sha,
                 context,
                 status_id,
@@ -368,8 +434,9 @@ class WebhookStore:
                 first_seen_at,
                 last_seen_at,
                 last_delivery_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(repo_id, sha, context) DO UPDATE SET
+                repo_full_name = excluded.repo_full_name,
                 status_id = excluded.status_id,
                 state = excluded.state,
                 created_at = excluded.created_at,
@@ -380,6 +447,7 @@ class WebhookStore:
             """,
             (
                 repo["id"],
+                repo.get("full_name"),
                 payload["sha"],
                 payload["context"],
                 payload["id"],
@@ -387,6 +455,66 @@ class WebhookStore:
                 payload.get("created_at"),
                 payload.get("updated_at"),
                 payload.get("url"),
+                now,
+                now,
+                delivery_id,
+            ),
+        )
+
+    def _project_check_suite(
+        self,
+        conn: sqlite3.Connection,
+        payload: Mapping[str, Any],
+        now: str,
+        delivery_id: str,
+    ) -> None:
+        repo = payload["repository"]
+        check_suite = payload["check_suite"]
+        app = check_suite.get("app") or {}
+
+        conn.execute(
+            """
+            INSERT INTO check_suites_current (
+                repo_id,
+                repo_full_name,
+                check_suite_id,
+                head_sha,
+                head_branch,
+                status,
+                conclusion,
+                app_id,
+                app_slug,
+                created_at,
+                updated_at,
+                first_seen_at,
+                last_seen_at,
+                last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(repo_id, check_suite_id) DO UPDATE SET
+                repo_full_name = excluded.repo_full_name,
+                head_sha = excluded.head_sha,
+                head_branch = excluded.head_branch,
+                status = excluded.status,
+                conclusion = excluded.conclusion,
+                app_id = excluded.app_id,
+                app_slug = excluded.app_slug,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                last_seen_at = excluded.last_seen_at,
+                last_delivery_id = excluded.last_delivery_id
+            """,
+            (
+                repo["id"],
+                repo.get("full_name"),
+                check_suite["id"],
+                check_suite["head_sha"],
+                check_suite.get("head_branch"),
+                check_suite.get("status"),
+                check_suite.get("conclusion"),
+                app.get("id"),
+                app.get("slug"),
+                check_suite.get("created_at"),
+                check_suite.get("updated_at"),
                 now,
                 now,
                 delivery_id,
@@ -407,6 +535,7 @@ class WebhookStore:
             """
             INSERT INTO pr_heads_current (
                 repo_id,
+                repo_full_name,
                 pr_id,
                 pr_number,
                 state,
@@ -415,8 +544,9 @@ class WebhookStore:
                 action,
                 updated_at,
                 last_delivery_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(repo_id, pr_number) DO UPDATE SET
+                repo_full_name = excluded.repo_full_name,
                 pr_id = excluded.pr_id,
                 state = excluded.state,
                 head_sha = excluded.head_sha,
@@ -427,6 +557,7 @@ class WebhookStore:
             """,
             (
                 repo["id"],
+                repo.get("full_name"),
                 pr["id"],
                 pr["number"],
                 pr["state"],
@@ -434,6 +565,83 @@ class WebhookStore:
                 pr["base"]["ref"],
                 payload.get("action"),
                 pr.get("updated_at") or now,
+                delivery_id,
+            ),
+        )
+
+    def _project_workflow_run(
+        self,
+        conn: sqlite3.Connection,
+        payload: Mapping[str, Any],
+        now: str,
+        delivery_id: str,
+    ) -> None:
+        repo = payload["repository"]
+        workflow_run = payload["workflow_run"]
+        app = workflow_run.get("app") or {}
+
+        print(
+            "projecting workflow run check_suite_id: ",
+            workflow_run.get("check_suite_id"),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO workflow_runs_current (
+                repo_id,
+                repo_full_name,
+                workflow_run_id,
+                name,
+                event,
+                status,
+                conclusion,
+                head_sha,
+                run_number,
+                workflow_id,
+                check_suite_id,
+                app_id,
+                app_slug,
+                created_at,
+                updated_at,
+                first_seen_at,
+                last_seen_at,
+                last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(repo_id, workflow_run_id) DO UPDATE SET
+                repo_full_name = excluded.repo_full_name,
+                name = excluded.name,
+                event = excluded.event,
+                status = excluded.status,
+                conclusion = excluded.conclusion,
+                head_sha = excluded.head_sha,
+                run_number = excluded.run_number,
+                workflow_id = excluded.workflow_id,
+                check_suite_id = excluded.check_suite_id,
+                app_id = excluded.app_id,
+                app_slug = excluded.app_slug,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                last_seen_at = excluded.last_seen_at,
+                last_delivery_id = excluded.last_delivery_id
+            """,
+            (
+                repo["id"],
+                repo.get("full_name"),
+                workflow_run["id"],
+                workflow_run["name"],
+                workflow_run.get("event"),
+                workflow_run.get("status"),
+                workflow_run.get("conclusion"),
+                workflow_run["head_sha"],
+                workflow_run.get("run_number"),
+                workflow_run.get("workflow_id"),
+                workflow_run.get("check_suite_id"),
+                app.get("id"),
+                app.get("slug"),
+                workflow_run.get("created_at"),
+                workflow_run.get("updated_at"),
+                now,
+                now,
                 delivery_id,
             ),
         )

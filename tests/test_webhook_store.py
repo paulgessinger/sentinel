@@ -37,6 +37,46 @@ def make_status_payload(state: str = "pending") -> dict:
     }
 
 
+def make_check_suite_payload(status: str = "in_progress") -> dict:
+    return {
+        "action": "requested",
+        "installation": {"id": 14},
+        "repository": {"id": 104, "full_name": "org/repo"},
+        "check_suite": {
+            "id": 7001,
+            "head_sha": "e" * 40,
+            "head_branch": "main",
+            "status": status,
+            "conclusion": None if status != "completed" else "success",
+            "app": {"id": 1, "slug": "github-actions"},
+            "created_at": "2026-02-16T10:10:00Z",
+            "updated_at": "2026-02-16T10:11:00Z",
+        },
+    }
+
+
+def make_workflow_run_payload(status: str = "in_progress") -> dict:
+    return {
+        "action": "requested",
+        "installation": {"id": 15},
+        "repository": {"id": 105, "full_name": "org/repo"},
+        "workflow_run": {
+            "id": 8001,
+            "name": "Builds",
+            "event": "pull_request",
+            "status": status,
+            "conclusion": None if status != "completed" else "success",
+            "head_sha": "f" * 40,
+            "run_number": 31,
+            "workflow_id": 123456,
+            "check_suite_id": 7001,
+            "app": {"id": 1, "slug": "github-actions"},
+            "created_at": "2026-02-16T10:20:00Z",
+            "updated_at": "2026-02-16T10:21:00Z",
+        },
+    }
+
+
 def make_pull_request_payload(head_sha: str) -> dict:
     return {
         "action": "synchronize",
@@ -68,6 +108,8 @@ def test_initialize_schema(tmp_path):
 
     assert "webhook_events" in tables
     assert "check_runs_current" in tables
+    assert "check_suites_current" in tables
+    assert "workflow_runs_current" in tables
     assert "commit_status_current" in tables
     assert "pr_heads_current" in tables
 
@@ -121,14 +163,14 @@ def test_check_run_projection_upserts(tmp_path):
     with sqlite3.connect(str(db_path)) as conn:
         row = conn.execute(
             """
-            SELECT conclusion, last_delivery_id
+            SELECT repo_full_name, conclusion, last_delivery_id
             FROM check_runs_current
             WHERE repo_id = ? AND check_run_id = ?
             """,
             (101, 2001),
         ).fetchone()
 
-    assert row == ("success", "cr-2")
+    assert row == ("org/repo", "success", "cr-2")
 
 
 def test_status_projection_updates_state(tmp_path):
@@ -152,14 +194,14 @@ def test_status_projection_updates_state(tmp_path):
     with sqlite3.connect(str(db_path)) as conn:
         row = conn.execute(
             """
-            SELECT state, last_delivery_id
+            SELECT repo_full_name, state, last_delivery_id
             FROM commit_status_current
             WHERE repo_id = ? AND sha = ? AND context = ?
             """,
             (102, "b" * 40, "lint"),
         ).fetchone()
 
-    assert row == ("success", "status-2")
+    assert row == ("org/repo", "success", "status-2")
 
 
 def test_pull_request_projection_updates_head_sha(tmp_path):
@@ -183,14 +225,76 @@ def test_pull_request_projection_updates_head_sha(tmp_path):
     with sqlite3.connect(str(db_path)) as conn:
         row = conn.execute(
             """
-            SELECT head_sha, last_delivery_id
+            SELECT repo_full_name, head_sha, last_delivery_id
             FROM pr_heads_current
             WHERE repo_id = ? AND pr_number = ?
             """,
             (103, 42),
         ).fetchone()
 
-    assert row == ("d" * 40, "pr-2")
+    assert row == ("org/repo", "d" * 40, "pr-2")
+
+
+def test_check_suite_projection_upserts(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    store.persist_event(
+        delivery_id="suite-1",
+        event="check_suite",
+        payload=make_check_suite_payload(status="in_progress"),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="suite-2",
+        event="check_suite",
+        payload=make_check_suite_payload(status="completed"),
+        payload_json="{}",
+    )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT repo_full_name, status, conclusion, last_delivery_id
+            FROM check_suites_current
+            WHERE repo_id = ? AND check_suite_id = ?
+            """,
+            (104, 7001),
+        ).fetchone()
+
+    assert row == ("org/repo", "completed", "success", "suite-2")
+
+
+def test_workflow_run_projection_upserts(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    store.persist_event(
+        delivery_id="wfr-1",
+        event="workflow_run",
+        payload=make_workflow_run_payload(status="in_progress"),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="wfr-2",
+        event="workflow_run",
+        payload=make_workflow_run_payload(status="completed"),
+        payload_json="{}",
+    )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT repo_full_name, name, status, conclusion, check_suite_id, last_delivery_id
+            FROM workflow_runs_current
+            WHERE repo_id = ? AND workflow_run_id = ?
+            """,
+            (105, 8001),
+        ).fetchone()
+
+    assert row == ("org/repo", "Builds", "completed", "success", 7001, "wfr-2")
 
 
 def test_retention_prunes_old_events_only(tmp_path):

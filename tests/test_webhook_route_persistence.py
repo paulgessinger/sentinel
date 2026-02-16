@@ -15,7 +15,7 @@ def make_request(delivery_id: str = "delivery-1", body: str = "{}"):
     )
 
 
-def make_check_run_event():
+def make_check_run_event(app_id: int = 1234):
     payload = {
         "action": "completed",
         "installation": {"id": 99},
@@ -35,7 +35,7 @@ def make_check_run_event():
             "conclusion": "success",
             "started_at": "2026-02-16T10:00:00Z",
             "completed_at": "2026-02-16T10:01:00Z",
-            "app": {"id": 1234, "slug": "ci"},
+            "app": {"id": app_id, "slug": "ci"},
             "check_suite": {"id": 111},
         },
     }
@@ -58,7 +58,12 @@ async def test_supported_event_persists_without_dispatch(tmp_path):
     event = make_check_run_event()
     request = make_request(body=store.payload_to_json(event.data))
 
-    await process_github_event(app, request, event)
+    await process_github_event(
+        app,
+        event,
+        request.headers["X-GitHub-Delivery"],
+        request.body.decode("utf-8"),
+    )
 
     result = store.persist_event(
         delivery_id="delivery-1",
@@ -88,7 +93,14 @@ async def test_persistence_exception_is_tolerated(tmp_path, monkeypatch):
 
     before = error_counter.labels(context="webhook_persist")._value.get()
 
-    await process_github_event(app, make_request(), make_check_run_event())
+    request = make_request()
+    event = make_check_run_event()
+    await process_github_event(
+        app,
+        event,
+        request.headers["X-GitHub-Delivery"],
+        request.body.decode("utf-8"),
+    )
 
     after = error_counter.labels(context="webhook_persist")._value.get()
     assert after == before + 1
@@ -108,7 +120,13 @@ async def test_unsupported_event_does_not_project(tmp_path):
     )
 
     event = SimpleNamespace(event="issues", data={"action": "opened"})
-    await process_github_event(app, make_request(), event)
+    request = make_request()
+    await process_github_event(
+        app,
+        event,
+        request.headers["X-GitHub-Delivery"],
+        request.body.decode("utf-8"),
+    )
 
     with sqlite3.connect(str(db_path)) as conn:
         count = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
@@ -141,7 +159,14 @@ async def test_dispatch_runs_when_enabled(tmp_path, monkeypatch):
         "sentinel.web.client_for_installation", fake_client_for_installation
     )
 
-    await process_github_event(app, make_request(), make_check_run_event())
+    request = make_request()
+    event = make_check_run_event()
+    await process_github_event(
+        app,
+        event,
+        request.headers["X-GitHub-Delivery"],
+        request.body.decode("utf-8"),
+    )
     assert dispatch_called["value"]
 
 
@@ -159,7 +184,14 @@ async def test_check_run_name_filter_skips_persistence(tmp_path):
         ),
     )
 
-    await process_github_event(app, make_request(), make_check_run_event())
+    request = make_request()
+    event = make_check_run_event()
+    await process_github_event(
+        app,
+        event,
+        request.headers["X-GitHub-Delivery"],
+        request.body.decode("utf-8"),
+    )
 
     with sqlite3.connect(str(db_path)) as conn:
         events = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
@@ -195,5 +227,76 @@ async def test_check_run_name_filter_skips_dispatch_when_enabled(tmp_path, monke
         "sentinel.web.client_for_installation", fake_client_for_installation
     )
 
-    await process_github_event(app, make_request(), make_check_run_event())
+    request = make_request()
+    event = make_check_run_event()
+    await process_github_event(
+        app,
+        event,
+        request.headers["X-GitHub-Delivery"],
+        request.body.decode("utf-8"),
+    )
     assert not dispatch_called["value"]
+
+
+@pytest.mark.asyncio
+async def test_self_app_id_filter_skips_persistence(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    app = SimpleNamespace(
+        config=SimpleNamespace(
+            GITHUB_APP_ID=1234,
+            WEBHOOK_FILTER_SELF_APP_ID=True,
+            WEBHOOK_FILTER_APP_IDS=(),
+        ),
+        ctx=SimpleNamespace(
+            webhook_store=store,
+            webhook_dispatch_enabled=False,
+        ),
+    )
+
+    request = make_request()
+    event = make_check_run_event(app_id=1234)
+    await process_github_event(
+        app,
+        event,
+        request.headers["X-GitHub-Delivery"],
+        request.body.decode("utf-8"),
+    )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_configured_app_id_filter_skips_persistence(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    app = SimpleNamespace(
+        config=SimpleNamespace(
+            GITHUB_APP_ID=1234,
+            WEBHOOK_FILTER_SELF_APP_ID=False,
+            WEBHOOK_FILTER_APP_IDS=(8888, 9999),
+        ),
+        ctx=SimpleNamespace(
+            webhook_store=store,
+            webhook_dispatch_enabled=False,
+        ),
+    )
+
+    request = make_request()
+    event = make_check_run_event(app_id=8888)
+    await process_github_event(
+        app,
+        event,
+        request.headers["X-GitHub-Delivery"],
+        request.body.decode("utf-8"),
+    )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
+    assert count == 0
