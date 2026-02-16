@@ -1,9 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import functools
 from tabnanny import check
 from typing import AsyncIterator, List
 from gidgethub.abc import GitHubAPI
 import base64
+import copy
 
 from sentinel.github.model import (
     ActionsJob,
@@ -43,28 +44,45 @@ class API:
         if check_run.output is not None:
             payload["output"] = check_run.output.model_dump(exclude_none=True)
 
+        payload_pre = copy.deepcopy(payload)
+
         payload["actions"] = []
 
         for k, v in payload.items():
             if isinstance(v, datetime):
-                payload[k] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
+                # Have issue with datetime 1-01-01T00:00:00Z
+                # Not sure where this came from but let's not push it to the GH API
+                if (datetime.now(timezone.utc) - v).days > 100 * 365:
+                    payload[k] = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+                    logger.warning(
+                        "Skipping datetime: %s (very old, possibly invalid), using %s instead",
+                        v,
+                        payload[k],
+                    )
+                else:
+                    payload[k] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
+                logger.debug("Converting datetime: %s -> %s", v, payload[k])
 
-        # print(payload)
+        try:
 
-        if check_run.id is not None:
-            url = f"{repo_url}/check-runs/{check_run.id}"
-            logger.debug("Updating check run %d, %s", check_run.id, url)
-            await self.gh.patch(
-                url,
-                data=payload,
-            )
-        else:
-            url = f"{repo_url}/check-runs"
-            logger.debug("Creating check run %s on sha %s", url, check_run.head_sha)
-            await self.gh.post(
-                url,
-                data=payload,
-            )
+            if check_run.id is not None:
+                url = f"{repo_url}/check-runs/{check_run.id}"
+                logger.debug("Updating check run %d, %s", check_run.id, url)
+                await self.gh.patch(
+                    url,
+                    data=payload,
+                )
+            else:
+                url = f"{repo_url}/check-runs"
+                logger.debug("Creating check run %s on sha %s", url, check_run.head_sha)
+                await self.gh.post(
+                    url,
+                    data=payload,
+                )
+        except:
+            logger.error("Error patch/post with payload: %s", payload)
+            logger.error("           -> pre payload was: %s", payload_pre)
+            raise
 
     async def get_check_runs_for_ref(
         self, repo: Repository, ref: str
