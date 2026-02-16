@@ -25,6 +25,7 @@ dependencies = [
     "diskcache>=5.4.0",
     "typer>=0.6.1",
     "prometheus-client>=0.14.1",
+    "uvicorn>=0.40.0",
 ]
 
 [dependency-groups]

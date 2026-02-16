@@ -1,23 +1,41 @@
-FROM python:3.13-slim
+FROM python:3.14-slim AS builder
+
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+ENV UV_PYTHON=python3.14 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app \
+    UV_LINK_MODE=copy
+
+RUN --mount=type=cache,target=/root/.cache \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync \
+    --locked \
+    --no-dev \
+    --no-install-project
+
+COPY . /src
+WORKDIR /src
+
+RUN --mount=type=cache,target=/root/.cache \
+    uv sync \
+        --locked \
+        --no-dev \
+        --no-editable
+
+FROM python:3.14-slim
+COPY --from=builder /app /app
 
 ENV USER=sentinel
-ENV PATH=/home/$USER/.local/bin:$PATH
 RUN adduser --gecos "" --disabled-password $USER
 
-COPY --from=ghcr.io/astral-sh/uv:0.6 /uv /bin/uv
-
-RUN mkdir /app
 WORKDIR /app
 
-COPY . /app
-
 ENV PATH=/home/$USER/.local/bin:$PATH
-
-RUN uv sync --frozen --no-editable
-ENV PATH="/app/.venv/bin:$PATH"
+ENV PATH="/app/bin:$PATH"
 
 USER $USER
-
-COPY CHECKS .
-COPY Procfile .
-# CMD sanic sentinel.web:create_app --factory --port 5000 --host 0.0.0.0
+CMD ["uvicorn", "sentinel.web:create_app", "--factory", "--port", "8080", "--host", "0.0.0.0"]
