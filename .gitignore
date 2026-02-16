@@ -9,3 +9,6 @@ src/sentinel/.DS_Store
 cache
 
 settings.json
+
+/CLAUDE.md
+/AGENTS.md
