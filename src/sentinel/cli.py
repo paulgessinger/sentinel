@@ -13,7 +13,6 @@ from sentinel.github import get_access_token, process_pull_request, API
 from sentinel.logger import get_log_handlers
 from sentinel import config
 from sentinel.cache import Cache, QueueItem, get_cache
-from sentinel.web import client_for_installation
 from sentinel.github.model import PullRequest
 from sentinel.metric import push_registry, worker_error_count, api_call_count
 

@@ -53,3 +53,7 @@ WEBHOOK_DB_EVENTS = tuple(
     ).split(",")
     if part.strip()
 )
+
+WEBHOOK_DISPATCH_ENABLED = (
+    os.environ.get("WEBHOOK_DISPATCH_ENABLED", "false").lower() == "true"
+)

@@ -2,16 +2,16 @@ from datetime import datetime, timedelta
 import logging
 import logging.config
 from pathlib import Path
+import re
 
-from sanic import Sanic, response, Request
 import aiohttp
+from sanic import Sanic, response, Request
 from gidgethub import sansio
 from gidgethub.apps import get_jwt
 from gidgethub import aiohttp as gh_aiohttp
 import humanize
 from sanic.log import logger
 import sanic.log
-import cachetools
 from prometheus_client import core
 from prometheus_client.exposition import generate_latest
 
@@ -24,35 +24,27 @@ from sentinel.cache import get_cache
 from sentinel.metric import (
     request_counter,
     webhook_counter,
+    webhook_skipped_counter,
     queue_size,
     error_counter,
 )
 from sentinel.storage import WebhookStore
 
 
+logging.basicConfig(
+    format="%(asctime)s %(name)s %(levelname)s - %(message)s", level=logging.INFO
+)
+
+
 async def client_for_installation(app, installation_id):
     gh_pre = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
-    # access_token_response = await get_installation_access_token(
-    #     gh_pre,
-    #     installation_id=installation_id,
-    #     app_id=app.config.GITHUB_APP_ID,
-    #     private_key=app.config.GITHUB_PRIVATE_KEY,
-    # )
-
-    # token = access_token_response["token"]
     token = await get_access_token(gh_pre, installation_id)
 
     return gh_aiohttp.GitHubAPI(
         app.ctx.aiohttp_session,
         __name__,
         oauth_token=token,
-        cache=app.ctx.cache,
     )
-
-
-logging.basicConfig(
-    format="%(asctime)s %(name)s %(levelname)s - %(message)s", level=logging.INFO
-)
 
 
 def webhook_display_name(event: sansio.Event) -> str:
@@ -65,11 +57,21 @@ def webhook_display_name(event: sansio.Event) -> str:
     return "unknown"
 
 
-def persist_webhook_event(
-    app: Sanic, request: Request, event: sansio.Event
-):
+def should_skip_event_by_name_filter(event: sansio.Event, pattern: str | None) -> bool:
+    if pattern is None:
+        return False
+    if event.event == "check_run":
+        return re.match(pattern, event.data["check_run"]["name"]) is not None
+    if event.event == "status":
+        return re.match(pattern, event.data["context"]) is not None
+    return False
+
+
+def persist_webhook_event(app: Sanic, request: Request, event: sansio.Event):
     store: WebhookStore = app.ctx.webhook_store
+    logger.debug("Should persist webhook event %s", event.event)
     if not store.should_persist(event.event):
+        logger.debug("Skipping webhook event %s", event.event)
         return None
 
     delivery_id = request.headers.get("X-GitHub-Delivery", "")
@@ -79,6 +81,7 @@ def persist_webhook_event(
 
     payload_json = request.body.decode("utf-8", errors="replace")
 
+    logger.debug("Persisting webhook event %s", event.event)
     result = store.persist_event(
         delivery_id=delivery_id,
         event=event.event,
@@ -90,9 +93,22 @@ def persist_webhook_event(
     return result
 
 
-async def process_github_event(app: Sanic, request: Request, event: sansio.Event) -> None:
+async def process_github_event(
+    app: Sanic, request: Request, event: sansio.Event
+) -> None:
     name = webhook_display_name(event)
     webhook_counter.labels(event=event.event, name=name).inc()
+    name_filter = getattr(getattr(app, "config", None), "CHECK_RUN_NAME_FILTER", None)
+
+    if should_skip_event_by_name_filter(event, name_filter):
+        webhook_skipped_counter.labels(event=event.event, name=name).inc()
+        logger.debug(
+            "Skipping webhook event %s name=%s due to CHECK_RUN_NAME_FILTER=%s",
+            event.event,
+            name,
+            name_filter,
+        )
+        return
 
     if app.ctx.webhook_store.enabled:
         try:
@@ -105,6 +121,9 @@ async def process_github_event(app: Sanic, request: Request, event: sansio.Event
                 exc_info=True,
             )
 
+    if not getattr(app.ctx, "webhook_dispatch_enabled", False):
+        return
+
     if event.event not in ("check_run", "status", "pull_request"):
         return
 
@@ -116,7 +135,6 @@ async def process_github_event(app: Sanic, request: Request, event: sansio.Event
     logger.debug("Repository %s", repo.full_name)
 
     gh = await client_for_installation(app, installation_id)
-
     api = API(gh, installation_id)
 
     logger.debug("Dispatching event %s", event.event)
@@ -143,8 +161,8 @@ def create_app():
     for handler in get_log_handlers(sanic.log.logger):
         handler.setFormatter(logger.handlers[0].formatter)
 
-    app.ctx.cache = cachetools.LRUCache(maxsize=500)
     app.ctx.github_router = create_router()
+    app.ctx.webhook_dispatch_enabled = app.config.WEBHOOK_DISPATCH_ENABLED
     app.ctx.webhook_store = WebhookStore(
         db_path=app.config.WEBHOOK_DB_PATH,
         retention_days=app.config.WEBHOOK_DB_RETENTION_DAYS,
@@ -156,20 +174,25 @@ def create_app():
 
     @app.listener("before_server_start")
     async def init(app):
-        logger.debug("Creating aiohttp session")
-        app.ctx.aiohttp_session = aiohttp.ClientSession()
+        if app.ctx.webhook_dispatch_enabled:
+            logger.debug("Creating aiohttp session")
+            app.ctx.aiohttp_session = aiohttp.ClientSession()
 
-        gh = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
-
-        jwt = get_jwt(
-            app_id=str(app.config.GITHUB_APP_ID),
-            private_key=app.config.GITHUB_PRIVATE_KEY,
-        )
-        app_info = await gh.getitem("/app", jwt=jwt)
-        app.ctx.app_info = app_info
+            gh = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
+            jwt = get_jwt(
+                app_id=str(app.config.GITHUB_APP_ID),
+                private_key=app.config.GITHUB_PRIVATE_KEY,
+            )
+            app.ctx.app_info = await gh.getitem("/app", jwt=jwt)
 
         app.ctx.webhook_store.initialize()
         app.ctx.webhook_store.prune_old_events()
+
+    @app.listener("after_server_stop")
+    async def shutdown(app):
+        session = getattr(app.ctx, "aiohttp_session", None)
+        if session is not None and not session.closed:
+            await session.close()
 
     @app.on_request
     async def on_request(request: Request):
@@ -212,11 +235,11 @@ def create_app():
                 data.append(
                     (
                         item.pr,
-                        humanize.naturaltime(last_dt + cooldown)
-                        if last_dt is not None
-                        else None
-                        if delta is not None
-                        else None,
+                        (
+                            humanize.naturaltime(last_dt + cooldown)
+                            if last_dt is not None
+                            else None if delta is not None else None
+                        ),
                     )
                 )
 
