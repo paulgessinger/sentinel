@@ -1,5 +1,5 @@
 run:
-    dotenvx run -- uv run sanic sentinel.web:create_app --factory --port 8080 --host 0.0.0.0
+    dotenvx run -f .env.dev -- uv run sanic sentinel.web:create_app --factory --port 8080 --host 0.0.0.0
 
 test:
     uv run pytest
@@ -25,3 +25,6 @@ deploy: image
 
 docker: image_build
     docker run --rm -it --env-file .env {{image_url}}:{{sha}}
+
+smee:
+    smee -u https://smee.io/k8smrd9B27JqKRBg -t http://localhost:8080/webhook

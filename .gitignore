@@ -1,5 +1,5 @@
 src/sentinel/.DS_Store
-.env
+/.env*
 
 
 .venv
