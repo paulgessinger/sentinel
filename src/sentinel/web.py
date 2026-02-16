@@ -1,37 +1,33 @@
 from datetime import datetime, timedelta
-import hmac
-import json
 import logging
 import logging.config
-import asyncio
 from pathlib import Path
 
 from sanic import Sanic, response, Request
 import aiohttp
 from gidgethub import sansio
-from gidgethub.apps import get_installation_access_token, get_jwt
+from gidgethub.apps import get_jwt
 from gidgethub import aiohttp as gh_aiohttp
 import humanize
 from sanic.log import logger
 import sanic.log
 import cachetools
-import notifiers.logging
 from prometheus_client import core
 from prometheus_client.exposition import generate_latest
 
 from sentinel import config
-from sentinel.github import create_router, get_access_token, process_pull_request
+from sentinel.github import create_router, get_access_token
 from sentinel.github.api import API
-from sentinel.github.model import PullRequest, Repository
+from sentinel.github.model import Repository
 from sentinel.logger import get_log_handlers
-from sentinel.cache import Cache, QueueItem, get_cache
+from sentinel.cache import get_cache
 from sentinel.metric import (
     request_counter,
     webhook_counter,
     queue_size,
     error_counter,
-    api_call_count,
 )
+from sentinel.storage import WebhookStore
 
 
 async def client_for_installation(app, installation_id):
@@ -59,6 +55,78 @@ logging.basicConfig(
 )
 
 
+def webhook_display_name(event: sansio.Event) -> str:
+    if event.event == "check_run":
+        return event.data["check_run"]["name"]
+    if event.event == "status":
+        return event.data["context"]
+    if event.event == "pull_request":
+        return event.data["action"]
+    return "unknown"
+
+
+def persist_webhook_event(
+    app: Sanic, request: Request, event: sansio.Event
+):
+    store: WebhookStore = app.ctx.webhook_store
+    if not store.should_persist(event.event):
+        return None
+
+    delivery_id = request.headers.get("X-GitHub-Delivery", "")
+    if delivery_id == "":
+        logger.warning("Missing X-GitHub-Delivery for event %s", event.event)
+        return None
+
+    payload_json = request.body.decode("utf-8", errors="replace")
+
+    result = store.persist_event(
+        delivery_id=delivery_id,
+        event=event.event,
+        payload=event.data,
+        payload_json=payload_json,
+    )
+    if result.projection_error is not None:
+        error_counter.labels(context="webhook_projection").inc()
+    return result
+
+
+async def process_github_event(app: Sanic, request: Request, event: sansio.Event) -> None:
+    name = webhook_display_name(event)
+    webhook_counter.labels(event=event.event, name=name).inc()
+
+    if app.ctx.webhook_store.enabled:
+        try:
+            persist_webhook_event(app, request, event)
+        except Exception:  # noqa: BLE001
+            error_counter.labels(context="webhook_persist").inc()
+            logger.error(
+                "Exception raised when persisting webhook event %s",
+                event.event,
+                exc_info=True,
+            )
+
+    if event.event not in ("check_run", "status", "pull_request"):
+        return
+
+    assert "installation" in event.data
+    installation_id = event.data["installation"]["id"]
+    logger.debug("Installation id: %s", installation_id)
+
+    repo = Repository.parse_obj(event.data["repository"])
+    logger.debug("Repository %s", repo.full_name)
+
+    gh = await client_for_installation(app, installation_id)
+
+    api = API(gh, installation_id)
+
+    logger.debug("Dispatching event %s", event.event)
+    try:
+        await app.ctx.github_router.dispatch(event, api, app=app)
+    except Exception:  # noqa: BLE001
+        error_counter.labels(context="event_dispatch").inc()
+        logger.error("Exception raised when dispatching event", exc_info=True)
+
+
 def create_app():
 
     app = Sanic("sentinel")
@@ -77,6 +145,12 @@ def create_app():
 
     app.ctx.cache = cachetools.LRUCache(maxsize=500)
     app.ctx.github_router = create_router()
+    app.ctx.webhook_store = WebhookStore(
+        db_path=app.config.WEBHOOK_DB_PATH,
+        retention_days=app.config.WEBHOOK_DB_RETENTION_DAYS,
+        enabled=app.config.WEBHOOK_DB_ENABLED,
+        events=app.config.WEBHOOK_DB_EVENTS,
+    )
 
     # app.register_middleware(make_asgi_app())
 
@@ -93,6 +167,9 @@ def create_app():
         )
         app_info = await gh.getitem("/app", jwt=jwt)
         app.ctx.app_info = app_info
+
+        app.ctx.webhook_store.initialize()
+        app.ctx.webhook_store.prune_old_events()
 
     @app.on_request
     async def on_request(request: Request):
@@ -118,37 +195,7 @@ def create_app():
             request.headers, request.body, secret=app.config.GITHUB_WEBHOOK_SECRET
         )
 
-        name = "unknown"
-
-        if event.event == "check_run":
-            name = event.data["check_run"]["name"]
-        elif event.event == "status":
-            name = event.data["context"]
-        elif event.event == "pull_request":
-            name = event.data["action"]
-
-        webhook_counter.labels(event=event.event, name=name).inc()
-
-        if event.event not in ("check_run", "status", "pull_request"):
-            return response.empty(200)
-
-        assert "installation" in event.data
-        installation_id = event.data["installation"]["id"]
-        logger.debug("Installation id: %s", installation_id)
-
-        repo = Repository.parse_obj(event.data["repository"])
-        logger.debug("Repository %s", repo.full_name)
-
-        gh = await client_for_installation(app, installation_id)
-
-        api = API(gh, installation_id)
-
-        logger.debug("Dispatching event %s", event.event)
-        try:
-            await app.ctx.github_router.dispatch(event, api, app=app)
-        except:
-            error_counter.labels(context="event_dispatch").inc()
-            logger.error("Exception raised when dispatching event", exc_info=True)
+        await process_github_event(app, request, event)
 
         return response.empty(200)
 

@@ -1,6 +1,7 @@
 import os
 import dotenv
 import logging
+from pathlib import Path
 
 dotenv.load_dotenv()
 
@@ -39,3 +40,16 @@ DRY_RUN = os.environ.get("DRY_RUN", "false") == "true"
 PUSH_GATEWAY = os.environ.get("PUSH_GATEWAY")
 
 CHECK_RUN_DEBOUNCE_WINDOW = float(os.environ.get("CHECK_RUN_DEBOUNCE_WINDOW", 60 * 60))
+
+WEBHOOK_DB_ENABLED = os.environ.get("WEBHOOK_DB_ENABLED", "true").lower() == "true"
+WEBHOOK_DB_PATH = os.environ.get(
+    "WEBHOOK_DB_PATH", str(Path(DISKCACHE_DIR) / "webhooks.sqlite3")
+)
+WEBHOOK_DB_RETENTION_DAYS = int(os.environ.get("WEBHOOK_DB_RETENTION_DAYS", 30))
+WEBHOOK_DB_EVENTS = tuple(
+    part.strip()
+    for part in os.environ.get(
+        "WEBHOOK_DB_EVENTS", "check_run,status,pull_request"
+    ).split(",")
+    if part.strip()
+)

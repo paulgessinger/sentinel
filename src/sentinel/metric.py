@@ -1,4 +1,3 @@
-from cProfile import label
 from prometheus_client import core, Counter, Gauge, CollectorRegistry
 
 request_counter = Counter(
@@ -54,4 +53,21 @@ worker_error_count = Counter(
     "sentinel_num_worker_error",
     "Number of errors encountered by the update worker",
     registry=push_registry,
+)
+
+webhook_persist_total = Counter(
+    "sentinel_webhook_persist_total",
+    "Webhook persistence outcomes",
+    labelnames=["event", "result"],
+)
+
+webhook_project_total = Counter(
+    "sentinel_webhook_project_total",
+    "Webhook projection outcomes",
+    labelnames=["projection", "result"],
+)
+
+webhook_event_pruned_total = Counter(
+    "sentinel_webhook_event_pruned_total",
+    "Number of old webhook_events rows pruned",
 )
