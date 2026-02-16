@@ -1,10 +1,11 @@
 from typing import List, Optional, Set
+
 import pydantic
+from pydantic import ConfigDict
 
 
 class Model(pydantic.BaseModel):
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
 
 class Rule(Model):
