@@ -112,6 +112,7 @@ def test_initialize_schema(tmp_path):
     assert "workflow_runs_current" in tables
     assert "commit_status_current" in tables
     assert "pr_heads_current" in tables
+    assert "sentinel_check_run_state" in tables
 
 
 def test_duplicate_delivery_id_is_ignored(tmp_path):

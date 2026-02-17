@@ -1,4 +1,4 @@
-from prometheus_client import core, Counter, Gauge, CollectorRegistry
+from prometheus_client import core, Counter, Gauge
 
 request_counter = Counter(
     "sentinel_num_req", "Total number of requests", labelnames=["path"]
@@ -36,23 +36,17 @@ error_counter = Counter(
     "sentinel_error_counter", "Total number of errors", labelnames=["context"]
 )
 
-push_registry = CollectorRegistry()
-
-api_call_count = Counter(
-    "sentinel_num_api_calls", "Total number of GitHub API calls", registry=push_registry
-)
+api_call_count = Counter("sentinel_num_api_calls", "Total number of GitHub API calls")
 
 check_run_post = Counter(
     "sentinel_check_run_post",
     "Number of check run update posts",
     labelnames=["skipped", "difference"],
-    registry=push_registry,
 )
 
 worker_error_count = Counter(
     "sentinel_num_worker_error",
     "Number of errors encountered by the update worker",
-    registry=push_registry,
 )
 
 webhook_persist_total = Counter(

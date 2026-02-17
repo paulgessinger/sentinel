@@ -172,9 +172,8 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
         row = conn.execute(
             """
             SELECT status, conclusion, output_title, last_publish_result, app_id
-            FROM check_runs_current
-            WHERE repo_id = ? AND head_sha = ? AND name = ?
-            ORDER BY last_seen_at DESC
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ?
             LIMIT 1
             """,
             (11, "a" * 40, "merge-sentinel"),
@@ -270,8 +269,8 @@ async def test_projection_publish_replaces_synthetic_id_with_real_id(tmp_path):
         rows = conn.execute(
             """
             SELECT check_run_id, last_publish_result
-            FROM check_runs_current
-            WHERE repo_id = ? AND head_sha = ? AND name = ? AND app_id = ?
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ? AND app_id = ?
             """,
             (11, "a" * 40, "merge-sentinel", 2877723),
         ).fetchall()

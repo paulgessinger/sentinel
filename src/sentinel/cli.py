@@ -9,14 +9,13 @@ from gidgethub import aiohttp as gh_aiohttp
 from gidgethub.apps import get_jwt, get_installation_access_token
 import aiohttp
 import cachetools
-from prometheus_client import push_to_gateway
 
 from sentinel.github import get_access_token, process_pull_request, API
 from sentinel.logger import get_log_handlers
 from sentinel import config
 from sentinel.cache import Cache, QueueItem, get_cache
 from sentinel.github.model import PullRequest
-from sentinel.metric import push_registry, worker_error_count, api_call_count
+from sentinel.metric import worker_error_count, api_call_count
 from sentinel.storage import WebhookStore
 
 
@@ -63,19 +62,6 @@ async def job_loop():
             worker_error_count.inc()
             logger.error("Job loop encountered error", exc_info=True)
             pass
-        finally:
-            if config.PUSH_GATEWAY is not None:
-                try:
-                    push_to_gateway(
-                        config.PUSH_GATEWAY, "sentinel_worker", push_registry
-                    )
-                except:
-                    logger.error(
-                        "Error pushing to pushgateway %s",
-                        config.PUSH_GATEWAY,
-                        exc_info=True,
-                    )
-                    pass
 
 
 app = typer.Typer()

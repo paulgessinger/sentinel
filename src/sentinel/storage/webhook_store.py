@@ -17,7 +17,6 @@ from sqlalchemy import (
     String,
     Table,
     and_,
-    case,
     create_engine,
     delete,
     event as sa_event,
@@ -68,16 +67,32 @@ check_runs_current = Table(
     Column("check_suite_id", Integer),
     Column("started_at", String),
     Column("completed_at", String),
-    Column("output_title", String),
-    Column("output_summary_hash", String),
-    Column("output_text_hash", String),
-    Column("last_eval_at", String),
-    Column("last_publish_at", String),
-    Column("last_publish_result", String),
-    Column("last_publish_error", String),
     Column("first_seen_at", String, nullable=False),
     Column("last_seen_at", String, nullable=False),
     Column("last_delivery_id", String, nullable=False),
+)
+
+sentinel_check_run_state = Table(
+    "sentinel_check_run_state",
+    metadata,
+    Column("repo_id", Integer, primary_key=True),
+    Column("repo_full_name", String),
+    Column("head_sha", String, primary_key=True),
+    Column("check_name", String, primary_key=True),
+    Column("app_id", Integer, nullable=False),
+    Column("check_run_id", Integer, nullable=False),
+    Column("status", String, nullable=False),
+    Column("conclusion", String),
+    Column("started_at", String),
+    Column("completed_at", String),
+    Column("output_title", String),
+    Column("output_summary_hash", String),
+    Column("output_text_hash", String),
+    Column("last_eval_at", String, nullable=False),
+    Column("last_publish_at", String),
+    Column("last_publish_result", String, nullable=False),
+    Column("last_publish_error", String),
+    Column("last_delivery_id", String),
 )
 
 check_suites_current = Table(
@@ -166,13 +181,6 @@ Index(
     check_runs_current.c.name,
 )
 Index(
-    "idx_check_runs_current_repo_head_name_app",
-    check_runs_current.c.repo_id,
-    check_runs_current.c.head_sha,
-    check_runs_current.c.name,
-    check_runs_current.c.app_id,
-)
-Index(
     "idx_check_suites_current_repo_head_sha",
     check_suites_current.c.repo_id,
     check_suites_current.c.head_sha,
@@ -193,6 +201,11 @@ Index(
     "idx_pr_heads_current_repo_head_sha",
     pr_heads_current.c.repo_id,
     pr_heads_current.c.head_sha,
+)
+Index(
+    "idx_sentinel_check_run_state_repo_head",
+    sentinel_check_run_state.c.repo_id,
+    sentinel_check_run_state.c.head_sha,
 )
 
 
@@ -515,6 +528,29 @@ class WebhookStore:
                     )
                 ),
             ),
+            (
+                "sentinel_check_run_state",
+                "completed",
+                delete(sentinel_check_run_state).where(
+                    and_(
+                        sentinel_check_run_state.c.status == "completed",
+                        sentinel_check_run_state.c.last_eval_at < completed_cutoff,
+                    )
+                ),
+            ),
+            (
+                "sentinel_check_run_state",
+                "active",
+                delete(sentinel_check_run_state).where(
+                    and_(
+                        or_(
+                            sentinel_check_run_state.c.status.is_(None),
+                            sentinel_check_run_state.c.status != "completed",
+                        ),
+                        sentinel_check_run_state.c.last_eval_at < active_cutoff,
+                    )
+                ),
+            ),
         )
 
         counts: Dict[str, int] = {}
@@ -587,19 +623,12 @@ class WebhookStore:
         check_name: str,
         app_id: int,
     ) -> Optional[Dict[str, Any]]:
-        stmt = (
-            select(check_runs_current)
-            .where(
-                and_(
-                    check_runs_current.c.repo_id == repo_id,
-                    check_runs_current.c.head_sha == head_sha,
-                    check_runs_current.c.name == check_name,
-                    check_runs_current.c.app_id == app_id,
-                )
-            )
-            .order_by(
-                case((check_runs_current.c.check_run_id < 0, 1), else_=0),
-                check_runs_current.c.last_seen_at.desc(),
+        stmt = select(sentinel_check_run_state).where(
+            and_(
+                sentinel_check_run_state.c.repo_id == repo_id,
+                sentinel_check_run_state.c.head_sha == head_sha,
+                sentinel_check_run_state.c.check_name == check_name,
+                sentinel_check_run_state.c.app_id == app_id,
             )
         )
         with self.engine.begin() as conn:
@@ -617,7 +646,6 @@ class WebhookStore:
         status: str,
         conclusion: Optional[str],
         app_id: int,
-        app_slug: str,
         started_at: Optional[str],
         completed_at: Optional[str],
         output_title: Optional[str],
@@ -630,18 +658,15 @@ class WebhookStore:
         last_delivery_id: Optional[str],
         synthetic_id_to_delete: Optional[int] = None,
     ) -> None:
-        now = utcnow_iso()
         values = {
             "repo_id": repo_id,
             "repo_full_name": repo_full_name,
-            "check_run_id": check_run_id,
             "head_sha": head_sha,
-            "name": name,
+            "check_name": name,
+            "app_id": app_id,
+            "check_run_id": check_run_id,
             "status": status,
             "conclusion": conclusion,
-            "app_id": app_id,
-            "app_slug": app_slug,
-            "check_suite_id": None,
             "started_at": started_at,
             "completed_at": completed_at,
             "output_title": output_title,
@@ -651,22 +676,21 @@ class WebhookStore:
             "last_publish_at": last_publish_at,
             "last_publish_result": last_publish_result,
             "last_publish_error": last_publish_error,
-            "first_seen_at": now,
-            "last_seen_at": now,
-            "last_delivery_id": last_delivery_id or "",
+            "last_delivery_id": last_delivery_id,
         }
-        stmt = sqlite_insert(check_runs_current).values(**values)
+        stmt = sqlite_insert(sentinel_check_run_state).values(**values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=[check_runs_current.c.repo_id, check_runs_current.c.check_run_id],
+            index_elements=[
+                sentinel_check_run_state.c.repo_id,
+                sentinel_check_run_state.c.head_sha,
+                sentinel_check_run_state.c.check_name,
+            ],
             set_={
                 "repo_full_name": stmt.excluded.repo_full_name,
-                "head_sha": stmt.excluded.head_sha,
-                "name": stmt.excluded.name,
+                "app_id": stmt.excluded.app_id,
+                "check_run_id": stmt.excluded.check_run_id,
                 "status": stmt.excluded.status,
                 "conclusion": stmt.excluded.conclusion,
-                "app_id": stmt.excluded.app_id,
-                "app_slug": stmt.excluded.app_slug,
-                "check_suite_id": stmt.excluded.check_suite_id,
                 "started_at": stmt.excluded.started_at,
                 "completed_at": stmt.excluded.completed_at,
                 "output_title": stmt.excluded.output_title,
@@ -676,7 +700,6 @@ class WebhookStore:
                 "last_publish_at": stmt.excluded.last_publish_at,
                 "last_publish_result": stmt.excluded.last_publish_result,
                 "last_publish_error": stmt.excluded.last_publish_error,
-                "last_seen_at": stmt.excluded.last_seen_at,
                 "last_delivery_id": stmt.excluded.last_delivery_id,
             },
         )
@@ -689,10 +712,13 @@ class WebhookStore:
                 and check_run_id > 0
             ):
                 conn.execute(
-                    delete(check_runs_current).where(
+                    delete(sentinel_check_run_state).where(
                         and_(
-                            check_runs_current.c.repo_id == repo_id,
-                            check_runs_current.c.check_run_id == synthetic_id_to_delete,
+                            sentinel_check_run_state.c.repo_id == repo_id,
+                            sentinel_check_run_state.c.head_sha == head_sha,
+                            sentinel_check_run_state.c.check_name == name,
+                            sentinel_check_run_state.c.check_run_id
+                            == synthetic_id_to_delete,
                         )
                     )
                 )
