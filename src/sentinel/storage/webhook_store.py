@@ -4,11 +4,27 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
-import sqlite3
 import threading
 from typing import Any, Dict, Mapping, Optional, Sequence
 
 from sanic.log import logger
+from sqlalchemy import (
+    Column,
+    Engine,
+    Index,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    and_,
+    create_engine,
+    delete,
+    event as sa_event,
+    or_,
+    update,
+)
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import Connection
 
 from sentinel.metric import (
     webhook_event_pruned_total,
@@ -18,122 +34,150 @@ from sentinel.metric import (
 )
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS webhook_events (
-    delivery_id TEXT PRIMARY KEY,
-    received_at TEXT NOT NULL,
-    event TEXT NOT NULL,
-    action TEXT NULL,
-    installation_id INTEGER NULL,
-    repo_id INTEGER NULL,
-    repo_full_name TEXT NULL,
-    payload_json TEXT NOT NULL,
-    projected_at TEXT NULL,
-    projection_error TEXT NULL
-);
+metadata = MetaData()
 
-CREATE TABLE IF NOT EXISTS check_runs_current (
-    repo_id INTEGER NOT NULL,
-    repo_full_name TEXT NULL,
-    check_run_id INTEGER NOT NULL,
-    head_sha TEXT NOT NULL,
-    name TEXT NOT NULL,
-    status TEXT NOT NULL,
-    conclusion TEXT NULL,
-    app_id INTEGER NULL,
-    app_slug TEXT NULL,
-    check_suite_id INTEGER NULL,
-    started_at TEXT NULL,
-    completed_at TEXT NULL,
-    first_seen_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    last_delivery_id TEXT NOT NULL,
-    PRIMARY KEY (repo_id, check_run_id)
-);
+webhook_events = Table(
+    "webhook_events",
+    metadata,
+    Column("delivery_id", String, primary_key=True),
+    Column("received_at", String, nullable=False),
+    Column("event", String, nullable=False),
+    Column("action", String),
+    Column("installation_id", Integer),
+    Column("repo_id", Integer),
+    Column("repo_full_name", String),
+    Column("payload_json", String, nullable=False),
+    Column("projected_at", String),
+    Column("projection_error", String),
+)
 
-CREATE TABLE IF NOT EXISTS check_suites_current (
-    repo_id INTEGER NOT NULL,
-    repo_full_name TEXT NULL,
-    check_suite_id INTEGER NOT NULL,
-    head_sha TEXT NOT NULL,
-    head_branch TEXT NULL,
-    status TEXT NULL,
-    conclusion TEXT NULL,
-    app_id INTEGER NULL,
-    app_slug TEXT NULL,
-    created_at TEXT NULL,
-    updated_at TEXT NULL,
-    first_seen_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    last_delivery_id TEXT NOT NULL,
-    PRIMARY KEY (repo_id, check_suite_id)
-);
+check_runs_current = Table(
+    "check_runs_current",
+    metadata,
+    Column("repo_id", Integer, primary_key=True),
+    Column("repo_full_name", String),
+    Column("check_run_id", Integer, primary_key=True),
+    Column("head_sha", String, nullable=False),
+    Column("name", String, nullable=False),
+    Column("status", String, nullable=False),
+    Column("conclusion", String),
+    Column("app_id", Integer),
+    Column("app_slug", String),
+    Column("check_suite_id", Integer),
+    Column("started_at", String),
+    Column("completed_at", String),
+    Column("first_seen_at", String, nullable=False),
+    Column("last_seen_at", String, nullable=False),
+    Column("last_delivery_id", String, nullable=False),
+)
 
-CREATE TABLE IF NOT EXISTS workflow_runs_current (
-    repo_id INTEGER NOT NULL,
-    repo_full_name TEXT NULL,
-    workflow_run_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    event TEXT NULL,
-    status TEXT NULL,
-    conclusion TEXT NULL,
-    head_sha TEXT NOT NULL,
-    run_number INTEGER NULL,
-    workflow_id INTEGER NULL,
-    check_suite_id INTEGER NULL,
-    app_id INTEGER NULL,
-    app_slug TEXT NULL,
-    created_at TEXT NULL,
-    updated_at TEXT NULL,
-    first_seen_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    last_delivery_id TEXT NOT NULL,
-    PRIMARY KEY (repo_id, workflow_run_id)
-);
+check_suites_current = Table(
+    "check_suites_current",
+    metadata,
+    Column("repo_id", Integer, primary_key=True),
+    Column("repo_full_name", String),
+    Column("check_suite_id", Integer, primary_key=True),
+    Column("head_sha", String, nullable=False),
+    Column("head_branch", String),
+    Column("status", String),
+    Column("conclusion", String),
+    Column("app_id", Integer),
+    Column("app_slug", String),
+    Column("created_at", String),
+    Column("updated_at", String),
+    Column("first_seen_at", String, nullable=False),
+    Column("last_seen_at", String, nullable=False),
+    Column("last_delivery_id", String, nullable=False),
+)
 
-CREATE TABLE IF NOT EXISTS commit_status_current (
-    repo_id INTEGER NOT NULL,
-    repo_full_name TEXT NULL,
-    sha TEXT NOT NULL,
-    context TEXT NOT NULL,
-    status_id INTEGER NOT NULL,
-    state TEXT NOT NULL,
-    created_at TEXT NULL,
-    updated_at TEXT NULL,
-    url TEXT NULL,
-    first_seen_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    last_delivery_id TEXT NOT NULL,
-    PRIMARY KEY (repo_id, sha, context)
-);
+workflow_runs_current = Table(
+    "workflow_runs_current",
+    metadata,
+    Column("repo_id", Integer, primary_key=True),
+    Column("repo_full_name", String),
+    Column("workflow_run_id", Integer, primary_key=True),
+    Column("name", String, nullable=False),
+    Column("event", String),
+    Column("status", String),
+    Column("conclusion", String),
+    Column("head_sha", String, nullable=False),
+    Column("run_number", Integer),
+    Column("workflow_id", Integer),
+    Column("check_suite_id", Integer),
+    Column("app_id", Integer),
+    Column("app_slug", String),
+    Column("created_at", String),
+    Column("updated_at", String),
+    Column("first_seen_at", String, nullable=False),
+    Column("last_seen_at", String, nullable=False),
+    Column("last_delivery_id", String, nullable=False),
+)
 
-CREATE TABLE IF NOT EXISTS pr_heads_current (
-    repo_id INTEGER NOT NULL,
-    repo_full_name TEXT NULL,
-    pr_id INTEGER NOT NULL,
-    pr_number INTEGER NOT NULL,
-    state TEXT NOT NULL,
-    head_sha TEXT NOT NULL,
-    base_ref TEXT NOT NULL,
-    action TEXT NULL,
-    updated_at TEXT NOT NULL,
-    last_delivery_id TEXT NOT NULL,
-    PRIMARY KEY (repo_id, pr_number)
-);
+commit_status_current = Table(
+    "commit_status_current",
+    metadata,
+    Column("repo_id", Integer, primary_key=True),
+    Column("repo_full_name", String),
+    Column("sha", String, primary_key=True),
+    Column("context", String, primary_key=True),
+    Column("status_id", Integer, nullable=False),
+    Column("state", String, nullable=False),
+    Column("created_at", String),
+    Column("updated_at", String),
+    Column("url", String),
+    Column("first_seen_at", String, nullable=False),
+    Column("last_seen_at", String, nullable=False),
+    Column("last_delivery_id", String, nullable=False),
+)
 
-CREATE INDEX IF NOT EXISTS idx_webhook_events_event_received_at
-    ON webhook_events (event, received_at);
-CREATE INDEX IF NOT EXISTS idx_check_runs_current_repo_head_name
-    ON check_runs_current (repo_id, head_sha, name);
-CREATE INDEX IF NOT EXISTS idx_check_suites_current_repo_head_sha
-    ON check_suites_current (repo_id, head_sha);
-CREATE INDEX IF NOT EXISTS idx_workflow_runs_current_repo_head_name
-    ON workflow_runs_current (repo_id, head_sha, name);
-CREATE INDEX IF NOT EXISTS idx_commit_status_current_repo_sha_context
-    ON commit_status_current (repo_id, sha, context);
-CREATE INDEX IF NOT EXISTS idx_pr_heads_current_repo_head_sha
-    ON pr_heads_current (repo_id, head_sha);
-"""
+pr_heads_current = Table(
+    "pr_heads_current",
+    metadata,
+    Column("repo_id", Integer, primary_key=True),
+    Column("repo_full_name", String),
+    Column("pr_id", Integer, nullable=False),
+    Column("pr_number", Integer, primary_key=True),
+    Column("state", String, nullable=False),
+    Column("head_sha", String, nullable=False),
+    Column("base_ref", String, nullable=False),
+    Column("action", String),
+    Column("updated_at", String, nullable=False),
+    Column("last_delivery_id", String, nullable=False),
+)
+
+Index(
+    "idx_webhook_events_event_received_at",
+    webhook_events.c.event,
+    webhook_events.c.received_at,
+)
+Index(
+    "idx_check_runs_current_repo_head_name",
+    check_runs_current.c.repo_id,
+    check_runs_current.c.head_sha,
+    check_runs_current.c.name,
+)
+Index(
+    "idx_check_suites_current_repo_head_sha",
+    check_suites_current.c.repo_id,
+    check_suites_current.c.head_sha,
+)
+Index(
+    "idx_workflow_runs_current_repo_head_name",
+    workflow_runs_current.c.repo_id,
+    workflow_runs_current.c.head_sha,
+    workflow_runs_current.c.name,
+)
+Index(
+    "idx_commit_status_current_repo_sha_context",
+    commit_status_current.c.repo_id,
+    commit_status_current.c.sha,
+    commit_status_current.c.context,
+)
+Index(
+    "idx_pr_heads_current_repo_head_sha",
+    pr_heads_current.c.repo_id,
+    pr_heads_current.c.head_sha,
+)
 
 
 def utcnow_iso() -> str:
@@ -184,13 +228,13 @@ class WebhookStore:
         self.prune_every = max(1, prune_every)
         self._persisted_since_prune = 0
         self._counter_lock = threading.Lock()
+        self.engine = self._build_engine(self.db_path)
 
     def initialize(self) -> None:
         if not self.enabled:
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.executescript(SCHEMA)
+        metadata.create_all(self.engine)
 
     def should_persist(self, event: str) -> bool:
         return self.enabled and event in self.events
@@ -218,35 +262,26 @@ class WebhookStore:
         repo = payload.get("repository") or {}
         installation = payload.get("installation") or {}
 
-        try:
-            with self._connect() as conn:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO webhook_events (
-                        delivery_id,
-                        received_at,
-                        event,
-                        action,
-                        installation_id,
-                        repo_id,
-                        repo_full_name,
-                        payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(delivery_id) DO NOTHING
-                    """,
-                    (
-                        delivery_id,
-                        now,
-                        event,
-                        action,
-                        installation.get("id"),
-                        repo.get("id"),
-                        repo.get("full_name"),
-                        payload_json,
-                    ),
-                )
+        insert_event = sqlite_insert(webhook_events).values(
+            delivery_id=delivery_id,
+            received_at=now,
+            event=event,
+            action=action,
+            installation_id=installation.get("id"),
+            repo_id=repo.get("id"),
+            repo_full_name=repo.get("full_name"),
+            payload_json=payload_json,
+        )
+        insert_event = insert_event.on_conflict_do_nothing(
+            index_elements=[webhook_events.c.delivery_id]
+        )
+        projection = event
+        projection_error = None
 
-                if cursor.rowcount == 0:
+        try:
+            with self.engine.begin() as conn:
+                insert_result = conn.execute(insert_event)
+                if (insert_result.rowcount or 0) == 0:
                     webhook_persist_total.labels(event=event, result="duplicate").inc()
                     return PersistResult(
                         inserted=False,
@@ -256,19 +291,15 @@ class WebhookStore:
 
                 webhook_persist_total.labels(event=event, result="inserted").inc()
 
-                projection_error = None
                 try:
                     projection = self._project(conn, event, payload, now, delivery_id)
                 except Exception as exc:  # noqa: BLE001
                     projection = event
                     projection_error = str(exc)
                     conn.execute(
-                        """
-                        UPDATE webhook_events
-                        SET projection_error = ?
-                        WHERE delivery_id = ?
-                        """,
-                        (projection_error, delivery_id),
+                        update(webhook_events)
+                        .where(webhook_events.c.delivery_id == delivery_id)
+                        .values(projection_error=projection_error)
                     )
                     webhook_project_total.labels(
                         projection=projection, result="error"
@@ -281,12 +312,9 @@ class WebhookStore:
                     )
                 else:
                     conn.execute(
-                        """
-                        UPDATE webhook_events
-                        SET projected_at = ?, projection_error = NULL
-                        WHERE delivery_id = ?
-                        """,
-                        (now, delivery_id),
+                        update(webhook_events)
+                        .where(webhook_events.c.delivery_id == delivery_id)
+                        .values(projected_at=now, projection_error=None)
                     )
                     webhook_project_total.labels(
                         projection=projection, result="upserted"
@@ -312,7 +340,7 @@ class WebhookStore:
         return PersistResult(
             inserted=True,
             duplicate=False,
-            projection=event,
+            projection=projection,
             projection_error=projection_error,
             pruned_rows=pruned_rows,
         )
@@ -330,12 +358,11 @@ class WebhookStore:
             datetime.now(timezone.utc) - timedelta(seconds=retention_seconds)
         ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "DELETE FROM webhook_events WHERE received_at < ?",
-                (cutoff,),
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                delete(webhook_events).where(webhook_events.c.received_at < cutoff)
             )
-            count = cursor.rowcount
+            count = result.rowcount or 0
 
         if count > 0:
             webhook_event_pruned_total.inc(count)
@@ -360,69 +387,124 @@ class WebhookStore:
             (
                 "check_runs_current",
                 "completed",
-                "DELETE FROM check_runs_current WHERE status = ? AND last_seen_at < ?",
-                ("completed", completed_cutoff),
+                delete(check_runs_current).where(
+                    and_(
+                        check_runs_current.c.status == "completed",
+                        check_runs_current.c.last_seen_at < completed_cutoff,
+                    )
+                ),
             ),
             (
                 "check_runs_current",
                 "active",
-                "DELETE FROM check_runs_current WHERE (status IS NULL OR status != ?) AND last_seen_at < ?",
-                ("completed", active_cutoff),
+                delete(check_runs_current).where(
+                    and_(
+                        or_(
+                            check_runs_current.c.status.is_(None),
+                            check_runs_current.c.status != "completed",
+                        ),
+                        check_runs_current.c.last_seen_at < active_cutoff,
+                    )
+                ),
             ),
             (
                 "check_suites_current",
                 "completed",
-                "DELETE FROM check_suites_current WHERE status = ? AND last_seen_at < ?",
-                ("completed", completed_cutoff),
+                delete(check_suites_current).where(
+                    and_(
+                        check_suites_current.c.status == "completed",
+                        check_suites_current.c.last_seen_at < completed_cutoff,
+                    )
+                ),
             ),
             (
                 "check_suites_current",
                 "active",
-                "DELETE FROM check_suites_current WHERE (status IS NULL OR status != ?) AND last_seen_at < ?",
-                ("completed", active_cutoff),
+                delete(check_suites_current).where(
+                    and_(
+                        or_(
+                            check_suites_current.c.status.is_(None),
+                            check_suites_current.c.status != "completed",
+                        ),
+                        check_suites_current.c.last_seen_at < active_cutoff,
+                    )
+                ),
             ),
             (
                 "workflow_runs_current",
                 "completed",
-                "DELETE FROM workflow_runs_current WHERE status = ? AND last_seen_at < ?",
-                ("completed", completed_cutoff),
+                delete(workflow_runs_current).where(
+                    and_(
+                        workflow_runs_current.c.status == "completed",
+                        workflow_runs_current.c.last_seen_at < completed_cutoff,
+                    )
+                ),
             ),
             (
                 "workflow_runs_current",
                 "active",
-                "DELETE FROM workflow_runs_current WHERE (status IS NULL OR status != ?) AND last_seen_at < ?",
-                ("completed", active_cutoff),
+                delete(workflow_runs_current).where(
+                    and_(
+                        or_(
+                            workflow_runs_current.c.status.is_(None),
+                            workflow_runs_current.c.status != "completed",
+                        ),
+                        workflow_runs_current.c.last_seen_at < active_cutoff,
+                    )
+                ),
             ),
             (
                 "commit_status_current",
                 "completed",
-                "DELETE FROM commit_status_current WHERE (state IS NULL OR state != ?) AND last_seen_at < ?",
-                ("pending", completed_cutoff),
+                delete(commit_status_current).where(
+                    and_(
+                        or_(
+                            commit_status_current.c.state.is_(None),
+                            commit_status_current.c.state != "pending",
+                        ),
+                        commit_status_current.c.last_seen_at < completed_cutoff,
+                    )
+                ),
             ),
             (
                 "commit_status_current",
                 "active",
-                "DELETE FROM commit_status_current WHERE state = ? AND last_seen_at < ?",
-                ("pending", active_cutoff),
+                delete(commit_status_current).where(
+                    and_(
+                        commit_status_current.c.state == "pending",
+                        commit_status_current.c.last_seen_at < active_cutoff,
+                    )
+                ),
             ),
             (
                 "pr_heads_current",
                 "completed",
-                "DELETE FROM pr_heads_current WHERE (state IS NULL OR state != ?) AND updated_at < ?",
-                ("open", completed_cutoff),
+                delete(pr_heads_current).where(
+                    and_(
+                        or_(
+                            pr_heads_current.c.state.is_(None),
+                            pr_heads_current.c.state != "open",
+                        ),
+                        pr_heads_current.c.updated_at < completed_cutoff,
+                    )
+                ),
             ),
             (
                 "pr_heads_current",
                 "active",
-                "DELETE FROM pr_heads_current WHERE state = ? AND updated_at < ?",
-                ("open", active_cutoff),
+                delete(pr_heads_current).where(
+                    and_(
+                        pr_heads_current.c.state == "open",
+                        pr_heads_current.c.updated_at < active_cutoff,
+                    )
+                ),
             ),
         )
 
         counts: Dict[str, int] = {}
-        with self._connect() as conn:
-            for table, kind, query, params in statements:
-                deleted = conn.execute(query, params).rowcount
+        with self.engine.begin() as conn:
+            for table, kind, statement in statements:
+                deleted = conn.execute(statement).rowcount or 0
                 if deleted > 0:
                     webhook_projection_pruned_total.labels(
                         table=table, kind=kind
@@ -432,7 +514,7 @@ class WebhookStore:
 
     def _project(
         self,
-        conn: sqlite3.Connection,
+        conn: Connection,
         event: str,
         payload: Mapping[str, Any],
         now: str,
@@ -459,7 +541,7 @@ class WebhookStore:
 
     def _project_check_run(
         self,
-        conn: sqlite3.Connection,
+        conn: Connection,
         payload: Mapping[str, Any],
         now: str,
         delivery_id: str,
@@ -469,112 +551,86 @@ class WebhookStore:
         app = check_run.get("app") or {}
         check_suite = check_run.get("check_suite") or {}
 
-        conn.execute(
-            """
-            INSERT INTO check_runs_current (
-                repo_id,
-                repo_full_name,
-                check_run_id,
-                head_sha,
-                name,
-                status,
-                conclusion,
-                app_id,
-                app_slug,
-                check_suite_id,
-                started_at,
-                completed_at,
-                first_seen_at,
-                last_seen_at,
-                last_delivery_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(repo_id, check_run_id) DO UPDATE SET
-                repo_full_name = excluded.repo_full_name,
-                head_sha = excluded.head_sha,
-                name = excluded.name,
-                status = excluded.status,
-                conclusion = excluded.conclusion,
-                app_id = excluded.app_id,
-                app_slug = excluded.app_slug,
-                check_suite_id = excluded.check_suite_id,
-                started_at = excluded.started_at,
-                completed_at = excluded.completed_at,
-                last_seen_at = excluded.last_seen_at,
-                last_delivery_id = excluded.last_delivery_id
-            """,
-            (
-                repo["id"],
-                repo.get("full_name"),
-                check_run["id"],
-                check_run["head_sha"],
-                check_run["name"],
-                check_run["status"],
-                check_run.get("conclusion"),
-                app.get("id"),
-                app.get("slug"),
-                check_suite.get("id"),
-                check_run.get("started_at"),
-                check_run.get("completed_at"),
-                now,
-                now,
-                delivery_id,
-            ),
+        values = {
+            "repo_id": repo["id"],
+            "repo_full_name": repo.get("full_name"),
+            "check_run_id": check_run["id"],
+            "head_sha": check_run["head_sha"],
+            "name": check_run["name"],
+            "status": check_run["status"],
+            "conclusion": check_run.get("conclusion"),
+            "app_id": app.get("id"),
+            "app_slug": app.get("slug"),
+            "check_suite_id": check_suite.get("id"),
+            "started_at": check_run.get("started_at"),
+            "completed_at": check_run.get("completed_at"),
+            "first_seen_at": now,
+            "last_seen_at": now,
+            "last_delivery_id": delivery_id,
+        }
+        self._upsert(
+            conn=conn,
+            table=check_runs_current,
+            values=values,
+            conflict_columns=["repo_id", "check_run_id"],
+            update_columns=[
+                "repo_full_name",
+                "head_sha",
+                "name",
+                "status",
+                "conclusion",
+                "app_id",
+                "app_slug",
+                "check_suite_id",
+                "started_at",
+                "completed_at",
+                "last_seen_at",
+                "last_delivery_id",
+            ],
         )
 
     def _project_status(
         self,
-        conn: sqlite3.Connection,
+        conn: Connection,
         payload: Mapping[str, Any],
         now: str,
         delivery_id: str,
     ) -> None:
         repo = payload["repository"]
-
-        conn.execute(
-            """
-            INSERT INTO commit_status_current (
-                repo_id,
-                repo_full_name,
-                sha,
-                context,
-                status_id,
-                state,
-                created_at,
-                updated_at,
-                url,
-                first_seen_at,
-                last_seen_at,
-                last_delivery_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(repo_id, sha, context) DO UPDATE SET
-                repo_full_name = excluded.repo_full_name,
-                status_id = excluded.status_id,
-                state = excluded.state,
-                created_at = excluded.created_at,
-                updated_at = excluded.updated_at,
-                url = excluded.url,
-                last_seen_at = excluded.last_seen_at,
-                last_delivery_id = excluded.last_delivery_id
-            """,
-            (
-                repo["id"],
-                repo.get("full_name"),
-                payload["sha"],
-                payload["context"],
-                payload["id"],
-                payload["state"],
-                payload.get("created_at"),
-                payload.get("updated_at"),
-                payload.get("url"),
-                now,
-                now,
-                delivery_id,
-            ),
+        values = {
+            "repo_id": repo["id"],
+            "repo_full_name": repo.get("full_name"),
+            "sha": payload["sha"],
+            "context": payload["context"],
+            "status_id": payload["id"],
+            "state": payload["state"],
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+            "url": payload.get("url"),
+            "first_seen_at": now,
+            "last_seen_at": now,
+            "last_delivery_id": delivery_id,
+        }
+        self._upsert(
+            conn=conn,
+            table=commit_status_current,
+            values=values,
+            conflict_columns=["repo_id", "sha", "context"],
+            update_columns=[
+                "repo_full_name",
+                "status_id",
+                "state",
+                "created_at",
+                "updated_at",
+                "url",
+                "last_seen_at",
+                "last_delivery_id",
+            ],
         )
 
     def _project_check_suite(
         self,
-        conn: sqlite3.Connection,
+        conn: Connection,
         payload: Mapping[str, Any],
         now: str,
         delivery_id: str,
@@ -582,107 +638,83 @@ class WebhookStore:
         repo = payload["repository"]
         check_suite = payload["check_suite"]
         app = check_suite.get("app") or {}
-
-        conn.execute(
-            """
-            INSERT INTO check_suites_current (
-                repo_id,
-                repo_full_name,
-                check_suite_id,
-                head_sha,
-                head_branch,
-                status,
-                conclusion,
-                app_id,
-                app_slug,
-                created_at,
-                updated_at,
-                first_seen_at,
-                last_seen_at,
-                last_delivery_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(repo_id, check_suite_id) DO UPDATE SET
-                repo_full_name = excluded.repo_full_name,
-                head_sha = excluded.head_sha,
-                head_branch = excluded.head_branch,
-                status = excluded.status,
-                conclusion = excluded.conclusion,
-                app_id = excluded.app_id,
-                app_slug = excluded.app_slug,
-                created_at = excluded.created_at,
-                updated_at = excluded.updated_at,
-                last_seen_at = excluded.last_seen_at,
-                last_delivery_id = excluded.last_delivery_id
-            """,
-            (
-                repo["id"],
-                repo.get("full_name"),
-                check_suite["id"],
-                check_suite["head_sha"],
-                check_suite.get("head_branch"),
-                check_suite.get("status"),
-                check_suite.get("conclusion"),
-                app.get("id"),
-                app.get("slug"),
-                check_suite.get("created_at"),
-                check_suite.get("updated_at"),
-                now,
-                now,
-                delivery_id,
-            ),
+        values = {
+            "repo_id": repo["id"],
+            "repo_full_name": repo.get("full_name"),
+            "check_suite_id": check_suite["id"],
+            "head_sha": check_suite["head_sha"],
+            "head_branch": check_suite.get("head_branch"),
+            "status": check_suite.get("status"),
+            "conclusion": check_suite.get("conclusion"),
+            "app_id": app.get("id"),
+            "app_slug": app.get("slug"),
+            "created_at": check_suite.get("created_at"),
+            "updated_at": check_suite.get("updated_at"),
+            "first_seen_at": now,
+            "last_seen_at": now,
+            "last_delivery_id": delivery_id,
+        }
+        self._upsert(
+            conn=conn,
+            table=check_suites_current,
+            values=values,
+            conflict_columns=["repo_id", "check_suite_id"],
+            update_columns=[
+                "repo_full_name",
+                "head_sha",
+                "head_branch",
+                "status",
+                "conclusion",
+                "app_id",
+                "app_slug",
+                "created_at",
+                "updated_at",
+                "last_seen_at",
+                "last_delivery_id",
+            ],
         )
 
     def _project_pull_request(
         self,
-        conn: sqlite3.Connection,
+        conn: Connection,
         payload: Mapping[str, Any],
         now: str,
         delivery_id: str,
     ) -> None:
         repo = payload["repository"]
         pr = payload["pull_request"]
-
-        conn.execute(
-            """
-            INSERT INTO pr_heads_current (
-                repo_id,
-                repo_full_name,
-                pr_id,
-                pr_number,
-                state,
-                head_sha,
-                base_ref,
-                action,
-                updated_at,
-                last_delivery_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(repo_id, pr_number) DO UPDATE SET
-                repo_full_name = excluded.repo_full_name,
-                pr_id = excluded.pr_id,
-                state = excluded.state,
-                head_sha = excluded.head_sha,
-                base_ref = excluded.base_ref,
-                action = excluded.action,
-                updated_at = excluded.updated_at,
-                last_delivery_id = excluded.last_delivery_id
-            """,
-            (
-                repo["id"],
-                repo.get("full_name"),
-                pr["id"],
-                pr["number"],
-                pr["state"],
-                pr["head"]["sha"],
-                pr["base"]["ref"],
-                payload.get("action"),
-                pr.get("updated_at") or now,
-                delivery_id,
-            ),
+        values = {
+            "repo_id": repo["id"],
+            "repo_full_name": repo.get("full_name"),
+            "pr_id": pr["id"],
+            "pr_number": pr["number"],
+            "state": pr["state"],
+            "head_sha": pr["head"]["sha"],
+            "base_ref": pr["base"]["ref"],
+            "action": payload.get("action"),
+            "updated_at": pr.get("updated_at") or now,
+            "last_delivery_id": delivery_id,
+        }
+        self._upsert(
+            conn=conn,
+            table=pr_heads_current,
+            values=values,
+            conflict_columns=["repo_id", "pr_number"],
+            update_columns=[
+                "repo_full_name",
+                "pr_id",
+                "state",
+                "head_sha",
+                "base_ref",
+                "action",
+                "updated_at",
+                "last_delivery_id",
+            ],
         )
 
     def _project_workflow_run(
         self,
-        conn: sqlite3.Connection,
+        conn: Connection,
         payload: Mapping[str, Any],
         now: str,
         delivery_id: str,
@@ -690,74 +722,65 @@ class WebhookStore:
         repo = payload["repository"]
         workflow_run = payload["workflow_run"]
         app = workflow_run.get("app") or {}
-
-        conn.execute(
-            """
-            INSERT INTO workflow_runs_current (
-                repo_id,
-                repo_full_name,
-                workflow_run_id,
-                name,
-                event,
-                status,
-                conclusion,
-                head_sha,
-                run_number,
-                workflow_id,
-                check_suite_id,
-                app_id,
-                app_slug,
-                created_at,
-                updated_at,
-                first_seen_at,
-                last_seen_at,
-                last_delivery_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(repo_id, workflow_run_id) DO UPDATE SET
-                repo_full_name = excluded.repo_full_name,
-                name = excluded.name,
-                event = excluded.event,
-                status = excluded.status,
-                conclusion = excluded.conclusion,
-                head_sha = excluded.head_sha,
-                run_number = excluded.run_number,
-                workflow_id = excluded.workflow_id,
-                check_suite_id = excluded.check_suite_id,
-                app_id = excluded.app_id,
-                app_slug = excluded.app_slug,
-                created_at = excluded.created_at,
-                updated_at = excluded.updated_at,
-                last_seen_at = excluded.last_seen_at,
-                last_delivery_id = excluded.last_delivery_id
-            """,
-            (
-                repo["id"],
-                repo.get("full_name"),
-                workflow_run["id"],
-                workflow_run["name"],
-                workflow_run.get("event"),
-                workflow_run.get("status"),
-                workflow_run.get("conclusion"),
-                workflow_run["head_sha"],
-                workflow_run.get("run_number"),
-                workflow_run.get("workflow_id"),
-                workflow_run.get("check_suite_id"),
-                app.get("id"),
-                app.get("slug"),
-                workflow_run.get("created_at"),
-                workflow_run.get("updated_at"),
-                now,
-                now,
-                delivery_id,
-            ),
+        values = {
+            "repo_id": repo["id"],
+            "repo_full_name": repo.get("full_name"),
+            "workflow_run_id": workflow_run["id"],
+            "name": workflow_run["name"],
+            "event": workflow_run.get("event"),
+            "status": workflow_run.get("status"),
+            "conclusion": workflow_run.get("conclusion"),
+            "head_sha": workflow_run["head_sha"],
+            "run_number": workflow_run.get("run_number"),
+            "workflow_id": workflow_run.get("workflow_id"),
+            "check_suite_id": workflow_run.get("check_suite_id"),
+            "app_id": app.get("id"),
+            "app_slug": app.get("slug"),
+            "created_at": workflow_run.get("created_at"),
+            "updated_at": workflow_run.get("updated_at"),
+            "first_seen_at": now,
+            "last_seen_at": now,
+            "last_delivery_id": delivery_id,
+        }
+        self._upsert(
+            conn=conn,
+            table=workflow_runs_current,
+            values=values,
+            conflict_columns=["repo_id", "workflow_run_id"],
+            update_columns=[
+                "repo_full_name",
+                "name",
+                "event",
+                "status",
+                "conclusion",
+                "head_sha",
+                "run_number",
+                "workflow_id",
+                "check_suite_id",
+                "app_id",
+                "app_slug",
+                "created_at",
+                "updated_at",
+                "last_seen_at",
+                "last_delivery_id",
+            ],
         )
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=10000")
-        return conn
+    def _upsert(
+        self,
+        *,
+        conn: Connection,
+        table: Table,
+        values: Mapping[str, Any],
+        conflict_columns: Sequence[str],
+        update_columns: Sequence[str],
+    ) -> None:
+        stmt = sqlite_insert(table).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[table.c[col] for col in conflict_columns],
+            set_={col: getattr(stmt.excluded, col) for col in update_columns},
+        )
+        conn.execute(stmt)
 
     def _should_prune(self) -> bool:
         with self._counter_lock:
@@ -770,3 +793,17 @@ class WebhookStore:
     @staticmethod
     def payload_to_json(payload: Mapping[str, Any]) -> str:
         return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+    @staticmethod
+    def _build_engine(db_path: Path) -> Engine:
+        engine = create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
+
+        @sa_event.listens_for(engine, "connect")
+        def set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=10000")
+            cursor.close()
+
+        return engine
