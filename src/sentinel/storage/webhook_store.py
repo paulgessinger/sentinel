@@ -17,10 +17,12 @@ from sqlalchemy import (
     String,
     Table,
     and_,
+    case,
     create_engine,
     delete,
     event as sa_event,
     or_,
+    select,
     update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -66,6 +68,13 @@ check_runs_current = Table(
     Column("check_suite_id", Integer),
     Column("started_at", String),
     Column("completed_at", String),
+    Column("output_title", String),
+    Column("output_summary_hash", String),
+    Column("output_text_hash", String),
+    Column("last_eval_at", String),
+    Column("last_publish_at", String),
+    Column("last_publish_result", String),
+    Column("last_publish_error", String),
     Column("first_seen_at", String, nullable=False),
     Column("last_seen_at", String, nullable=False),
     Column("last_delivery_id", String, nullable=False),
@@ -155,6 +164,13 @@ Index(
     check_runs_current.c.repo_id,
     check_runs_current.c.head_sha,
     check_runs_current.c.name,
+)
+Index(
+    "idx_check_runs_current_repo_head_name_app",
+    check_runs_current.c.repo_id,
+    check_runs_current.c.head_sha,
+    check_runs_current.c.name,
+    check_runs_current.c.app_id,
 )
 Index(
     "idx_check_suites_current_repo_head_sha",
@@ -511,6 +527,175 @@ class WebhookStore:
                     ).inc(deleted)
                 counts[f"{table}:{kind}"] = deleted
         return counts
+
+    def get_open_pr_candidates(self, repo_id: int, head_sha: str) -> list[Dict[str, Any]]:
+        stmt = (
+            select(pr_heads_current)
+            .where(
+                and_(
+                    pr_heads_current.c.repo_id == repo_id,
+                    pr_heads_current.c.head_sha == head_sha,
+                    pr_heads_current.c.state == "open",
+                )
+            )
+            .order_by(pr_heads_current.c.updated_at.desc())
+        )
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
+    def get_check_runs_for_head(self, repo_id: int, head_sha: str) -> list[Dict[str, Any]]:
+        stmt = select(check_runs_current).where(
+            and_(
+                check_runs_current.c.repo_id == repo_id,
+                check_runs_current.c.head_sha == head_sha,
+            )
+        )
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
+    def get_workflow_runs_for_head(
+        self, repo_id: int, head_sha: str
+    ) -> list[Dict[str, Any]]:
+        stmt = select(workflow_runs_current).where(
+            and_(
+                workflow_runs_current.c.repo_id == repo_id,
+                workflow_runs_current.c.head_sha == head_sha,
+            )
+        )
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
+    def get_commit_statuses_for_sha(self, repo_id: int, sha: str) -> list[Dict[str, Any]]:
+        stmt = select(commit_status_current).where(
+            and_(
+                commit_status_current.c.repo_id == repo_id,
+                commit_status_current.c.sha == sha,
+            )
+        )
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
+    def get_sentinel_check_run(
+        self,
+        *,
+        repo_id: int,
+        head_sha: str,
+        check_name: str,
+        app_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        stmt = (
+            select(check_runs_current)
+            .where(
+                and_(
+                    check_runs_current.c.repo_id == repo_id,
+                    check_runs_current.c.head_sha == head_sha,
+                    check_runs_current.c.name == check_name,
+                    check_runs_current.c.app_id == app_id,
+                )
+            )
+            .order_by(
+                case((check_runs_current.c.check_run_id < 0, 1), else_=0),
+                check_runs_current.c.last_seen_at.desc(),
+            )
+        )
+        with self.engine.begin() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return None if row is None else dict(row)
+
+    def upsert_sentinel_check_run(
+        self,
+        *,
+        repo_id: int,
+        repo_full_name: Optional[str],
+        check_run_id: int,
+        head_sha: str,
+        name: str,
+        status: str,
+        conclusion: Optional[str],
+        app_id: int,
+        app_slug: str,
+        started_at: Optional[str],
+        completed_at: Optional[str],
+        output_title: Optional[str],
+        output_summary_hash: Optional[str],
+        output_text_hash: Optional[str],
+        last_eval_at: str,
+        last_publish_at: Optional[str],
+        last_publish_result: str,
+        last_publish_error: Optional[str],
+        last_delivery_id: Optional[str],
+        synthetic_id_to_delete: Optional[int] = None,
+    ) -> None:
+        now = utcnow_iso()
+        values = {
+            "repo_id": repo_id,
+            "repo_full_name": repo_full_name,
+            "check_run_id": check_run_id,
+            "head_sha": head_sha,
+            "name": name,
+            "status": status,
+            "conclusion": conclusion,
+            "app_id": app_id,
+            "app_slug": app_slug,
+            "check_suite_id": None,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "output_title": output_title,
+            "output_summary_hash": output_summary_hash,
+            "output_text_hash": output_text_hash,
+            "last_eval_at": last_eval_at,
+            "last_publish_at": last_publish_at,
+            "last_publish_result": last_publish_result,
+            "last_publish_error": last_publish_error,
+            "first_seen_at": now,
+            "last_seen_at": now,
+            "last_delivery_id": last_delivery_id or "",
+        }
+        stmt = sqlite_insert(check_runs_current).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[check_runs_current.c.repo_id, check_runs_current.c.check_run_id],
+            set_={
+                "repo_full_name": stmt.excluded.repo_full_name,
+                "head_sha": stmt.excluded.head_sha,
+                "name": stmt.excluded.name,
+                "status": stmt.excluded.status,
+                "conclusion": stmt.excluded.conclusion,
+                "app_id": stmt.excluded.app_id,
+                "app_slug": stmt.excluded.app_slug,
+                "check_suite_id": stmt.excluded.check_suite_id,
+                "started_at": stmt.excluded.started_at,
+                "completed_at": stmt.excluded.completed_at,
+                "output_title": stmt.excluded.output_title,
+                "output_summary_hash": stmt.excluded.output_summary_hash,
+                "output_text_hash": stmt.excluded.output_text_hash,
+                "last_eval_at": stmt.excluded.last_eval_at,
+                "last_publish_at": stmt.excluded.last_publish_at,
+                "last_publish_result": stmt.excluded.last_publish_result,
+                "last_publish_error": stmt.excluded.last_publish_error,
+                "last_seen_at": stmt.excluded.last_seen_at,
+                "last_delivery_id": stmt.excluded.last_delivery_id,
+            },
+        )
+        with self.engine.begin() as conn:
+            conn.execute(stmt)
+            if (
+                synthetic_id_to_delete is not None
+                and synthetic_id_to_delete < 0
+                and synthetic_id_to_delete != check_run_id
+                and check_run_id > 0
+            ):
+                conn.execute(
+                    delete(check_runs_current).where(
+                        and_(
+                            check_runs_current.c.repo_id == repo_id,
+                            check_runs_current.c.check_run_id == synthetic_id_to_delete,
+                        )
+                    )
+                )
 
     def _project(
         self,

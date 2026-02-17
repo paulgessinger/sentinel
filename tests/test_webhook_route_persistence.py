@@ -42,6 +42,15 @@ def make_check_run_event(app_id: int = 1234):
     return SimpleNamespace(event="check_run", data=payload)
 
 
+def make_config(**overrides):
+    data = {
+        "WEBHOOK_DISPATCH_ENABLED": False,
+        "PROJECTION_EVAL_ENABLED": False,
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
 @pytest.mark.asyncio
 async def test_supported_event_persists_without_dispatch(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
@@ -49,9 +58,9 @@ async def test_supported_event_persists_without_dispatch(tmp_path):
     store.initialize()
 
     app = SimpleNamespace(
+        config=make_config(),
         ctx=SimpleNamespace(
             webhook_store=store,
-            webhook_dispatch_enabled=False,
         )
     )
 
@@ -75,14 +84,49 @@ async def test_supported_event_persists_without_dispatch(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_supported_event_enqueues_projection_eval_when_enabled(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    enqueued = []
+
+    class _Scheduler:
+        async def enqueue(self, trigger):
+            enqueued.append(trigger)
+
+    app = SimpleNamespace(
+        config=make_config(PROJECTION_EVAL_ENABLED=True),
+        ctx=SimpleNamespace(
+            webhook_store=store,
+            projection_scheduler=_Scheduler(),
+        )
+    )
+
+    request = make_request()
+    event = make_check_run_event()
+
+    await process_github_event(
+        app,
+        event,
+        request.headers["X-GitHub-Delivery"],
+        request.body.decode("utf-8"),
+    )
+
+    assert len(enqueued) == 1
+    assert enqueued[0].repo_id == 500
+    assert enqueued[0].head_sha == "a" * 40
+
+
+@pytest.mark.asyncio
 async def test_persistence_exception_is_tolerated(tmp_path, monkeypatch):
     store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
     store.initialize()
 
     app = SimpleNamespace(
+        config=make_config(),
         ctx=SimpleNamespace(
             webhook_store=store,
-            webhook_dispatch_enabled=False,
         )
     )
 
@@ -113,9 +157,9 @@ async def test_unsupported_event_does_not_project(tmp_path):
     store.initialize()
 
     app = SimpleNamespace(
+        config=make_config(),
         ctx=SimpleNamespace(
             webhook_store=store,
-            webhook_dispatch_enabled=False,
         )
     )
 
@@ -145,9 +189,9 @@ async def test_dispatch_runs_when_enabled(tmp_path, monkeypatch):
         assert app is not None
 
     app = SimpleNamespace(
+        config=make_config(WEBHOOK_DISPATCH_ENABLED=True),
         ctx=SimpleNamespace(
             webhook_store=store,
-            webhook_dispatch_enabled=True,
             github_router=SimpleNamespace(dispatch=fake_dispatch),
         )
     )
@@ -177,10 +221,9 @@ async def test_check_run_name_filter_skips_persistence(tmp_path):
     store.initialize()
 
     app = SimpleNamespace(
-        config=SimpleNamespace(CHECK_RUN_NAME_FILTER=r"^tests$"),
+        config=make_config(CHECK_RUN_NAME_FILTER=r"^tests$"),
         ctx=SimpleNamespace(
             webhook_store=store,
-            webhook_dispatch_enabled=False,
         ),
     )
 
@@ -212,10 +255,12 @@ async def test_check_run_name_filter_skips_dispatch_when_enabled(tmp_path, monke
         assert app is not None
 
     app = SimpleNamespace(
-        config=SimpleNamespace(CHECK_RUN_NAME_FILTER=r"^tests$"),
+        config=make_config(
+            CHECK_RUN_NAME_FILTER=r"^tests$",
+            WEBHOOK_DISPATCH_ENABLED=True,
+        ),
         ctx=SimpleNamespace(
             webhook_store=store,
-            webhook_dispatch_enabled=True,
             github_router=SimpleNamespace(dispatch=fake_dispatch),
         ),
     )
@@ -245,14 +290,13 @@ async def test_self_app_id_filter_skips_persistence(tmp_path):
     store.initialize()
 
     app = SimpleNamespace(
-        config=SimpleNamespace(
+        config=make_config(
             GITHUB_APP_ID=1234,
             WEBHOOK_FILTER_SELF_APP_ID=True,
             WEBHOOK_FILTER_APP_IDS=(),
         ),
         ctx=SimpleNamespace(
             webhook_store=store,
-            webhook_dispatch_enabled=False,
         ),
     )
 
@@ -277,14 +321,13 @@ async def test_configured_app_id_filter_skips_persistence(tmp_path):
     store.initialize()
 
     app = SimpleNamespace(
-        config=SimpleNamespace(
+        config=make_config(
             GITHUB_APP_ID=1234,
             WEBHOOK_FILTER_SELF_APP_ID=False,
             WEBHOOK_FILTER_APP_IDS=(8888, 9999),
         ),
         ctx=SimpleNamespace(
             webhook_store=store,
-            webhook_dispatch_enabled=False,
         ),
     )
 

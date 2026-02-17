@@ -28,6 +28,11 @@ from sentinel.metric import (
     queue_size,
     error_counter,
 )
+from sentinel.projection import (
+    ProjectionEvaluator,
+    ProjectionStatusScheduler,
+    ProjectionTrigger,
+)
 from sentinel.storage import WebhookStore
 
 
@@ -97,6 +102,16 @@ def excluded_app_ids_for_event(app: Sanic) -> set[int]:
     return excluded
 
 
+def webhook_dispatch_enabled(app: Sanic) -> bool:
+    cfg = getattr(app, "config", None)
+    return bool(getattr(cfg, "WEBHOOK_DISPATCH_ENABLED", False))
+
+
+def projection_eval_enabled(app: Sanic) -> bool:
+    cfg = getattr(app, "config", None)
+    return bool(getattr(cfg, "PROJECTION_EVAL_ENABLED", False))
+
+
 def persist_webhook_event(
     app: Sanic, event: sansio.Event, delivery_id: str, payload_json: str
 ):
@@ -120,6 +135,44 @@ def persist_webhook_event(
     if result.projection_error is not None:
         error_counter.labels(context="webhook_projection").inc()
     return result
+
+
+def projection_trigger_from_event(
+    event: sansio.Event, delivery_id: str
+) -> ProjectionTrigger | None:
+    payload = event.data
+    repo = payload.get("repository") or {}
+    installation = payload.get("installation") or {}
+    repo_id = repo.get("id")
+    repo_full_name = repo.get("full_name")
+    installation_id = installation.get("id")
+    if repo_id is None or repo_full_name is None or installation_id is None:
+        return None
+
+    if event.event == "check_run":
+        head_sha = (payload.get("check_run") or {}).get("head_sha")
+    elif event.event == "check_suite":
+        head_sha = (payload.get("check_suite") or {}).get("head_sha")
+    elif event.event == "workflow_run":
+        head_sha = (payload.get("workflow_run") or {}).get("head_sha")
+    elif event.event == "status":
+        head_sha = payload.get("sha")
+    elif event.event == "pull_request":
+        head_sha = ((payload.get("pull_request") or {}).get("head") or {}).get("sha")
+    else:
+        return None
+
+    if not head_sha:
+        return None
+
+    return ProjectionTrigger(
+        repo_id=int(repo_id),
+        repo_full_name=str(repo_full_name),
+        head_sha=str(head_sha),
+        installation_id=int(installation_id),
+        delivery_id=delivery_id or None,
+        event=event.event,
+    )
 
 
 async def process_github_event(
@@ -152,9 +205,12 @@ async def process_github_event(
         )
         return
 
+    persist_result = None
     if app.ctx.webhook_store.enabled:
         try:
-            persist_webhook_event(app, event, delivery_id, payload_json)
+            persist_result = persist_webhook_event(
+                app, event, delivery_id, payload_json
+            )
         except Exception:  # noqa: BLE001
             error_counter.labels(context="webhook_persist").inc()
             logger.error(
@@ -163,7 +219,27 @@ async def process_github_event(
                 exc_info=True,
             )
 
-    if not getattr(app.ctx, "webhook_dispatch_enabled", False):
+    if (
+        projection_eval_enabled(app)
+        and persist_result is not None
+        and persist_result.inserted
+        and persist_result.projection_error is None
+        and app.ctx.projection_scheduler is not None
+    ):
+        trigger = projection_trigger_from_event(event, delivery_id)
+        if trigger is not None:
+            try:
+                await app.ctx.projection_scheduler.enqueue(trigger)
+            except Exception:  # noqa: BLE001
+                error_counter.labels(context="projection_schedule").inc()
+                logger.error(
+                    "Failed scheduling projection evaluation for repo_id=%s sha=%s",
+                    trigger.repo_id,
+                    trigger.head_sha,
+                    exc_info=True,
+                )
+
+    if not webhook_dispatch_enabled(app):
         return
 
     if event.event not in ("check_run", "status", "pull_request"):
@@ -173,7 +249,7 @@ async def process_github_event(
     installation_id = event.data["installation"]["id"]
     logger.debug("Installation id: %s", installation_id)
 
-    repo = Repository.parse_obj(event.data["repository"])
+    repo = Repository.model_validate(event.data["repository"])
     logger.debug("Repository %s", repo.full_name)
 
     gh = await client_for_installation(app, installation_id)
@@ -218,7 +294,7 @@ def create_app():
         handler.setFormatter(logger.handlers[0].formatter)
 
     app.ctx.github_router = create_router()
-    app.ctx.webhook_dispatch_enabled = app.config.WEBHOOK_DISPATCH_ENABLED
+    app.ctx.projection_scheduler = None
     app.ctx.webhook_store = WebhookStore(
         db_path=app.config.WEBHOOK_DB_PATH,
         retention_seconds=app.config.WEBHOOK_DB_RETENTION_SECONDS,
@@ -240,16 +316,17 @@ def create_app():
 
     @app.listener("before_server_start")
     async def init(app):
-        if app.ctx.webhook_dispatch_enabled:
+        if webhook_dispatch_enabled(app) or projection_eval_enabled(app):
             logger.debug("Creating aiohttp session")
             app.ctx.aiohttp_session = aiohttp.ClientSession()
 
-            gh = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
-            jwt = get_jwt(
-                app_id=str(app.config.GITHUB_APP_ID),
-                private_key=app.config.GITHUB_PRIVATE_KEY,
-            )
-            app.ctx.app_info = await gh.getitem("/app", jwt=jwt)
+            if webhook_dispatch_enabled(app):
+                gh = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
+                jwt = get_jwt(
+                    app_id=str(app.config.GITHUB_APP_ID),
+                    private_key=app.config.GITHUB_PRIVATE_KEY,
+                )
+                app.ctx.app_info = await gh.getitem("/app", jwt=jwt)
 
         app.ctx.webhook_store.initialize()
         app.ctx.webhook_store.prune_old_events()
@@ -259,8 +336,32 @@ def create_app():
                 active_retention_seconds=app.config.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS,
             )
 
+        if projection_eval_enabled(app):
+
+            async def projection_api_factory(installation_id: int) -> API:
+                gh = await client_for_installation(app, installation_id)
+                return API(gh, installation_id)
+
+            evaluator = ProjectionEvaluator(
+                store=app.ctx.webhook_store,
+                app_id=app.config.GITHUB_APP_ID,
+                check_run_name=app.config.PROJECTION_CHECK_RUN_NAME,
+                publish_enabled=app.config.PROJECTION_PUBLISH_ENABLED,
+                path_rule_fallback_enabled=app.config.PROJECTION_PATH_RULE_FALLBACK_ENABLED,
+                config_cache_seconds=app.config.PROJECTION_CONFIG_CACHE_SECONDS,
+                pr_files_cache_seconds=app.config.PROJECTION_PR_FILES_CACHE_SECONDS,
+                api_factory=projection_api_factory,
+            )
+            app.ctx.projection_scheduler = ProjectionStatusScheduler(
+                debounce_seconds=app.config.PROJECTION_DEBOUNCE_SECONDS,
+                handler=evaluator.evaluate_and_publish,
+            )
+
     @app.listener("after_server_stop")
     async def shutdown(app):
+        scheduler = getattr(app.ctx, "projection_scheduler", None)
+        if scheduler is not None:
+            await scheduler.shutdown()
         session = getattr(app.ctx, "aiohttp_session", None)
         if session is not None and not session.closed:
             await session.close()

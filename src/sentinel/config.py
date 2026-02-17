@@ -84,3 +84,25 @@ WEBHOOK_FILTER_APP_IDS = tuple(
     for part in os.environ.get("WEBHOOK_FILTER_APP_IDS", "").split(",")
     if part.strip()
 )
+
+PROJECTION_EVAL_ENABLED = (
+    os.environ.get("PROJECTION_EVAL_ENABLED", "false").lower() == "true"
+)
+PROJECTION_PUBLISH_ENABLED = (
+    os.environ.get("PROJECTION_PUBLISH_ENABLED", "false").lower() == "true"
+)
+PROJECTION_DEBOUNCE_SECONDS = float(
+    os.environ.get("PROJECTION_DEBOUNCE_SECONDS", 2)
+)
+PROJECTION_CHECK_RUN_NAME = os.environ.get(
+    "PROJECTION_CHECK_RUN_NAME", "merge-sentinel"
+)
+PROJECTION_CONFIG_CACHE_SECONDS = int(
+    os.environ.get("PROJECTION_CONFIG_CACHE_SECONDS", 300)
+)
+PROJECTION_PR_FILES_CACHE_SECONDS = int(
+    os.environ.get("PROJECTION_PR_FILES_CACHE_SECONDS", 86400)
+)
+PROJECTION_PATH_RULE_FALLBACK_ENABLED = (
+    os.environ.get("PROJECTION_PATH_RULE_FALLBACK_ENABLED", "true").lower() == "true"
+)

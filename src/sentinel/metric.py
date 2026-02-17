@@ -77,3 +77,33 @@ webhook_projection_pruned_total = Counter(
     "Number of old projection rows pruned",
     labelnames=["table", "kind"],
 )
+
+sentinel_projection_eval_total = Counter(
+    "sentinel_projection_eval_total",
+    "Projection evaluation outcomes",
+    labelnames=["result"],
+)
+
+sentinel_projection_debounce_total = Counter(
+    "sentinel_projection_debounce_total",
+    "Projection debounce scheduling outcomes",
+    labelnames=["result"],
+)
+
+sentinel_projection_publish_total = Counter(
+    "sentinel_projection_publish_total",
+    "Projection publish outcomes",
+    labelnames=["result"],
+)
+
+sentinel_projection_lookup_total = Counter(
+    "sentinel_projection_lookup_total",
+    "Projection check run lookup outcomes",
+    labelnames=["result"],
+)
+
+sentinel_projection_fallback_total = Counter(
+    "sentinel_projection_fallback_total",
+    "Projection fallback cache/read outcomes",
+    labelnames=["kind", "result"],
+)
