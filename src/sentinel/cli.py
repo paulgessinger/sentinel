@@ -124,7 +124,7 @@ def queue_pr(repo: str, number: int, installation: int):
     async def handle():
         async with installation_client(installation) as gh:
 
-            pr = PullRequest.parse_obj(
+            pr = PullRequest.model_validate(
                 await gh.getitem(f"/repos/{repo}/pulls/{number}")
             )
 
@@ -139,7 +139,7 @@ def queue_pr(repo: str, number: int, installation: int):
 def pr(repo: str, number: int, installation: int):
     async def handle():
         async with installation_client(installation) as gh:
-            pr = PullRequest.parse_obj(
+            pr = PullRequest.model_validate(
                 await gh.getitem(f"/repos/{repo}/pulls/{number}")
             )
             api = API(gh, installation)
