@@ -195,7 +195,7 @@ def create_app():
     # async def test(request, repo: str, installation_id: int, number: int):
     #     async with installation_client(installation_id) as gh:
 
-    #         pr = PullRequest.parse_obj(
+    #         pr = PullRequest.model_validate(
     #             await gh.getitem(f"/repos/{repo.replace('__', '/')}/pulls/{number}")
     #         )
 

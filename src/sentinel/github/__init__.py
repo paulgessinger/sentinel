@@ -177,7 +177,7 @@ async def get_config_from_repo(api: API, repo: Repository) -> Optional[Config]:
         data = yaml.safe_load(buf)
 
         try:
-            return Config() if data is None else Config.parse_obj(data)
+            return Config() if data is None else Config.model_validate(data)
         except pydantic.error_wrappers.ValidationError as e:
             raise InvalidConfig(
                 str(e), raw_config=decoded_content, source_url=content.html_url
@@ -216,7 +216,7 @@ async def populate_check_run(
     #     print("-", aj.id, aj.run_id, aj.status, aj.conclusion, aj.name)
 
     actions_runs = {
-        r["id"]: ActionsRun.parse_obj(r)
+        r["id"]: ActionsRun.model_validate(r)
         for r in await asyncio.gather(
             *(api.gh.getitem(url) for url in {j.run_url for j in actions_jobs.values()})
         )
@@ -579,7 +579,7 @@ async def process_pull_request(pr: PullRequest, api: API):
     async def load_check_runs(cs: CheckSuite) -> AsyncIterator[CheckRun]:
         api.call_count += 1
         check_runs = [
-            CheckRun.parse_obj(raw)
+            CheckRun.model_validate(raw)
             async for raw in api.gh.getiter(
                 cs.check_runs_url, iterable_key="check_runs"
             )
@@ -731,14 +731,14 @@ def create_router():
     @router.register("pull_request")
     async def on_pr(event: Event, api: API, app: Sanic):
 
-        pr = PullRequest.parse_obj(event.data["pull_request"])
+        pr = PullRequest.model_validate(event.data["pull_request"])
         # print(pr)
         logger.debug("Received pull_request event on PR #%d", pr.number)
 
         action = event.data["action"]
         logger.debug("Action: %s", action)
 
-        repo = Repository.parse_obj(event.data["repository"])
+        repo = Repository.model_validate(event.data["repository"])
 
         if not await validate_source_repo(api, repo, pr):
             return
@@ -753,7 +753,7 @@ def create_router():
 
     @router.register("check_run")
     async def on_check_run(event: Event, api: API, app: Sanic):
-        check_run = CheckRun.parse_obj(event.data["check_run"])
+        check_run = CheckRun.model_validate(event.data["check_run"])
 
         if check_run.app.id == app_config.GITHUB_APP_ID:
             logger.debug("Check run from us, skip handling")
@@ -772,7 +772,7 @@ def create_router():
                 ).inc()
                 return
 
-        repo = Repository.parse_obj(event.data["repository"])
+        repo = Repository.model_validate(event.data["repository"])
 
         with get_cache() as dcache:
 
@@ -831,7 +831,7 @@ def create_router():
 
     @router.register("status")
     async def on_status(event: Event, api: API, app: Sanic):
-        status = CommitStatus.parse_obj(event.data)
+        status = CommitStatus.model_validate(event.data)
         if app_config.CHECK_RUN_NAME_FILTER is not None:
             if re.match(app_config.CHECK_RUN_NAME_FILTER, status.context):
                 logger.debug(
@@ -844,7 +844,7 @@ def create_router():
                 ).inc()
                 return
 
-        repo = Repository.parse_obj(event.data["repository"])
+        repo = Repository.model_validate(event.data["repository"])
 
         status_key = f"status_{status.sha}_{status.context}"
         with get_cache() as dcache:

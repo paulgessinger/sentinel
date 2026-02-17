@@ -1,9 +1,6 @@
 from datetime import datetime, timezone
-import functools
-from tabnanny import check
 from typing import AsyncIterator, List
 from gidgethub.abc import GitHubAPI
-import base64
 import copy
 
 from sentinel.github.model import (
@@ -91,7 +88,7 @@ class API:
         url = f"{repo.url}/commits/{ref}/check-runs"
         logger.debug("Get check runs for ref %s", url)
         async for item in self.gh.getiter(url, iterable_key="check_runs"):
-            yield CheckRun.parse_obj(item)
+            yield CheckRun.model_validate(item)
 
     async def get_status_for_ref(
         self, repo: Repository, ref: str
@@ -110,13 +107,13 @@ class API:
         url = f"{repo.url}/commits/{ref}/check-suites"
         logger.debug("Get check runs for ref %s", url)
         async for item in self.gh.getiter(url, iterable_key="check_suites"):
-            yield CheckSuite.parse_obj(item)
+            yield CheckSuite.model_validate(item)
 
     async def get_content(self, repo_url: str, path: str) -> Content:
         self.call_count += 1
         url = f"{repo_url}/contents/{path}"
         logger.debug("Get file content: %s", url)
-        content = Content.parse_obj(await self.gh.getitem(url))
+        content = Content.model_validate(await self.gh.getitem(url))
 
         return content
 
@@ -125,32 +122,32 @@ class API:
         url = f"{pr.base.repo.url}/pulls/{pr.number}/files"
         logger.debug("Getting files for PR #%d %s", pr.number, url)
         async for item in self.gh.getiter(url):
-            yield PrFile.parse_obj(item)
+            yield PrFile.model_validate(item)
 
     async def get_check_suite(self, repo_url: str, id: int) -> CheckSuite:
         self.call_count += 1
         url = f"{repo_url}/check-suites/{id}"
-        return CheckSuite.parse_obj(await self.gh.getitem(url))
+        return CheckSuite.model_validate(await self.gh.getitem(url))
 
     async def get_actions_job(self, repo_url: str, id: int) -> ActionsJob:
         self.call_count += 1
         url = f"{repo_url}/actions/jobs/{id}"
-        return ActionsJob.parse_obj(await self.gh.getitem(url))
+        return ActionsJob.model_validate(await self.gh.getitem(url))
 
     async def get_repository(self, repo_url: str) -> Repository:
         self.call_count += 1
-        return Repository.parse_obj(await self.gh.getitem(repo_url))
+        return Repository.model_validate(await self.gh.getitem(repo_url))
 
     async def get_pulls(self, repo_url: str) -> AsyncIterator[PullRequest]:
         self.call_count += 1
         async for item in self.gh.getiter(f"{repo_url}/pulls"):
-            yield PullRequest.parse_obj(item)
+            yield PullRequest.model_validate(item)
 
     async def get_pull(self, repo_url: str, number: int) -> PullRequest:
         self.call_count += 1
         url = f"{repo_url}/pulls/{number}"
         logger.debug("Get pull %s", url)
         item = await self.gh.getitem(url)
-        return PullRequest.parse_obj(item)
+        return PullRequest.model_validate(item)
 
     # async def get_pull_request(self)
