@@ -59,14 +59,34 @@ class ProjectionEvaluator:
         self._pr_files_cache: Dict[tuple[int, int, str], tuple[float, List[str]]] = {}
 
     async def evaluate_and_publish(self, trigger: ProjectionTrigger) -> EvaluationResult:
+        started = time.monotonic()
+        logger.info(
+            "Projection eval start repo=%s sha=%s event=%s delivery=%s",
+            trigger.repo_full_name,
+            trigger.head_sha,
+            trigger.event,
+            trigger.delivery_id,
+        )
         try:
-            return await self._evaluate_and_publish(trigger)
+            result = await self._evaluate_and_publish(trigger)
+            logger.info(
+                "Projection eval done repo=%s sha=%s result=%s changed=%s check_run_id=%s duration_ms=%.1f",
+                trigger.repo_full_name,
+                trigger.head_sha,
+                result.result,
+                result.changed,
+                result.check_run_id,
+                (time.monotonic() - started) * 1000.0,
+            )
+            return result
         except Exception as exc:  # noqa: BLE001
             sentinel_projection_eval_total.labels(result="error").inc()
             logger.error(
-                "Projection evaluation failed for repo_id=%s head_sha=%s",
+                "Projection evaluation failed repo=%s repo_id=%s sha=%s delivery=%s",
+                trigger.repo_full_name,
                 trigger.repo_id,
                 trigger.head_sha,
+                trigger.delivery_id,
                 exc_info=True,
             )
             return EvaluationResult(result="error", error=str(exc))
@@ -77,16 +97,34 @@ class ProjectionEvaluator:
 
         open_prs = self.store.get_open_pr_candidates(repo_id, head_sha)
         if not open_prs:
+            logger.info(
+                "Projection eval skip repo=%s sha=%s reason=no_open_pr",
+                trigger.repo_full_name,
+                head_sha,
+            )
             sentinel_projection_eval_total.labels(result="no_pr").inc()
             return EvaluationResult(result="no_pr")
 
         if len(open_prs) > 1:
+            logger.info(
+                "Projection eval ambiguous repo=%s sha=%s open_prs=%d using_pr=%s",
+                trigger.repo_full_name,
+                head_sha,
+                len(open_prs),
+                open_prs[0].get("pr_number"),
+            )
             sentinel_projection_eval_total.labels(result="ambiguous_pr").inc()
         pr_row = open_prs[0]
 
         api = await self.api_factory(trigger.installation_id)
         config = await self._get_repo_config(api, trigger)
         if config is None:
+            logger.info(
+                "Projection eval skip repo=%s sha=%s pr=%s reason=no_config",
+                trigger.repo_full_name,
+                head_sha,
+                pr_row.get("pr_number"),
+            )
             sentinel_projection_eval_total.labels(result="no_config").inc()
             return EvaluationResult(result="no_config")
 
@@ -94,19 +132,49 @@ class ProjectionEvaluator:
         has_path_rules = any(
             rule.paths is not None or rule.paths_ignore is not None for rule in config.rules
         )
+        logger.debug(
+            "Projection eval inputs repo=%s sha=%s pr=%s rules=%d has_path_rules=%s",
+            trigger.repo_full_name,
+            head_sha,
+            pr_row.get("pr_number"),
+            len(config.rules),
+            has_path_rules,
+        )
         if has_path_rules and self.path_rule_fallback_enabled:
             changed_files = await self._get_pr_files(
                 api=api,
                 trigger=trigger,
                 pr_number=int(pr_row["pr_number"]),
             )
+            logger.debug(
+                "Projection eval path fallback repo=%s sha=%s pr=%s changed_files=%d",
+                trigger.repo_full_name,
+                head_sha,
+                pr_row.get("pr_number"),
+                len(changed_files),
+            )
 
         pr_like = SimpleNamespace(base=SimpleNamespace(ref=pr_row["base_ref"]))
         rules = determine_rules(changed_files, pr_like, config.rules)
+        logger.debug(
+            "Projection eval selected rules repo=%s sha=%s pr=%s selected=%d",
+            trigger.repo_full_name,
+            head_sha,
+            pr_row.get("pr_number"),
+            len(rules),
+        )
 
         check_rows = self.store.get_check_runs_for_head(repo_id, head_sha)
         workflow_rows = self.store.get_workflow_runs_for_head(repo_id, head_sha)
         status_rows = self.store.get_commit_statuses_for_sha(repo_id, head_sha)
+        logger.debug(
+            "Projection eval projections repo=%s sha=%s checks=%d workflows=%d statuses=%d",
+            trigger.repo_full_name,
+            head_sha,
+            len(check_rows),
+            len(workflow_rows),
+            len(status_rows),
+        )
 
         check_rows = [
             row
@@ -204,6 +272,15 @@ class ProjectionEvaluator:
             for item in result_items.values()
             if item.required and item.status == "success"
         ]
+        logger.debug(
+            "Projection eval aggregate repo=%s sha=%s items=%d failures=%d required_pending=%d required_success=%d",
+            trigger.repo_full_name,
+            head_sha,
+            len(result_items),
+            len(failures),
+            len(in_progress),
+            len(required_successes),
+        )
 
         if failures:
             new_status = "completed"
@@ -270,6 +347,16 @@ class ProjectionEvaluator:
             and sentinel_row.get("output_summary_hash") == summary_hash
             and sentinel_row.get("output_text_hash") == text_hash
         )
+        logger.debug(
+            "Projection eval diff repo=%s sha=%s unchanged=%s prev_status=%s new_status=%s prev_conclusion=%s new_conclusion=%s",
+            trigger.repo_full_name,
+            head_sha,
+            unchanged,
+            sentinel_row.get("status") if sentinel_row else None,
+            new_status,
+            sentinel_row.get("conclusion") if sentinel_row else None,
+            new_conclusion,
+        )
 
         now_iso = utcnow_iso()
         started_at = self._min_started_at(check_by_name.values())
@@ -278,6 +365,13 @@ class ProjectionEvaluator:
         )
 
         if unchanged:
+            logger.info(
+                "Projection eval unchanged repo=%s sha=%s pr=%s check_run_id=%s",
+                trigger.repo_full_name,
+                head_sha,
+                pr_row.get("pr_number"),
+                check_run_id,
+            )
             sentinel_projection_publish_total.labels(result="unchanged").inc()
             self.store.upsert_sentinel_check_run(
                 repo_id=repo_id,
@@ -309,6 +403,15 @@ class ProjectionEvaluator:
         publish_at: Optional[str] = None
 
         if self.publish_enabled:
+            logger.info(
+                "Projection publish attempt repo=%s sha=%s pr=%s current_id=%s status=%s conclusion=%s",
+                trigger.repo_full_name,
+                head_sha,
+                pr_row.get("pr_number"),
+                check_run_id if check_run_id > 0 else None,
+                new_status,
+                new_conclusion,
+            )
             check_run = CheckRun.make_app_check_run(
                 id=check_run_id if check_run_id > 0 else None,
                 head_sha=head_sha,
@@ -325,6 +428,11 @@ class ProjectionEvaluator:
 
             if check_run.id is None:
                 sentinel_projection_lookup_total.labels(result="local_id_miss").inc()
+                logger.debug(
+                    "Projection lookup local miss repo=%s sha=%s",
+                    trigger.repo_full_name,
+                    head_sha,
+                )
                 existing = await api.find_existing_sentinel_check_run(
                     repo_url=self._repo_url(trigger.repo_full_name),
                     head_sha=head_sha,
@@ -334,10 +442,27 @@ class ProjectionEvaluator:
                 if existing is not None and existing.id is not None:
                     sentinel_projection_lookup_total.labels(result="gh_lookup_hit").inc()
                     check_run.id = int(existing.id)
+                    logger.info(
+                        "Projection lookup github hit repo=%s sha=%s found_id=%s",
+                        trigger.repo_full_name,
+                        head_sha,
+                        check_run.id,
+                    )
                 else:
                     sentinel_projection_lookup_total.labels(result="gh_lookup_miss").inc()
+                    logger.info(
+                        "Projection lookup github miss repo=%s sha=%s",
+                        trigger.repo_full_name,
+                        head_sha,
+                    )
             else:
                 sentinel_projection_lookup_total.labels(result="local_id_hit").inc()
+                logger.debug(
+                    "Projection lookup local hit repo=%s sha=%s id=%s",
+                    trigger.repo_full_name,
+                    head_sha,
+                    check_run.id,
+                )
 
             try:
                 posted_id = await api.post_check_run(self._repo_url(trigger.repo_full_name), check_run)
@@ -345,17 +470,32 @@ class ProjectionEvaluator:
                 publish_result = "published"
                 publish_at = now_iso
                 sentinel_projection_publish_total.labels(result="published").inc()
+                logger.info(
+                    "Projection publish success repo=%s sha=%s published_id=%s",
+                    trigger.repo_full_name,
+                    head_sha,
+                    published_id,
+                )
             except Exception as exc:  # noqa: BLE001
                 publish_result = "error"
                 publish_error = str(exc)
                 sentinel_projection_publish_total.labels(result="error").inc()
                 logger.error(
-                    "Publishing projection check run failed for repo=%s sha=%s",
+                    "Publishing projection check run failed repo=%s sha=%s pr=%s",
                     trigger.repo_full_name,
                     head_sha,
+                    pr_row.get("pr_number"),
                     exc_info=True,
                 )
         else:
+            logger.info(
+                "Projection publish skipped (dry_run) repo=%s sha=%s pr=%s status=%s conclusion=%s",
+                trigger.repo_full_name,
+                head_sha,
+                pr_row.get("pr_number"),
+                new_status,
+                new_conclusion,
+            )
             sentinel_projection_publish_total.labels(result="dry_run").inc()
 
         final_id = int(published_id) if published_id is not None else check_run_id
@@ -387,6 +527,13 @@ class ProjectionEvaluator:
         )
 
         sentinel_projection_eval_total.labels(result="evaluated").inc()
+        logger.debug(
+            "Projection eval state persisted repo=%s sha=%s check_run_id=%s publish_result=%s",
+            trigger.repo_full_name,
+            head_sha,
+            final_id,
+            publish_result,
+        )
         return EvaluationResult(
             result=publish_result,
             check_run_id=final_id,
@@ -401,9 +548,19 @@ class ProjectionEvaluator:
         cached = self._config_cache.get(trigger.repo_id)
         if cached and cached[0] > now:
             sentinel_projection_fallback_total.labels(kind="config", result="cache_hit").inc()
+            logger.debug(
+                "Projection config cache hit repo=%s repo_id=%s",
+                trigger.repo_full_name,
+                trigger.repo_id,
+            )
             return cached[1]
 
         sentinel_projection_fallback_total.labels(kind="config", result="cache_miss").inc()
+        logger.debug(
+            "Projection config cache miss repo=%s repo_id=%s",
+            trigger.repo_full_name,
+            trigger.repo_id,
+        )
         try:
             content = await api.get_content(
                 self._repo_url(trigger.repo_full_name), ".merge-sentinel.yml"
@@ -411,9 +568,20 @@ class ProjectionEvaluator:
             decoded = content.decoded_content()
             data = yaml.safe_load(io.StringIO(decoded))
             loaded = Config() if data is None else Config.model_validate(data)
+            logger.debug(
+                "Projection config loaded repo=%s repo_id=%s rules=%d",
+                trigger.repo_full_name,
+                trigger.repo_id,
+                len(loaded.rules),
+            )
         except Exception as exc:  # noqa: BLE001
             if hasattr(exc, "status_code") and getattr(exc, "status_code") == 404:
                 loaded = None
+                logger.info(
+                    "Projection config missing repo=%s repo_id=%s",
+                    trigger.repo_full_name,
+                    trigger.repo_id,
+                )
             else:
                 raise
 
@@ -435,12 +603,32 @@ class ProjectionEvaluator:
         cached = self._pr_files_cache.get(key)
         if cached and cached[0] > now:
             sentinel_projection_fallback_total.labels(kind="pr_files", result="cache_hit").inc()
+            logger.debug(
+                "Projection pr_files cache hit repo=%s sha=%s pr=%s count=%d",
+                trigger.repo_full_name,
+                trigger.head_sha,
+                pr_number,
+                len(cached[1]),
+            )
             return list(cached[1])
 
         sentinel_projection_fallback_total.labels(kind="pr_files", result="cache_miss").inc()
+        logger.debug(
+            "Projection pr_files cache miss repo=%s sha=%s pr=%s",
+            trigger.repo_full_name,
+            trigger.head_sha,
+            pr_number,
+        )
         pull = await api.get_pull(self._repo_url(trigger.repo_full_name), pr_number)
         files = [f.filename async for f in api.get_pull_request_files(pull)]
         self._pr_files_cache[key] = (now + self.pr_files_cache_seconds, list(files))
+        logger.debug(
+            "Projection pr_files fetched repo=%s sha=%s pr=%s count=%d",
+            trigger.repo_full_name,
+            trigger.head_sha,
+            pr_number,
+            len(files),
+        )
         return files
 
     @staticmethod
