@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from sanic.log import logger
 
@@ -14,6 +14,7 @@ from sentinel.metric import (
     webhook_event_pruned_total,
     webhook_persist_total,
     webhook_project_total,
+    webhook_projection_pruned_total,
 )
 
 
@@ -152,13 +153,19 @@ class WebhookStore:
     def __init__(
         self,
         db_path: str,
-        retention_days: int = 30,
+        retention_seconds: int = 30 * 24 * 60 * 60,
+        projection_completed_retention_seconds: Optional[int] = None,
+        projection_active_retention_seconds: Optional[int] = None,
         enabled: bool = True,
         events: Optional[Sequence[str]] = None,
         prune_every: int = 500,
     ):
         self.db_path = Path(db_path)
-        self.retention_days = retention_days
+        self.retention_seconds = retention_seconds
+        self.projection_completed_retention_seconds = (
+            projection_completed_retention_seconds
+        )
+        self.projection_active_retention_seconds = projection_active_retention_seconds
         self.enabled = enabled
         self.events = {
             event.strip()
@@ -291,6 +298,16 @@ class WebhookStore:
         pruned_rows = 0
         if self._should_prune():
             pruned_rows = self.prune_old_events()
+            if (
+                self.projection_completed_retention_seconds is not None
+                and self.projection_active_retention_seconds is not None
+            ):
+                self.prune_old_projections(
+                    completed_retention_seconds=(
+                        self.projection_completed_retention_seconds
+                    ),
+                    active_retention_seconds=self.projection_active_retention_seconds,
+                )
 
         return PersistResult(
             inserted=True,
@@ -300,12 +317,17 @@ class WebhookStore:
             pruned_rows=pruned_rows,
         )
 
-    def prune_old_events(self) -> int:
+    def prune_old_events(self, retention_seconds: Optional[int] = None) -> int:
         if not self.enabled:
             return 0
 
+        retention_seconds = (
+            self.retention_seconds
+            if retention_seconds is None
+            else max(0, retention_seconds)
+        )
         cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=self.retention_days)
+            datetime.now(timezone.utc) - timedelta(seconds=retention_seconds)
         ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
         with self._connect() as conn:
@@ -318,6 +340,95 @@ class WebhookStore:
         if count > 0:
             webhook_event_pruned_total.inc(count)
         return count
+
+    def prune_old_projections(
+        self, *, completed_retention_seconds: int, active_retention_seconds: int
+    ) -> Dict[str, int]:
+        if not self.enabled:
+            return {}
+
+        completed_retention_seconds = max(0, completed_retention_seconds)
+        active_retention_seconds = max(0, active_retention_seconds)
+        completed_cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=completed_retention_seconds)
+        ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        active_cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=active_retention_seconds)
+        ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        statements = (
+            (
+                "check_runs_current",
+                "completed",
+                "DELETE FROM check_runs_current WHERE status = ? AND last_seen_at < ?",
+                ("completed", completed_cutoff),
+            ),
+            (
+                "check_runs_current",
+                "active",
+                "DELETE FROM check_runs_current WHERE (status IS NULL OR status != ?) AND last_seen_at < ?",
+                ("completed", active_cutoff),
+            ),
+            (
+                "check_suites_current",
+                "completed",
+                "DELETE FROM check_suites_current WHERE status = ? AND last_seen_at < ?",
+                ("completed", completed_cutoff),
+            ),
+            (
+                "check_suites_current",
+                "active",
+                "DELETE FROM check_suites_current WHERE (status IS NULL OR status != ?) AND last_seen_at < ?",
+                ("completed", active_cutoff),
+            ),
+            (
+                "workflow_runs_current",
+                "completed",
+                "DELETE FROM workflow_runs_current WHERE status = ? AND last_seen_at < ?",
+                ("completed", completed_cutoff),
+            ),
+            (
+                "workflow_runs_current",
+                "active",
+                "DELETE FROM workflow_runs_current WHERE (status IS NULL OR status != ?) AND last_seen_at < ?",
+                ("completed", active_cutoff),
+            ),
+            (
+                "commit_status_current",
+                "completed",
+                "DELETE FROM commit_status_current WHERE (state IS NULL OR state != ?) AND last_seen_at < ?",
+                ("pending", completed_cutoff),
+            ),
+            (
+                "commit_status_current",
+                "active",
+                "DELETE FROM commit_status_current WHERE state = ? AND last_seen_at < ?",
+                ("pending", active_cutoff),
+            ),
+            (
+                "pr_heads_current",
+                "completed",
+                "DELETE FROM pr_heads_current WHERE (state IS NULL OR state != ?) AND updated_at < ?",
+                ("open", completed_cutoff),
+            ),
+            (
+                "pr_heads_current",
+                "active",
+                "DELETE FROM pr_heads_current WHERE state = ? AND updated_at < ?",
+                ("open", active_cutoff),
+            ),
+        )
+
+        counts: Dict[str, int] = {}
+        with self._connect() as conn:
+            for table, kind, query, params in statements:
+                deleted = conn.execute(query, params).rowcount
+                if deleted > 0:
+                    webhook_projection_pruned_total.labels(
+                        table=table, kind=kind
+                    ).inc(deleted)
+                counts[f"{table}:{kind}"] = deleted
+        return counts
 
     def _project(
         self,
@@ -579,11 +690,6 @@ class WebhookStore:
         repo = payload["repository"]
         workflow_run = payload["workflow_run"]
         app = workflow_run.get("app") or {}
-
-        print(
-            "projecting workflow run check_suite_id: ",
-            workflow_run.get("check_suite_id"),
-        )
 
         conn.execute(
             """

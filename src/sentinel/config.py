@@ -45,7 +45,13 @@ WEBHOOK_DB_ENABLED = os.environ.get("WEBHOOK_DB_ENABLED", "true").lower() == "tr
 WEBHOOK_DB_PATH = os.environ.get(
     "WEBHOOK_DB_PATH", str(Path(DISKCACHE_DIR) / "webhooks.sqlite3")
 )
-WEBHOOK_DB_RETENTION_DAYS = int(os.environ.get("WEBHOOK_DB_RETENTION_DAYS", 30))
+_webhook_retention_seconds_raw = os.environ.get("WEBHOOK_DB_RETENTION_SECONDS")
+if _webhook_retention_seconds_raw is not None:
+    WEBHOOK_DB_RETENTION_SECONDS = int(_webhook_retention_seconds_raw)
+else:
+    WEBHOOK_DB_RETENTION_SECONDS = int(
+        float(os.environ.get("WEBHOOK_DB_RETENTION_DAYS", 30)) * 24 * 60 * 60
+    )
 WEBHOOK_DB_EVENTS = tuple(
     part.strip()
     for part in os.environ.get(
@@ -56,6 +62,18 @@ WEBHOOK_DB_EVENTS = tuple(
 
 WEBHOOK_DISPATCH_ENABLED = (
     os.environ.get("WEBHOOK_DISPATCH_ENABLED", "false").lower() == "true"
+)
+
+WEBHOOK_PROJECTION_PRUNE_ENABLED = (
+    os.environ.get("WEBHOOK_PROJECTION_PRUNE_ENABLED", "true").lower() == "true"
+)
+WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS = int(
+    os.environ.get(
+        "WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS", 7 * 24 * 60 * 60
+    )
+)
+WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS = int(
+    os.environ.get("WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS", 30 * 24 * 60 * 60)
 )
 
 WEBHOOK_FILTER_SELF_APP_ID = (

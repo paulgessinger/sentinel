@@ -1,6 +1,8 @@
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
+import sqlite3
 
 import typer
 from gidgethub import aiohttp as gh_aiohttp
@@ -15,6 +17,7 @@ from sentinel import config
 from sentinel.cache import Cache, QueueItem, get_cache
 from sentinel.github.model import PullRequest
 from sentinel.metric import push_registry, worker_error_count, api_call_count
+from sentinel.storage import WebhookStore
 
 
 logging.basicConfig(
@@ -146,3 +149,116 @@ def pr(repo: str, number: int, installation: int):
             await process_pull_request(pr, api)
 
     asyncio.run(handle())
+
+
+@app.command("vacuum-webhook-db")
+def vacuum_webhook_db(
+    path: str = typer.Option(
+        config.WEBHOOK_DB_PATH,
+        "--path",
+        help="Path to webhook SQLite database file",
+    ),
+):
+    db_path = Path(path)
+    if not db_path.exists():
+        typer.echo(f"Database does not exist: {db_path}")
+        raise typer.Exit(code=1)
+
+    try:
+        with sqlite3.connect(str(db_path), timeout=60.0) as conn:
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("VACUUM")
+    except sqlite3.Error as exc:
+        typer.echo(f"VACUUM failed for {db_path}: {exc}")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"VACUUM completed for {db_path}")
+
+
+@app.command("prune-webhook-db")
+def prune_webhook_db(
+    path: str = typer.Option(
+        config.WEBHOOK_DB_PATH,
+        "--path",
+        help="Path to webhook SQLite database file",
+    ),
+    retention_seconds: int = typer.Option(
+        config.WEBHOOK_DB_RETENTION_SECONDS,
+        "--retention-seconds",
+        help="Delete webhook_events older than this many seconds",
+    ),
+):
+    db_path = Path(path)
+    if not db_path.exists():
+        typer.echo(f"Database does not exist: {db_path}")
+        raise typer.Exit(code=1)
+
+    if retention_seconds < 0:
+        typer.echo(f"Invalid retention-seconds: {retention_seconds}")
+        raise typer.Exit(code=1)
+
+    store = WebhookStore(
+        db_path=str(db_path),
+        retention_seconds=retention_seconds,
+    )
+
+    try:
+        pruned = store.prune_old_events(retention_seconds=retention_seconds)
+    except sqlite3.Error as exc:
+        typer.echo(f"Prune failed for {db_path}: {exc}")
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"Pruned {pruned} webhook_events older than {retention_seconds}s in {db_path}"
+    )
+
+
+@app.command("prune-webhook-projections")
+def prune_webhook_projections(
+    path: str = typer.Option(
+        config.WEBHOOK_DB_PATH,
+        "--path",
+        help="Path to webhook SQLite database file",
+    ),
+    completed_retention_seconds: int = typer.Option(
+        config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS,
+        "--completed-retention-seconds",
+        help="Delete terminal projection rows older than this many seconds",
+    ),
+    active_retention_seconds: int = typer.Option(
+        config.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS,
+        "--active-retention-seconds",
+        help="Delete active projection rows older than this many seconds",
+    ),
+):
+    db_path = Path(path)
+    if not db_path.exists():
+        typer.echo(f"Database does not exist: {db_path}")
+        raise typer.Exit(code=1)
+
+    if completed_retention_seconds < 0:
+        typer.echo(
+            f"Invalid completed-retention-seconds: {completed_retention_seconds}"
+        )
+        raise typer.Exit(code=1)
+    if active_retention_seconds < 0:
+        typer.echo(f"Invalid active-retention-seconds: {active_retention_seconds}")
+        raise typer.Exit(code=1)
+
+    store = WebhookStore(db_path=str(db_path))
+
+    try:
+        counts = store.prune_old_projections(
+            completed_retention_seconds=completed_retention_seconds,
+            active_retention_seconds=active_retention_seconds,
+        )
+    except sqlite3.Error as exc:
+        typer.echo(f"Projection prune failed for {db_path}: {exc}")
+        raise typer.Exit(code=1)
+
+    total = sum(counts.values())
+    typer.echo(
+        "Pruned "
+        f"{total} projection rows in {db_path} "
+        f"(completed>{completed_retention_seconds}s, active>{active_retention_seconds}s)"
+    )

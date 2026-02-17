@@ -299,7 +299,8 @@ def test_workflow_run_projection_upserts(tmp_path):
 
 def test_retention_prunes_old_events_only(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path), retention_days=30)
+    retention_seconds = 60 * 60
+    store = WebhookStore(str(db_path), retention_seconds=retention_seconds)
     store.initialize()
 
     store.persist_event(
@@ -310,7 +311,7 @@ def test_retention_prunes_old_events_only(tmp_path):
     )
 
     old_received_at = (
-        datetime.now(timezone.utc) - timedelta(days=45)
+        datetime.now(timezone.utc) - timedelta(seconds=retention_seconds * 2)
     ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     with sqlite3.connect(str(db_path)) as conn:
@@ -333,3 +334,202 @@ def test_retention_prunes_old_events_only(tmp_path):
 
     assert remaining == 1
     assert projected == 1
+
+
+def test_prune_old_projections_uses_completed_and_active_windows(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    now = datetime.now(timezone.utc)
+    completed_old = (now - timedelta(seconds=4000)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    active_old = (now - timedelta(seconds=8000)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    active_recent = (now - timedelta(seconds=3000)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO check_runs_current (
+                repo_id, repo_full_name, check_run_id, head_sha, name, status, conclusion,
+                app_id, app_slug, check_suite_id, started_at, completed_at, first_seen_at,
+                last_seen_at, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "org/repo",
+                1,
+                "a" * 40,
+                "build",
+                "completed",
+                "success",
+                None,
+                None,
+                None,
+                None,
+                None,
+                completed_old,
+                completed_old,
+                "d1",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO check_runs_current (
+                repo_id, repo_full_name, check_run_id, head_sha, name, status, conclusion,
+                app_id, app_slug, check_suite_id, started_at, completed_at, first_seen_at,
+                last_seen_at, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "org/repo",
+                2,
+                "b" * 40,
+                "tests",
+                "in_progress",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                active_recent,
+                active_recent,
+                "d2",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO check_runs_current (
+                repo_id, repo_full_name, check_run_id, head_sha, name, status, conclusion,
+                app_id, app_slug, check_suite_id, started_at, completed_at, first_seen_at,
+                last_seen_at, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "org/repo",
+                3,
+                "c" * 40,
+                "lint",
+                "queued",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                active_old,
+                active_old,
+                "d3",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO commit_status_current (
+                repo_id, repo_full_name, sha, context, status_id, state, created_at,
+                updated_at, url, first_seen_at, last_seen_at, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "org/repo",
+                "d" * 40,
+                "status-success",
+                10,
+                "success",
+                None,
+                None,
+                None,
+                completed_old,
+                completed_old,
+                "d4",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO commit_status_current (
+                repo_id, repo_full_name, sha, context, status_id, state, created_at,
+                updated_at, url, first_seen_at, last_seen_at, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "org/repo",
+                "e" * 40,
+                "status-pending",
+                11,
+                "pending",
+                None,
+                None,
+                None,
+                active_recent,
+                active_recent,
+                "d5",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO pr_heads_current (
+                repo_id, repo_full_name, pr_id, pr_number, state, head_sha, base_ref,
+                action, updated_at, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "org/repo",
+                100,
+                1,
+                "closed",
+                "f" * 40,
+                "main",
+                "closed",
+                completed_old,
+                "d6",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO pr_heads_current (
+                repo_id, repo_full_name, pr_id, pr_number, state, head_sha, base_ref,
+                action, updated_at, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "org/repo",
+                101,
+                2,
+                "open",
+                "g" * 40,
+                "main",
+                "synchronize",
+                active_recent,
+                "d7",
+            ),
+        )
+        conn.commit()
+
+    counts = store.prune_old_projections(
+        completed_retention_seconds=3600,
+        active_retention_seconds=7200,
+    )
+
+    assert counts["check_runs_current:completed"] == 1
+    assert counts["check_runs_current:active"] == 1
+    assert counts["commit_status_current:completed"] == 1
+    assert counts["commit_status_current:active"] == 0
+    assert counts["pr_heads_current:completed"] == 1
+    assert counts["pr_heads_current:active"] == 0
+
+    with sqlite3.connect(str(db_path)) as conn:
+        run_count = conn.execute("SELECT COUNT(*) FROM check_runs_current").fetchone()[0]
+        status_count = conn.execute(
+            "SELECT COUNT(*) FROM commit_status_current"
+        ).fetchone()[0]
+        pr_count = conn.execute("SELECT COUNT(*) FROM pr_heads_current").fetchone()[0]
+
+    assert run_count == 1
+    assert status_count == 1
+    assert pr_count == 1

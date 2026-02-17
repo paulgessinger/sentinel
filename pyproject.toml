@@ -28,6 +28,9 @@ dependencies = [
     "uvicorn>=0.40.0",
 ]
 
+[project.scripts]
+sentinel = "sentinel.cli:app"
+
 [dependency-groups]
 dev = [
     "black>=22.1.0",

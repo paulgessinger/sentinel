@@ -221,7 +221,17 @@ def create_app():
     app.ctx.webhook_dispatch_enabled = app.config.WEBHOOK_DISPATCH_ENABLED
     app.ctx.webhook_store = WebhookStore(
         db_path=app.config.WEBHOOK_DB_PATH,
-        retention_days=app.config.WEBHOOK_DB_RETENTION_DAYS,
+        retention_seconds=app.config.WEBHOOK_DB_RETENTION_SECONDS,
+        projection_completed_retention_seconds=(
+            app.config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS
+            if app.config.WEBHOOK_PROJECTION_PRUNE_ENABLED
+            else None
+        ),
+        projection_active_retention_seconds=(
+            app.config.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS
+            if app.config.WEBHOOK_PROJECTION_PRUNE_ENABLED
+            else None
+        ),
         enabled=app.config.WEBHOOK_DB_ENABLED,
         events=app.config.WEBHOOK_DB_EVENTS,
     )
@@ -243,6 +253,11 @@ def create_app():
 
         app.ctx.webhook_store.initialize()
         app.ctx.webhook_store.prune_old_events()
+        if app.config.WEBHOOK_PROJECTION_PRUNE_ENABLED:
+            app.ctx.webhook_store.prune_old_projections(
+                completed_retention_seconds=app.config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS,
+                active_retention_seconds=app.config.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS,
+            )
 
     @app.listener("after_server_stop")
     async def shutdown(app):

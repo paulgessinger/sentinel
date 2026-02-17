@@ -71,3 +71,9 @@ webhook_event_pruned_total = Counter(
     "sentinel_webhook_event_pruned_total",
     "Number of old webhook_events rows pruned",
 )
+
+webhook_projection_pruned_total = Counter(
+    "sentinel_webhook_projection_pruned_total",
+    "Number of old projection rows pruned",
+    labelnames=["table", "kind"],
+)
