@@ -166,12 +166,13 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
     )
 
     assert result.result == "dry_run"
+    assert result.check_run_id is None
     assert api.post_calls == []
 
     with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
         row = conn.execute(
             """
-            SELECT status, conclusion, output_title, last_publish_result, app_id
+            SELECT status, conclusion, output_title, last_publish_result, app_id, check_run_id
             FROM sentinel_check_run_state
             WHERE repo_id = ? AND head_sha = ? AND check_name = ?
             LIMIT 1
@@ -185,6 +186,7 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
         "All 1 required jobs successful",
         "dry_run",
         2877723,
+        None,
     )
 
 
@@ -226,7 +228,7 @@ async def test_projection_second_identical_eval_is_unchanged(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_projection_publish_replaces_synthetic_id_with_real_id(tmp_path):
+async def test_projection_publish_persists_real_id(tmp_path):
     store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
     store.initialize()
     await _seed(store)

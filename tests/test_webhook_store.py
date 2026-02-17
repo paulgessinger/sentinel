@@ -115,6 +115,91 @@ def test_initialize_schema(tmp_path):
     assert "sentinel_check_run_state" in tables
 
 
+def test_initialize_migrates_sentinel_check_run_state_to_nullable_id(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE sentinel_check_run_state (
+                repo_id INTEGER NOT NULL,
+                repo_full_name TEXT NULL,
+                head_sha TEXT NOT NULL,
+                check_name TEXT NOT NULL,
+                app_id INTEGER NOT NULL,
+                check_run_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                conclusion TEXT NULL,
+                started_at TEXT NULL,
+                completed_at TEXT NULL,
+                output_title TEXT NULL,
+                output_summary_hash TEXT NULL,
+                output_text_hash TEXT NULL,
+                last_eval_at TEXT NOT NULL,
+                last_publish_at TEXT NULL,
+                last_publish_result TEXT NOT NULL,
+                last_publish_error TEXT NULL,
+                last_delivery_id TEXT NULL,
+                PRIMARY KEY (repo_id, head_sha, check_name)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO sentinel_check_run_state (
+                repo_id, repo_full_name, head_sha, check_name, app_id, check_run_id,
+                status, conclusion, started_at, completed_at, output_title,
+                output_summary_hash, output_text_hash, last_eval_at, last_publish_at,
+                last_publish_result, last_publish_error, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "org/repo",
+                "a" * 40,
+                "merge-sentinel",
+                1234,
+                -123,
+                "in_progress",
+                None,
+                None,
+                None,
+                "waiting",
+                "h1",
+                "h2",
+                "2026-02-17T00:00:00.000000Z",
+                None,
+                "dry_run",
+                None,
+                "d1",
+            ),
+        )
+        conn.commit()
+
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    with sqlite3.connect(str(db_path)) as conn:
+        notnull = conn.execute(
+            """
+            SELECT "notnull"
+            FROM pragma_table_info('sentinel_check_run_state')
+            WHERE name = 'check_run_id'
+            """
+        ).fetchone()[0]
+        check_run_id = conn.execute(
+            """
+            SELECT check_run_id
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ?
+            """,
+            (1, "a" * 40, "merge-sentinel"),
+        ).fetchone()[0]
+
+    assert notnull == 0
+    assert check_run_id is None
+
+
 def test_duplicate_delivery_id_is_ignored(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
     store = WebhookStore(str(db_path))
@@ -141,6 +226,73 @@ def test_duplicate_delivery_id_is_ignored(tmp_path):
     with sqlite3.connect(str(db_path)) as conn:
         count = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
     assert count == 1
+
+
+def test_payload_json_is_stored_compressed(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+    payload = make_check_run_payload()
+    payload_json = store.payload_to_json(payload)
+
+    store.persist_event(
+        delivery_id="compressed-1",
+        event="check_run",
+        payload=payload,
+        payload_json=payload_json,
+    )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM webhook_events WHERE delivery_id = ?",
+            ("compressed-1",),
+        ).fetchone()
+
+    assert isinstance(row[0], bytes)
+    assert store.decode_payload_json(row[0]) == payload_json
+
+
+def test_migrate_payload_json_to_zstd_converts_legacy_plaintext_rows(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    modern_payload = make_check_run_payload()
+    modern_payload_json = store.payload_to_json(modern_payload)
+    store.persist_event(
+        delivery_id="modern-1",
+        event="check_run",
+        payload=modern_payload,
+        payload_json=modern_payload_json,
+    )
+
+    legacy_payload_json = '{"legacy":true}'
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO webhook_events (
+                delivery_id, received_at, event, payload_json
+            ) VALUES (?, ?, ?, ?)
+            """,
+            ("legacy-1", now, "status", legacy_payload_json),
+        )
+        conn.commit()
+
+    result = store.migrate_event_payloads_to_zstd(batch_size=1)
+
+    assert result["scanned_rows"] == 2
+    assert result["converted_rows"] == 1
+    assert result["already_compressed_rows"] == 1
+    assert result["skipped_rows"] == 0
+
+    with sqlite3.connect(str(db_path)) as conn:
+        migrated = conn.execute(
+            "SELECT payload_json FROM webhook_events WHERE delivery_id = ?",
+            ("legacy-1",),
+        ).fetchone()[0]
+    assert isinstance(migrated, bytes)
+    assert store.decode_payload_json(migrated) == legacy_payload_json
 
 
 def test_check_run_projection_upserts(tmp_path):
@@ -322,7 +474,12 @@ def test_retention_prunes_old_events_only(tmp_path):
                 delivery_id, received_at, event, payload_json
             ) VALUES (?, ?, ?, ?)
             """,
-            ("old-event", old_received_at, "status", "{}"),
+            (
+                "old-event",
+                old_received_at,
+                "status",
+                store.encode_payload_json("{}"),
+            ),
         )
         conn.commit()
 

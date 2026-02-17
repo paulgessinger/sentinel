@@ -333,11 +333,14 @@ class ProjectionEvaluator:
 
         previous_status = sentinel_row.get("status") if sentinel_row else None
         existing_id = sentinel_row.get("check_run_id") if sentinel_row else None
-        synthetic_id = self.synthetic_check_run_id(repo_id, head_sha, self.check_run_name)
-        check_run_id = existing_id if isinstance(existing_id, int) else synthetic_id
+        check_run_id = (
+            existing_id
+            if isinstance(existing_id, int) and existing_id > 0
+            else None
+        )
 
         if new_status == "in_progress" and previous_status != "in_progress":
-            check_run_id = synthetic_id
+            check_run_id = None
 
         unchanged = bool(
             sentinel_row
@@ -407,12 +410,12 @@ class ProjectionEvaluator:
                 trigger.repo_full_name,
                 head_sha,
                 pr_row.get("pr_number"),
-                check_run_id if check_run_id > 0 else None,
+                check_run_id,
                 new_status,
                 new_conclusion,
             )
             check_run = CheckRun.make_app_check_run(
-                id=check_run_id if check_run_id > 0 else None,
+                id=check_run_id,
                 head_sha=head_sha,
                 status=new_status,
                 conclusion=new_conclusion,
@@ -517,11 +520,6 @@ class ProjectionEvaluator:
             last_publish_result=publish_result,
             last_publish_error=publish_error,
             last_delivery_id=trigger.delivery_id,
-            synthetic_id_to_delete=(
-                synthetic_id
-                if final_id > 0 and synthetic_id != final_id
-                else None
-            ),
         )
 
         sentinel_projection_eval_total.labels(result="evaluated").inc()
@@ -628,12 +626,6 @@ class ProjectionEvaluator:
             len(files),
         )
         return files
-
-    @staticmethod
-    def synthetic_check_run_id(repo_id: int, head_sha: str, name: str) -> int:
-        digest = hashlib.sha256(f"{repo_id}:{head_sha}:{name}".encode("utf-8")).digest()
-        value = int.from_bytes(digest[:8], "big")
-        return -max(1, value)
 
     @staticmethod
     def _status_from_check_run(row: Dict[str, Any]) -> str:

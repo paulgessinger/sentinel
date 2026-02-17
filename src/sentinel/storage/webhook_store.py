@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from compression import zstd
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
@@ -9,10 +10,12 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 from sanic.log import logger
 from sqlalchemy import (
+    bindparam,
     Column,
     Engine,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Table,
@@ -47,7 +50,7 @@ webhook_events = Table(
     Column("installation_id", Integer),
     Column("repo_id", Integer),
     Column("repo_full_name", String),
-    Column("payload_json", String, nullable=False),
+    Column("payload_json", LargeBinary, nullable=False),
     Column("projected_at", String),
     Column("projection_error", String),
 )
@@ -80,7 +83,7 @@ sentinel_check_run_state = Table(
     Column("head_sha", String, primary_key=True),
     Column("check_name", String, primary_key=True),
     Column("app_id", Integer, nullable=False),
-    Column("check_run_id", Integer, nullable=False),
+    Column("check_run_id", Integer),
     Column("status", String, nullable=False),
     Column("conclusion", String),
     Column("started_at", String),
@@ -264,6 +267,7 @@ class WebhookStore:
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         metadata.create_all(self.engine)
+        self._migrate_sentinel_check_run_state_nullable_check_run_id()
 
     def should_persist(self, event: str) -> bool:
         return self.enabled and event in self.events
@@ -299,7 +303,7 @@ class WebhookStore:
             installation_id=installation.get("id"),
             repo_id=repo.get("id"),
             repo_full_name=repo.get("full_name"),
-            payload_json=payload_json,
+            payload_json=self.encode_payload_json(payload_json),
         )
         insert_event = insert_event.on_conflict_do_nothing(
             index_elements=[webhook_events.c.delivery_id]
@@ -396,6 +400,62 @@ class WebhookStore:
         if count > 0:
             webhook_event_pruned_total.inc(count)
         return count
+
+    def migrate_event_payloads_to_zstd(self, batch_size: int = 500) -> Dict[str, int]:
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+
+        select_stmt = select(
+            webhook_events.c.delivery_id,
+            webhook_events.c.payload_json,
+        )
+        update_stmt = (
+            update(webhook_events)
+            .where(webhook_events.c.delivery_id == bindparam("p_delivery_id"))
+            .values(payload_json=bindparam("p_payload_json"))
+        )
+
+        scanned_rows = 0
+        converted_rows = 0
+        already_compressed_rows = 0
+        skipped_rows = 0
+        updates: list[Dict[str, Any]] = []
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(select_stmt).all()
+            for delivery_id, payload_json in rows:
+                scanned_rows += 1
+                if payload_json is None:
+                    skipped_rows += 1
+                    continue
+                if self._is_zstd_payload(payload_json):
+                    already_compressed_rows += 1
+                    continue
+
+                compressed_payload = self.encode_payload_json(
+                    self.decode_payload_json(payload_json)
+                )
+                updates.append(
+                    {
+                        "p_delivery_id": delivery_id,
+                        "p_payload_json": compressed_payload,
+                    }
+                )
+                converted_rows += 1
+
+                if len(updates) >= batch_size:
+                    conn.execute(update_stmt, updates)
+                    updates.clear()
+
+            if updates:
+                conn.execute(update_stmt, updates)
+
+        return {
+            "scanned_rows": scanned_rows,
+            "converted_rows": converted_rows,
+            "already_compressed_rows": already_compressed_rows,
+            "skipped_rows": skipped_rows,
+        }
 
     def prune_old_projections(
         self, *, completed_retention_seconds: int, active_retention_seconds: int
@@ -640,7 +700,7 @@ class WebhookStore:
         *,
         repo_id: int,
         repo_full_name: Optional[str],
-        check_run_id: int,
+        check_run_id: Optional[int],
         head_sha: str,
         name: str,
         status: str,
@@ -656,7 +716,6 @@ class WebhookStore:
         last_publish_result: str,
         last_publish_error: Optional[str],
         last_delivery_id: Optional[str],
-        synthetic_id_to_delete: Optional[int] = None,
     ) -> None:
         values = {
             "repo_id": repo_id,
@@ -705,23 +764,6 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             conn.execute(stmt)
-            if (
-                synthetic_id_to_delete is not None
-                and synthetic_id_to_delete < 0
-                and synthetic_id_to_delete != check_run_id
-                and check_run_id > 0
-            ):
-                conn.execute(
-                    delete(sentinel_check_run_state).where(
-                        and_(
-                            sentinel_check_run_state.c.repo_id == repo_id,
-                            sentinel_check_run_state.c.head_sha == head_sha,
-                            sentinel_check_run_state.c.check_name == name,
-                            sentinel_check_run_state.c.check_run_id
-                            == synthetic_id_to_delete,
-                        )
-                    )
-                )
 
     def _project(
         self,
@@ -1004,6 +1046,138 @@ class WebhookStore:
     @staticmethod
     def payload_to_json(payload: Mapping[str, Any]) -> str:
         return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+    @staticmethod
+    def encode_payload_json(payload_json: str) -> bytes:
+        return zstd.compress(payload_json.encode("utf-8"))
+
+    @staticmethod
+    def decode_payload_json(payload_json: Any) -> str:
+        if isinstance(payload_json, str):
+            return payload_json
+        if payload_json is None:
+            return ""
+        payload_bytes = bytes(payload_json)
+        try:
+            return zstd.decompress(payload_bytes).decode("utf-8")
+        except zstd.ZstdError:
+            return payload_bytes.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _is_zstd_payload(payload_json: Any) -> bool:
+        if payload_json is None or isinstance(payload_json, str):
+            return False
+        try:
+            zstd.decompress(bytes(payload_json))
+            return True
+        except zstd.ZstdError:
+            return False
+
+    def _migrate_sentinel_check_run_state_nullable_check_run_id(self) -> None:
+        with self.engine.begin() as conn:
+            rows = conn.exec_driver_sql(
+                "PRAGMA table_info(sentinel_check_run_state)"
+            ).mappings().all()
+            if not rows:
+                return
+
+            check_run_id_row = next(
+                (row for row in rows if row.get("name") == "check_run_id"),
+                None,
+            )
+            if check_run_id_row is None:
+                return
+
+            if int(check_run_id_row.get("notnull", 0)) == 0:
+                normalized = conn.exec_driver_sql(
+                    "UPDATE sentinel_check_run_state SET check_run_id = NULL WHERE check_run_id <= 0"
+                )
+                if (normalized.rowcount or 0) > 0:
+                    logger.info(
+                        "Normalized %s legacy sentinel check_run_id values to NULL",
+                        normalized.rowcount,
+                    )
+                return
+
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE sentinel_check_run_state_new (
+                    repo_id INTEGER NOT NULL,
+                    repo_full_name TEXT NULL,
+                    head_sha TEXT NOT NULL,
+                    check_name TEXT NOT NULL,
+                    app_id INTEGER NOT NULL,
+                    check_run_id INTEGER NULL,
+                    status TEXT NOT NULL,
+                    conclusion TEXT NULL,
+                    started_at TEXT NULL,
+                    completed_at TEXT NULL,
+                    output_title TEXT NULL,
+                    output_summary_hash TEXT NULL,
+                    output_text_hash TEXT NULL,
+                    last_eval_at TEXT NOT NULL,
+                    last_publish_at TEXT NULL,
+                    last_publish_result TEXT NOT NULL,
+                    last_publish_error TEXT NULL,
+                    last_delivery_id TEXT NULL,
+                    PRIMARY KEY (repo_id, head_sha, check_name)
+                )
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                INSERT INTO sentinel_check_run_state_new (
+                    repo_id,
+                    repo_full_name,
+                    head_sha,
+                    check_name,
+                    app_id,
+                    check_run_id,
+                    status,
+                    conclusion,
+                    started_at,
+                    completed_at,
+                    output_title,
+                    output_summary_hash,
+                    output_text_hash,
+                    last_eval_at,
+                    last_publish_at,
+                    last_publish_result,
+                    last_publish_error,
+                    last_delivery_id
+                )
+                SELECT
+                    repo_id,
+                    repo_full_name,
+                    head_sha,
+                    check_name,
+                    app_id,
+                    CASE WHEN check_run_id > 0 THEN check_run_id ELSE NULL END,
+                    status,
+                    conclusion,
+                    started_at,
+                    completed_at,
+                    output_title,
+                    output_summary_hash,
+                    output_text_hash,
+                    last_eval_at,
+                    last_publish_at,
+                    last_publish_result,
+                    last_publish_error,
+                    last_delivery_id
+                FROM sentinel_check_run_state
+                """
+            )
+            conn.exec_driver_sql("DROP TABLE sentinel_check_run_state")
+            conn.exec_driver_sql(
+                "ALTER TABLE sentinel_check_run_state_new RENAME TO sentinel_check_run_state"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_sentinel_check_run_state_repo_head ON sentinel_check_run_state (repo_id, head_sha)"
+            )
+            logger.info(
+                "Migrated sentinel_check_run_state.check_run_id to nullable INTEGER and removed synthetic ids"
+            )
 
     @staticmethod
     def _build_engine(db_path: Path) -> Engine:

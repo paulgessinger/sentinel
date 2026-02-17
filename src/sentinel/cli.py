@@ -1,7 +1,9 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import shutil
 import sqlite3
 
 import typer
@@ -247,4 +249,56 @@ def prune_webhook_projections(
         "Pruned "
         f"{total} projection rows in {db_path} "
         f"(completed>{completed_retention_seconds}s, active>{active_retention_seconds}s)"
+    )
+
+
+@app.command("migrate-webhook-db-zstd")
+def migrate_webhook_db_zstd(
+    path: str = typer.Option(
+        config.WEBHOOK_DB_PATH,
+        "--path",
+        help="Path to webhook SQLite database file",
+    ),
+    batch_size: int = typer.Option(
+        500,
+        "--batch-size",
+        help="Number of rows to update per transaction batch",
+    ),
+    backup: bool = typer.Option(
+        True,
+        "--backup/--no-backup",
+        help="Create a timestamped backup before migration",
+    ),
+):
+    db_path = Path(path)
+    if not db_path.exists():
+        typer.echo(f"Database does not exist: {db_path}")
+        raise typer.Exit(code=1)
+    if batch_size < 1:
+        typer.echo(f"Invalid batch-size: {batch_size}")
+        raise typer.Exit(code=1)
+
+    if backup:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        backup_path = Path(f"{db_path}.bak.{timestamp}")
+        try:
+            shutil.copy2(db_path, backup_path)
+        except OSError as exc:
+            typer.echo(f"Backup failed for {db_path}: {exc}")
+            raise typer.Exit(code=1)
+        typer.echo(f"Backup created: {backup_path}")
+
+    store = WebhookStore(db_path=str(db_path))
+    try:
+        result = store.migrate_event_payloads_to_zstd(batch_size=batch_size)
+    except sqlite3.Error as exc:
+        typer.echo(f"Migration failed for {db_path}: {exc}")
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        "Migration complete for "
+        f"{db_path}: scanned={result['scanned_rows']}, "
+        f"converted={result['converted_rows']}, "
+        f"already_compressed={result['already_compressed_rows']}, "
+        f"skipped={result['skipped_rows']}"
     )
