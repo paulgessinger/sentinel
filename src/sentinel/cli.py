@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 import shutil
 import sqlite3
+from typing import Annotated
 
 import typer
 from gidgethub import aiohttp as gh_aiohttp
@@ -12,6 +13,7 @@ from gidgethub.apps import get_jwt, get_installation_access_token
 import aiohttp
 import cachetools
 
+from sentinel.db_migrations import migrate_webhook_db as run_webhook_db_migrations
 from sentinel.github import get_access_token, process_pull_request, API
 from sentinel.logger import get_log_handlers
 from sentinel import config
@@ -111,7 +113,11 @@ async def installation_client(installation: int):
 
 
 @app.command()
-def queue_pr(repo: str, number: int, installation: int):
+def queue_pr(
+    repo: Annotated[str, typer.Argument(help="Repository in owner/name format")],
+    number: Annotated[int, typer.Argument(help="Pull request number")],
+    installation: Annotated[int, typer.Argument(help="GitHub App installation ID")],
+):
     async def handle():
         async with installation_client(installation) as gh:
 
@@ -127,7 +133,11 @@ def queue_pr(repo: str, number: int, installation: int):
 
 
 @app.command()
-def pr(repo: str, number: int, installation: int):
+def pr(
+    repo: Annotated[str, typer.Argument(help="Repository in owner/name format")],
+    number: Annotated[int, typer.Argument(help="Pull request number")],
+    installation: Annotated[int, typer.Argument(help="GitHub App installation ID")],
+):
     async def handle():
         async with installation_client(installation) as gh:
             pr = PullRequest.model_validate(
@@ -141,11 +151,10 @@ def pr(repo: str, number: int, installation: int):
 
 @app.command("vacuum-webhook-db")
 def vacuum_webhook_db(
-    path: str = typer.Option(
-        config.WEBHOOK_DB_PATH,
-        "--path",
-        help="Path to webhook SQLite database file",
-    ),
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = config.WEBHOOK_DB_PATH,
 ):
     db_path = Path(path)
     if not db_path.exists():
@@ -163,18 +172,39 @@ def vacuum_webhook_db(
     typer.echo(f"VACUUM completed for {db_path}")
 
 
+@app.command("migrate-webhook-db")
+def migrate_webhook_db(
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = config.WEBHOOK_DB_PATH,
+    revision: Annotated[
+        str,
+        typer.Option("--revision", help="Alembic revision target (default: head)"),
+    ] = "head",
+):
+    try:
+        run_webhook_db_migrations(path, revision=revision)
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"Alembic migration failed for {path}: {exc}")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Migrated webhook database to {revision}: {path}")
+
+
 @app.command("prune-webhook-db")
 def prune_webhook_db(
-    path: str = typer.Option(
-        config.WEBHOOK_DB_PATH,
-        "--path",
-        help="Path to webhook SQLite database file",
-    ),
-    retention_seconds: int = typer.Option(
-        config.WEBHOOK_DB_RETENTION_SECONDS,
-        "--retention-seconds",
-        help="Delete webhook_events older than this many seconds",
-    ),
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = config.WEBHOOK_DB_PATH,
+    retention_seconds: Annotated[
+        int,
+        typer.Option(
+            "--retention-seconds",
+            help="Delete webhook_events older than this many seconds",
+        ),
+    ] = config.WEBHOOK_DB_RETENTION_SECONDS,
 ):
     db_path = Path(path)
     if not db_path.exists():
@@ -203,21 +233,24 @@ def prune_webhook_db(
 
 @app.command("prune-webhook-projections")
 def prune_webhook_projections(
-    path: str = typer.Option(
-        config.WEBHOOK_DB_PATH,
-        "--path",
-        help="Path to webhook SQLite database file",
-    ),
-    completed_retention_seconds: int = typer.Option(
-        config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS,
-        "--completed-retention-seconds",
-        help="Delete terminal projection rows older than this many seconds",
-    ),
-    active_retention_seconds: int = typer.Option(
-        config.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS,
-        "--active-retention-seconds",
-        help="Delete active projection rows older than this many seconds",
-    ),
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = config.WEBHOOK_DB_PATH,
+    completed_retention_seconds: Annotated[
+        int,
+        typer.Option(
+            "--completed-retention-seconds",
+            help="Delete terminal projection rows older than this many seconds",
+        ),
+    ] = config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS,
+    active_retention_seconds: Annotated[
+        int,
+        typer.Option(
+            "--active-retention-seconds",
+            help="Delete active projection rows older than this many seconds",
+        ),
+    ] = config.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS,
 ):
     db_path = Path(path)
     if not db_path.exists():
@@ -254,21 +287,24 @@ def prune_webhook_projections(
 
 @app.command("migrate-webhook-db-zstd")
 def migrate_webhook_db_zstd(
-    path: str = typer.Option(
-        config.WEBHOOK_DB_PATH,
-        "--path",
-        help="Path to webhook SQLite database file",
-    ),
-    batch_size: int = typer.Option(
-        500,
-        "--batch-size",
-        help="Number of rows to update per transaction batch",
-    ),
-    backup: bool = typer.Option(
-        True,
-        "--backup/--no-backup",
-        help="Create a timestamped backup before migration",
-    ),
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = config.WEBHOOK_DB_PATH,
+    batch_size: Annotated[
+        int,
+        typer.Option(
+            "--batch-size",
+            help="Number of rows to update per transaction batch",
+        ),
+    ] = 500,
+    backup: Annotated[
+        bool,
+        typer.Option(
+            "--backup/--no-backup",
+            help="Create a timestamped backup before migration",
+        ),
+    ] = True,
 ):
     db_path = Path(path)
     if not db_path.exists():

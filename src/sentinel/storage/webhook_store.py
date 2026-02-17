@@ -267,7 +267,6 @@ class WebhookStore:
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         metadata.create_all(self.engine)
-        self._migrate_sentinel_check_run_state_nullable_check_run_id()
 
     def should_persist(self, event: str) -> bool:
         return self.enabled and event in self.events
@@ -1072,112 +1071,6 @@ class WebhookStore:
             return True
         except zstd.ZstdError:
             return False
-
-    def _migrate_sentinel_check_run_state_nullable_check_run_id(self) -> None:
-        with self.engine.begin() as conn:
-            rows = conn.exec_driver_sql(
-                "PRAGMA table_info(sentinel_check_run_state)"
-            ).mappings().all()
-            if not rows:
-                return
-
-            check_run_id_row = next(
-                (row for row in rows if row.get("name") == "check_run_id"),
-                None,
-            )
-            if check_run_id_row is None:
-                return
-
-            if int(check_run_id_row.get("notnull", 0)) == 0:
-                normalized = conn.exec_driver_sql(
-                    "UPDATE sentinel_check_run_state SET check_run_id = NULL WHERE check_run_id <= 0"
-                )
-                if (normalized.rowcount or 0) > 0:
-                    logger.info(
-                        "Normalized %s legacy sentinel check_run_id values to NULL",
-                        normalized.rowcount,
-                    )
-                return
-
-            conn.exec_driver_sql(
-                """
-                CREATE TABLE sentinel_check_run_state_new (
-                    repo_id INTEGER NOT NULL,
-                    repo_full_name TEXT NULL,
-                    head_sha TEXT NOT NULL,
-                    check_name TEXT NOT NULL,
-                    app_id INTEGER NOT NULL,
-                    check_run_id INTEGER NULL,
-                    status TEXT NOT NULL,
-                    conclusion TEXT NULL,
-                    started_at TEXT NULL,
-                    completed_at TEXT NULL,
-                    output_title TEXT NULL,
-                    output_summary_hash TEXT NULL,
-                    output_text_hash TEXT NULL,
-                    last_eval_at TEXT NOT NULL,
-                    last_publish_at TEXT NULL,
-                    last_publish_result TEXT NOT NULL,
-                    last_publish_error TEXT NULL,
-                    last_delivery_id TEXT NULL,
-                    PRIMARY KEY (repo_id, head_sha, check_name)
-                )
-                """
-            )
-            conn.exec_driver_sql(
-                """
-                INSERT INTO sentinel_check_run_state_new (
-                    repo_id,
-                    repo_full_name,
-                    head_sha,
-                    check_name,
-                    app_id,
-                    check_run_id,
-                    status,
-                    conclusion,
-                    started_at,
-                    completed_at,
-                    output_title,
-                    output_summary_hash,
-                    output_text_hash,
-                    last_eval_at,
-                    last_publish_at,
-                    last_publish_result,
-                    last_publish_error,
-                    last_delivery_id
-                )
-                SELECT
-                    repo_id,
-                    repo_full_name,
-                    head_sha,
-                    check_name,
-                    app_id,
-                    CASE WHEN check_run_id > 0 THEN check_run_id ELSE NULL END,
-                    status,
-                    conclusion,
-                    started_at,
-                    completed_at,
-                    output_title,
-                    output_summary_hash,
-                    output_text_hash,
-                    last_eval_at,
-                    last_publish_at,
-                    last_publish_result,
-                    last_publish_error,
-                    last_delivery_id
-                FROM sentinel_check_run_state
-                """
-            )
-            conn.exec_driver_sql("DROP TABLE sentinel_check_run_state")
-            conn.exec_driver_sql(
-                "ALTER TABLE sentinel_check_run_state_new RENAME TO sentinel_check_run_state"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_sentinel_check_run_state_repo_head ON sentinel_check_run_state (repo_id, head_sha)"
-            )
-            logger.info(
-                "Migrated sentinel_check_run_state.check_run_id to nullable INTEGER and removed synthetic ids"
-            )
 
     @staticmethod
     def _build_engine(db_path: Path) -> Engine:

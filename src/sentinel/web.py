@@ -33,6 +33,7 @@ from sentinel.projection import (
     ProjectionStatusScheduler,
     ProjectionTrigger,
 )
+from sentinel.db_migrations import migrate_webhook_db as run_webhook_db_migrations
 from sentinel.storage import WebhookStore
 
 
@@ -327,6 +328,13 @@ def create_app():
                     private_key=app.config.GITHUB_PRIVATE_KEY,
                 )
                 app.ctx.app_info = await gh.getitem("/app", jwt=jwt)
+
+        if app.ctx.webhook_store.enabled:
+            logger.info(
+                "Running webhook DB migrations to head for %s",
+                app.config.WEBHOOK_DB_PATH,
+            )
+            run_webhook_db_migrations(app.config.WEBHOOK_DB_PATH, revision="head")
 
         app.ctx.webhook_store.initialize()
         app.ctx.webhook_store.prune_old_events()
