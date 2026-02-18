@@ -29,7 +29,7 @@ and fragment refresh endpoint `/state/table`. PR detail pages are available at
 - `PROJECTION_PUBLISH_ENABLED` (default: `false`; compute but do not post when false)
 - `PROJECTION_DEBOUNCE_SECONDS` (default: `2`)
 - `PROJECTION_PULL_REQUEST_SYNCHRONIZE_DELAY_SECONDS` (default: `5`; additional delay
-  after `pull_request:synchronize` before evaluation)
+  after `pull_request` `synchronize`/`opened`/`reopened` before evaluation)
 - `PROJECTION_CHECK_RUN_NAME` (default: `merge-sentinel`)
 - `PROJECTION_CONFIG_CACHE_SECONDS` (default: `300`)
 - `PROJECTION_PR_FILES_CACHE_SECONDS` (default: `86400`)

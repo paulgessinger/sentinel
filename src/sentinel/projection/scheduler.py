@@ -15,6 +15,8 @@ class _KeyState:
 
 
 class ProjectionStatusScheduler:
+    _PULL_REQUEST_DELAY_ACTIONS = frozenset({"synchronize", "opened", "reopened"})
+
     def __init__(
         self,
         *,
@@ -101,7 +103,7 @@ class ProjectionStatusScheduler:
     def _extra_delay_seconds(self, trigger: ProjectionTrigger) -> float:
         if (
             trigger.event == "pull_request"
-            and trigger.action == "synchronize"
+            and trigger.action in self._PULL_REQUEST_DELAY_ACTIONS
             and self.pull_request_synchronize_delay_seconds > 0
         ):
             return self.pull_request_synchronize_delay_seconds

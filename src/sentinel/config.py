@@ -117,8 +117,8 @@ PROJECTION_PUBLISH_ENABLED = (
 )
 # Debounce window for per-(repo_id, head_sha) evaluation scheduling.
 PROJECTION_DEBOUNCE_SECONDS = float(os.environ.get("PROJECTION_DEBOUNCE_SECONDS", 2))
-# Additional wait window after pull_request:synchronize before evaluating, to allow
-# late-arriving check runs from other systems.
+# Additional wait window after pull_request synchronize/opened/reopened before
+# evaluating, to allow late-arriving check runs from other systems.
 PROJECTION_PULL_REQUEST_SYNCHRONIZE_DELAY_SECONDS = float(
     os.environ.get("PROJECTION_PULL_REQUEST_SYNCHRONIZE_DELAY_SECONDS", 15)
 )
