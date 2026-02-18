@@ -13,6 +13,7 @@ data:
   DRY_RUN: "false"
   CHECK_RUN_DEBOUNCE_WINDOW: "3600"
   PROCESS_START_PAUSE: "5"
+  INDEX_REDIRECT_URL: "https://home.cern"
   WEBHOOK_DB_ENABLED: "true"
   WEBHOOK_DB_RETENTION_DAYS: "30"
   WEBHOOK_DB_EVENTS: check_run,check_suite,workflow_run,status,pull_request

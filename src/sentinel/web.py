@@ -497,9 +497,14 @@ def create_app():
         request_counter.labels(path=request.path).inc()
 
     @app.get("/")
-    @app.ext.template("index.html.j2")
     async def index(request):
-        return {"app": app}
+        if config.INDEX_REDIRECT_URL:
+            return response.redirect(config.INDEX_REDIRECT_URL)
+        return response.html(
+            await request.app.ext.template(
+                "index.html.j2", {"app": app}
+            ).render()
+        )
 
     @app.get("/status")
     async def status(request):

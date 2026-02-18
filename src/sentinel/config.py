@@ -178,3 +178,6 @@ PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS: int = int(
 PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS: int = int(
     os.environ.get("PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS", 300)
 )
+
+# Optional URL to redirect the index page (/) to. When unset, the default index template is rendered.
+INDEX_REDIRECT_URL: str | None = os.environ.get("INDEX_REDIRECT_URL")
