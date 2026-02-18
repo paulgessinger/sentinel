@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, List
 from gidgethub.abc import GitHubAPI
 import copy
 
@@ -29,7 +29,7 @@ class API:
         self.installation = installation
         self.call_count = 0
 
-    async def post_check_run(self, repo_url: str, check_run: CheckRun) -> Optional[int]:
+    async def post_check_run(self, repo_url: str, check_run: CheckRun) -> int | None:
         self.call_count += 1
         fields = {"name", "head_sha", "status", "started_at"}
         if check_run.completed_at is not None:
@@ -93,8 +93,8 @@ class API:
         repo_url: str,
         head_sha: str,
         check_name: str,
-        app_id: Optional[int] = None,
-    ) -> Optional[CheckRun]:
+        app_id: int | None = None,
+    ) -> CheckRun | None:
         self.call_count += 1
         url = f"{repo_url}/commits/{head_sha}/check-runs"
         async for item in self.gh.getiter(url, iterable_key="check_runs"):

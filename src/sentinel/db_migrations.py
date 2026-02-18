@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import ExitStack
 from importlib import resources
 from pathlib import Path
-from typing import Union
 
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
@@ -19,7 +18,7 @@ def _build_alembic_config(db_path: Path, script_location: Path) -> AlembicConfig
     return alembic_cfg
 
 
-def migrate_webhook_db(path: Union[str, Path], revision: str = "head") -> None:
+def migrate_webhook_db(path: str | Path, revision: str = "head") -> None:
     db_path = Path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with ExitStack() as stack:

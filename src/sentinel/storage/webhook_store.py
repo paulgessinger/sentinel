@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import threading
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 from sanic.log import logger
 from sqlalchemy import (
@@ -225,7 +225,7 @@ class PersistResult:
     inserted: bool
     duplicate: bool
     projection: str
-    projection_error: Optional[str] = None
+    projection_error: str | None = None
     pruned_rows: int = 0
 
 
@@ -234,10 +234,10 @@ class WebhookStore:
         self,
         db_path: str,
         retention_seconds: int = 30 * 24 * 60 * 60,
-        projection_completed_retention_seconds: Optional[int] = None,
-        projection_active_retention_seconds: Optional[int] = None,
+        projection_completed_retention_seconds: int | None = None,
+        projection_active_retention_seconds: int | None = None,
         enabled: bool = True,
-        events: Optional[Sequence[str]] = None,
+        events: Sequence[str] | None = None,
         prune_every: int = 500,
     ):
         self.db_path = Path(db_path)
@@ -381,7 +381,7 @@ class WebhookStore:
             pruned_rows=pruned_rows,
         )
 
-    def prune_old_events(self, retention_seconds: Optional[int] = None) -> int:
+    def prune_old_events(self, retention_seconds: int | None = None) -> int:
         if not self.enabled:
             return 0
 
@@ -682,9 +682,9 @@ class WebhookStore:
         self,
         *,
         repo_id: int,
-        repo_full_name: Optional[str],
+        repo_full_name: str | None,
         head_sha: str,
-        delivery_id: Optional[str],
+        delivery_id: str | None,
         check_rows: Sequence[Mapping[str, Any]],
         workflow_rows: Sequence[Mapping[str, Any]],
         status_rows: Sequence[Mapping[str, Any]],
@@ -840,7 +840,7 @@ class WebhookStore:
         head_sha: str,
         check_name: str,
         app_id: int,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any] | None:
         stmt = select(sentinel_check_run_state).where(
             and_(
                 sentinel_check_run_state.c.repo_id == repo_id,
@@ -860,7 +860,7 @@ class WebhookStore:
         check_name: str,
         repo_id: int,
         pr_number: int,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any] | None:
         stmt = (
             self._pr_dashboard_select(app_id=app_id, check_name=check_name)
             .where(
@@ -880,7 +880,7 @@ class WebhookStore:
         *,
         repo_id: int,
         pr_number: int,
-        head_sha: Optional[str],
+        head_sha: str | None,
         limit: int = 200,
     ) -> list[Dict[str, Any]]:
         target_limit = min(1000, max(1, int(limit)))
@@ -944,7 +944,7 @@ class WebhookStore:
 
     def count_pr_dashboard_rows(
         self,
-        repo_full_name: Optional[str] = None,
+        repo_full_name: str | None = None,
         include_closed: bool = True,
     ) -> int:
         stmt = select(func.count()).select_from(pr_heads_current)
@@ -963,7 +963,7 @@ class WebhookStore:
         check_name: str,
         page: int,
         page_size: int,
-        repo_full_name: Optional[str] = None,
+        repo_full_name: str | None = None,
         include_closed: bool = True,
     ) -> list[Dict[str, Any]]:
         page = max(1, int(page))
@@ -1031,7 +1031,7 @@ class WebhookStore:
 
     def _normalize_pr_dashboard_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         payload_json = row.pop("pr_event_payload_json", None)
-        pr_merged: Optional[bool] = None
+        pr_merged: bool | None = None
 
         if payload_json is not None:
             try:
@@ -1052,7 +1052,7 @@ class WebhookStore:
         event_name: str,
         payload: Mapping[str, Any],
         pr_number: int,
-        head_sha: Optional[str],
+        head_sha: str | None,
     ) -> bool:
         if event_name == "pull_request":
             pull_request = payload.get("pull_request") or {}
@@ -1119,25 +1119,25 @@ class WebhookStore:
         self,
         *,
         repo_id: int,
-        repo_full_name: Optional[str],
-        check_run_id: Optional[int],
+        repo_full_name: str | None,
+        check_run_id: int | None,
         head_sha: str,
         name: str,
         status: str,
-        conclusion: Optional[str],
+        conclusion: str | None,
         app_id: int,
-        started_at: Optional[str],
-        completed_at: Optional[str],
-        output_title: Optional[str],
-        output_summary: Optional[str],
-        output_text: Optional[str],
-        output_summary_hash: Optional[str],
-        output_text_hash: Optional[str],
+        started_at: str | None,
+        completed_at: str | None,
+        output_title: str | None,
+        output_summary: str | None,
+        output_text: str | None,
+        output_summary_hash: str | None,
+        output_text_hash: str | None,
         last_eval_at: str,
-        last_publish_at: Optional[str],
+        last_publish_at: str | None,
         last_publish_result: str,
-        last_publish_error: Optional[str],
-        last_delivery_id: Optional[str],
+        last_publish_error: str | None,
+        last_delivery_id: str | None,
     ) -> None:
         values = {
             "repo_id": repo_id,

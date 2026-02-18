@@ -7,7 +7,7 @@ import hashlib
 import io
 import time
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Sequence
 
 from sanic.log import logger
 import yaml
@@ -67,7 +67,7 @@ class ProjectionEvaluator:
         self.config_cache_seconds = config_cache_seconds
         self.pr_files_cache_seconds = pr_files_cache_seconds
         self.api_factory = api_factory
-        self._config_cache: Dict[int, tuple[float, Optional[Config]]] = {}
+        self._config_cache: Dict[int, tuple[float, Config | None]] = {}
         self._pr_files_cache: Dict[tuple[int, int, str], tuple[float, List[str]]] = {}
 
     async def evaluate_and_publish(self, trigger: ProjectionTrigger) -> EvaluationResult:
@@ -433,10 +433,10 @@ class ProjectionEvaluator:
             sentinel_projection_eval_total.labels(result="unchanged").inc()
             return EvaluationResult(result="unchanged", check_run_id=check_run_id, changed=False)
 
-        published_id: Optional[int] = None
+        published_id: int | None = None
         publish_result = "dry_run"
-        publish_error: Optional[str] = None
-        publish_at: Optional[str] = None
+        publish_error: str | None = None
+        publish_at: str | None = None
 
         if self.publish_enabled:
             logger.info(
@@ -576,7 +576,7 @@ class ProjectionEvaluator:
 
     async def _get_repo_config(
         self, api: API, trigger: ProjectionTrigger
-    ) -> Optional[Config]:
+    ) -> Config | None:
         now = time.monotonic()
         cached = self._config_cache.get(trigger.repo_id)
         if cached and cached[0] > now:
@@ -760,7 +760,7 @@ class ProjectionEvaluator:
         }
 
     @staticmethod
-    def _dt_to_iso(value: Optional[datetime]) -> Optional[str]:
+    def _dt_to_iso(value: datetime | None) -> str | None:
         if value is None:
             return None
         return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -780,7 +780,7 @@ class ProjectionEvaluator:
         return "pending"
 
     @staticmethod
-    def _parse_dt(value: Optional[str]) -> Optional[datetime]:
+    def _parse_dt(value: str | None) -> datetime | None:
         if value is None:
             return None
         if value.endswith("Z"):
@@ -794,7 +794,7 @@ class ProjectionEvaluator:
         return dt
 
     @classmethod
-    def _min_started_at(cls, rows: Sequence[Dict[str, Any]]) -> Optional[str]:
+    def _min_started_at(cls, rows: Sequence[Dict[str, Any]]) -> str | None:
         vals = [cls._parse_dt(r.get("started_at")) for r in rows if r.get("started_at")]
         vals = [v for v in vals if v is not None]
         if not vals:
@@ -802,7 +802,7 @@ class ProjectionEvaluator:
         return min(vals).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     @classmethod
-    def _max_completed_at(cls, rows: Sequence[Dict[str, Any]]) -> Optional[str]:
+    def _max_completed_at(cls, rows: Sequence[Dict[str, Any]]) -> str | None:
         vals = [cls._parse_dt(r.get("completed_at")) for r in rows if r.get("completed_at")]
         vals = [v for v in vals if v is not None]
         if not vals:

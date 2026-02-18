@@ -1,4 +1,4 @@
-from typing import List, Optional, Set
+from typing import List, Set
 
 import pydantic
 from pydantic import ConfigDict
@@ -10,8 +10,8 @@ class Model(pydantic.BaseModel):
 
 class Rule(Model):
     branch_filter: List[str] = pydantic.Field(default_factory=list)
-    paths: Optional[List[str]] = None
-    paths_ignore: Optional[List[str]] = None
+    paths: List[str] | None = None
+    paths_ignore: List[str] | None = None
 
     required_checks: Set[str] = pydantic.Field(default_factory=set)
     required_pattern: List[str] = pydantic.Field(default_factory=list)

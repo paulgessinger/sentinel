@@ -1,7 +1,7 @@
 import asyncio
 import json
 from math import ceil
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import emoji
 from markdown_it import MarkdownIt
@@ -46,7 +46,7 @@ class StateUpdateBroadcaster:
                 pass
 
 
-def _arg_value(request: Request, key: str, default: Optional[str] = None) -> Optional[str]:
+def _arg_value(request: Request, key: str, default: str | None = None) -> str | None:
     values = _arg_values(request, key)
     if not values:
         return default
@@ -78,7 +78,7 @@ def _arg_values(request: Request, key: str) -> list[str]:
     return normalized
 
 
-def _parse_int(value: Optional[str], default: int) -> int:
+def _parse_int(value: str | None, default: int) -> int:
     if value is None:
         return default
     try:
@@ -87,7 +87,7 @@ def _parse_int(value: Optional[str], default: int) -> int:
         return default
 
 
-def _parse_bool(value: Optional[str], default: bool) -> bool:
+def _parse_bool(value: str | None, default: bool) -> bool:
     if value is None:
         return default
     normalized = str(value).strip().lower()
@@ -98,7 +98,7 @@ def _parse_bool(value: Optional[str], default: bool) -> bool:
     return default
 
 
-def _state_query_params(request: Request) -> tuple[int, int, Optional[str], bool]:
+def _state_query_params(request: Request) -> tuple[int, int, str | None, bool]:
     page = max(1, _parse_int(_arg_value(request, "page"), 1))
     page_size = _parse_int(_arg_value(request, "page_size"), DEFAULT_STATE_PAGE_SIZE)
     page_size = min(MAX_STATE_PAGE_SIZE, max(1, page_size))
@@ -113,27 +113,27 @@ def _state_query_params(request: Request) -> tuple[int, int, Optional[str], bool
     return page, page_size, repo, include_closed
 
 
-def _github_pr_url(repo_full_name: Optional[str], pr_number: Optional[int]) -> Optional[str]:
+def _github_pr_url(repo_full_name: str | None, pr_number: int | None) -> str | None:
     if not repo_full_name or pr_number is None:
         return None
     return f"https://github.com/{repo_full_name}/pull/{pr_number}"
 
 
-def _github_commit_url(repo_full_name: Optional[str], head_sha: Optional[str]) -> Optional[str]:
+def _github_commit_url(repo_full_name: str | None, head_sha: str | None) -> str | None:
     if not repo_full_name or not head_sha:
         return None
     return f"https://github.com/{repo_full_name}/commit/{head_sha}"
 
 
 def _github_check_run_url(
-    repo_full_name: Optional[str], check_run_id: Optional[int]
-) -> Optional[str]:
+    repo_full_name: str | None, check_run_id: int | None
+) -> str | None:
     if not repo_full_name or check_run_id is None:
         return None
     return f"https://github.com/{repo_full_name}/runs/{check_run_id}?check_suite_focus=true"
 
 
-def _pr_state_display(pr_state: Optional[str], pr_merged: Optional[bool]) -> str:
+def _pr_state_display(pr_state: str | None, pr_merged: bool | None) -> str:
     if pr_state == "closed":
         if pr_merged is True:
             return "merged"
@@ -177,7 +177,7 @@ def _state_dashboard_context(
     *,
     page: int,
     page_size: int,
-    repo_filter: Optional[str],
+    repo_filter: str | None,
     include_closed: bool,
 ) -> Dict[str, Any]:
     total = app.ctx.webhook_store.count_pr_dashboard_rows(
@@ -251,7 +251,7 @@ def _state_dashboard_context(
 
 
 def _publish_result_display(
-    *, publish_result: Optional[str], status: Optional[str], conclusion: Optional[str]
+    *, publish_result: str | None, status: str | None, conclusion: str | None
 ) -> str:
     if not publish_result:
         return "-"
@@ -266,13 +266,13 @@ def _publish_result_display(
     return f"{would_post} (unchanged)"
 
 
-def _status_chip_class(status: Optional[str]) -> str:
+def _status_chip_class(status: str | None) -> str:
     if status == "failure":
         return "chip-bg-red"
     return ""
 
 
-def _conclusion_chip_class(conclusion: Optional[str]) -> str:
+def _conclusion_chip_class(conclusion: str | None) -> str:
     if conclusion == "success":
         return "chip-bg-green"
     if conclusion == "failure":
@@ -280,7 +280,7 @@ def _conclusion_chip_class(conclusion: Optional[str]) -> str:
     return ""
 
 
-def _render_markdown(markdown_text: Optional[str]) -> str:
+def _render_markdown(markdown_text: str | None) -> str:
     if markdown_text is None or markdown_text.strip() == "":
         return '<p class="muted">Not available yet</p>'
     emojized = emoji.emojize(markdown_text, language="alias")
@@ -293,7 +293,7 @@ def _state_pr_detail_context(
     *,
     repo_id: int,
     pr_number: int,
-) -> Optional[Dict[str, Any]]:
+) -> Dict[str, Any] | None:
     row = app.ctx.webhook_store.get_pr_dashboard_row(
         app_id=app.config.GITHUB_APP_ID,
         check_name=app.config.PROJECTION_CHECK_RUN_NAME,

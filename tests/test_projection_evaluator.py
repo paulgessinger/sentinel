@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import sqlite3
-from typing import Optional
 
 import pytest
 
@@ -33,7 +32,7 @@ class _FakeAPI:
         self,
         *,
         config_yaml: str,
-        post_id: Optional[int] = None,
+        post_id: int | None = None,
         on_get_content=None,
     ):
         self._config_yaml = config_yaml
@@ -77,7 +76,7 @@ class _FakeAPI:
         repo_url: str,
         head_sha: str,
         check_name: str,
-        app_id: Optional[int] = None,
+        app_id: int | None = None,
     ):
         self.lookup_calls += 1
         return None

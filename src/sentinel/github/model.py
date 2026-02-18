@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from functools import cached_property
-from typing import Any, List, Literal, Optional, Type, TypeVar
+from typing import Any, List, Literal, Type, TypeVar
 import base64
 
 import pydantic
@@ -55,10 +55,10 @@ class Content(Model):
 class Repository(Model):
     id: int
     name: str
-    full_name: Optional[str]
+    full_name: str | None
     url: str
-    html_url: Optional[str]
-    private: Optional[bool]
+    html_url: str | None
+    private: bool | None
 
 
 class PartialPrConnection(Model):
@@ -81,12 +81,12 @@ class PartialPullRequest(Model):
 
 class PullRequest(PartialPullRequest):
     state: Literal["open", "closed"]
-    merged_at: Optional[datetime]
+    merged_at: datetime | None
     created_at: datetime
     updated_at: datetime
     base: PrConnection
     head: PrConnection
-    html_url: Optional[str]
+    html_url: str | None
 
     def __str__(self) -> str:
         name = self.base.repo.name
@@ -108,17 +108,18 @@ class PartialCheckSuite(Model):
 
 
 class CheckSuite(PartialCheckSuite):
-    head_branch: Optional[str]
+    head_branch: str | None
     head_sha: CommitSha
-    status: Optional[
+    status: (
         Literal[
             "queued",
             "in_progress",
             "completed",
             "pending",
         ]
-    ]
-    conclusion: Optional[
+        | None
+    )
+    conclusion: (
         Literal[
             "success",
             "failure",
@@ -129,7 +130,8 @@ class CheckSuite(PartialCheckSuite):
             "action_required",
             "startup_failure",
         ]
-    ]
+        | None
+    )
     url: str
     created_at: datetime
     updated_at: datetime
@@ -137,9 +139,9 @@ class CheckSuite(PartialCheckSuite):
 
 
 class CheckRunOutput(Model):
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    text: Optional[str] = None
+    title: str | None = None
+    summary: str | None = None
+    text: str | None = None
 
 
 class CheckRunAction(Model):
@@ -149,11 +151,11 @@ class CheckRunAction(Model):
 
 
 class CheckRun(Model):
-    id: Optional[int]
+    id: int | None
     name: str
     head_sha: CommitSha
     status: Literal["completed", "queued", "in_progress", "pending"] = "queued"
-    conclusion: Optional[
+    conclusion: (
         Literal[
             "action_required",
             "cancelled",
@@ -164,15 +166,16 @@ class CheckRun(Model):
             "stale",
             "timed_out",
         ]
-    ]
+        | None
+    )
     started_at: datetime = pydantic.Field(default_factory=datetime.now)
-    completed_at: Optional[datetime]
+    completed_at: datetime | None
     pull_requests: List[PartialPullRequest] = pydantic.Field(default_factory=list)
-    app: Optional[App] = None
-    check_suite: Optional[PartialCheckSuite] = None
-    output: Optional[CheckRunOutput] = None
+    app: App | None = None
+    check_suite: PartialCheckSuite | None = None
+    output: CheckRunOutput | None = None
     actions: List[CheckRunAction] = pydantic.Field(default_factory=list)
-    html_url: Optional[str] = None
+    html_url: str | None = None
 
     @property
     def is_failure(self) -> bool:
@@ -198,7 +201,7 @@ class CheckRun(Model):
 
 
 class PrFile(Model):
-    sha: Optional[str]
+    sha: str | None
     filename: str
     status: Literal[
         "added", "removed", "modified", "renamed", "copied", "changed", "unchanged"
@@ -211,7 +214,7 @@ class ActionsJob(Model):
     run_id: int
     run_url: str
     status: Literal["completed", "queued", "in_progress", "pending"]
-    conclusion: Optional[
+    conclusion: (
         Literal[
             "action_required",
             "cancelled",
@@ -222,7 +225,8 @@ class ActionsJob(Model):
             "stale",
             "timed_out",
         ]
-    ]
+        | None
+    )
     name: str
     run_attempt: int
 
@@ -234,7 +238,7 @@ class ActionsRun(Model):
     run_number: int
     event: str
     status: Literal["completed", "queued", "in_progress", "pending"] = "queued"
-    conclusion: Optional[
+    conclusion: (
         Literal[
             "action_required",
             "cancelled",
@@ -245,7 +249,8 @@ class ActionsRun(Model):
             "stale",
             "timed_out",
         ]
-    ]
+        | None
+    )
     workflow_id: int
     check_suite_id: int
     created_at: datetime
@@ -253,7 +258,7 @@ class ActionsRun(Model):
 
 
 class CommitStatus(Model):
-    url: Optional[str]
+    url: str | None
     id: int
     state: Literal["failure", "pending", "success", "error"]
     created_at: datetime

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -10,9 +9,9 @@ class ProjectionTrigger:
     repo_full_name: str
     head_sha: str
     installation_id: int
-    delivery_id: Optional[str] = None
-    event: Optional[str] = None
-    action: Optional[str] = None
+    delivery_id: str | None = None
+    event: str | None = None
+    action: str | None = None
     force_api_refresh: bool = False
 
     @property
@@ -23,6 +22,6 @@ class ProjectionTrigger:
 @dataclass(frozen=True)
 class EvaluationResult:
     result: str
-    check_run_id: Optional[int] = None
+    check_run_id: int | None = None
     changed: bool = False
-    error: Optional[str] = None
+    error: str | None = None

@@ -1,7 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional, Set
+from typing import Set
 import diskcache
 import logging
 
@@ -54,7 +54,7 @@ class Cache(diskcache.Cache):
             logger.info("Pushing %s", item.pr)
             return True
 
-    async def pull_pr(self) -> Optional[QueueItem]:
+    async def pull_pr(self) -> QueueItem | None:
         async with self.lock:
             logger.debug("Queue size is %d", len(self.deque))
             if len(self.deque) == 0:

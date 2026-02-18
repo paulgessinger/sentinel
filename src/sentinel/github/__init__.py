@@ -10,7 +10,7 @@ import logging
 from multiprocessing.sharedctypes import Value
 from tabnanny import check
 from tracemalloc import start
-from typing import Any, AsyncIterable, AsyncIterator, Dict, List, Mapping, Optional, Set
+from typing import Any, AsyncIterable, AsyncIterator, Dict, List, Mapping, Set
 import json
 from typing_extensions import Required
 import gidgethub
@@ -74,9 +74,9 @@ class ResultItem:
     name: str
     status: ResultStatus
 
-    url: Optional[str] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
+    url: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
     required: bool = False
 
     def __hash__(self):
@@ -160,7 +160,7 @@ async def get_access_token(gh: gh_aiohttp.GitHubAPI, installation_id: int) -> st
     return token
 
 
-async def get_config_from_repo(api: API, repo: Repository) -> Optional[Config]:
+async def get_config_from_repo(api: API, repo: Repository) -> Config | None:
     try:
         content = await api.get_content(repo.url, ".merge-sentinel.yml")
 
@@ -541,8 +541,8 @@ def determine_rules(
 
 def rule_apply_changed_files(
     changed_files: List[str],
-    paths: Optional[List[str]] = None,
-    paths_ignore: Optional[List[str]] = None,
+    paths: List[str] | None = None,
+    paths_ignore: List[str] | None = None,
 ) -> bool:
     if paths is None and paths_ignore is None:
         raise ValueError("Provide at least one filter argument")
@@ -682,7 +682,7 @@ async def process_pull_request(pr: PullRequest, api: API):
         "text": lambda cr: cr.output.text,
     }
 
-    diff: Optional[str] = None
+    diff: str | None = None
     for key, pred in diffs.items():
         if pred(orig_check_run) != pred(check_run):
             diff = key
