@@ -1,9 +1,81 @@
+:root {
+    color-scheme: light;
+    --color-bg: #f5f7fb;
+    --color-fg: #12141a;
+    --color-link: #3358b8;
+    --color-logo-bg: #ffffff;
+    --color-muted-strong: #5c6473;
+    --color-muted: #6c7483;
+    --color-mode-border: #b78f2a;
+    --color-mode-bg: #fff3d6;
+    --color-mode-fg: #5d4300;
+    --color-input-border: #c8cfdb;
+    --color-input-bg: #ffffff;
+    --color-input-fg: #12141a;
+    --color-table-border: #d7dce6;
+    --color-table-head: #3d4657;
+    --color-row-flash: rgba(246, 196, 89, 0.35);
+    --color-disabled: #8a94a8;
+    --color-chip-border: #b7bfce;
+    --color-chip-pr-border: #4f74bd;
+    --color-chip-status-border: #5a5ab5;
+    --color-chip-conclusion-border: #5b8b5b;
+    --color-chip-green-bg: #d6f0de;
+    --color-chip-green-border: #4e9964;
+    --color-chip-green-fg: #114522;
+    --color-chip-red-bg: #f8d9d9;
+    --color-chip-red-border: #c35b5b;
+    --color-chip-red-fg: #5d1616;
+    --color-error: #b93535;
+    --color-code-bg: #f6f8fb;
+    --color-code-border: #cfd5df;
+    --color-rendered-table-border: #cfd5df;
+    --color-rendered-table-head: #4a5568;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        color-scheme: dark;
+        --color-bg: #111;
+        --color-fg: #eee;
+        --color-link: #8ea0ff;
+        --color-logo-bg: #eee;
+        --color-muted-strong: #b8b8b8;
+        --color-muted: #9a9a9a;
+        --color-mode-border: #7f6b2f;
+        --color-mode-bg: #3b2e11;
+        --color-mode-fg: #f5dfa2;
+        --color-input-border: #444;
+        --color-input-bg: #1c1c1c;
+        --color-input-fg: #eee;
+        --color-table-border: #2f2f2f;
+        --color-table-head: #bbb;
+        --color-row-flash: rgba(246, 196, 89, 0.45);
+        --color-disabled: #666;
+        --color-chip-border: #454545;
+        --color-chip-pr-border: #5675b8;
+        --color-chip-status-border: #6d6dbd;
+        --color-chip-conclusion-border: #6d966d;
+        --color-chip-green-bg: #285b38;
+        --color-chip-green-border: #3f8a56;
+        --color-chip-green-fg: #ecffef;
+        --color-chip-red-bg: #6f2525;
+        --color-chip-red-border: #a94444;
+        --color-chip-red-fg: #ffecec;
+        --color-error: #d38787;
+        --color-code-bg: #191919;
+        --color-code-border: #333;
+        --color-rendered-table-border: #333;
+        --color-rendered-table-head: #c0c0c0;
+    }
+}
+
 body,
 html {
     margin: 0;
     padding: 0;
-    background: #111;
-    color: #EEE;
+    background: var(--color-bg);
+    color: var(--color-fg);
     font-family: sans-serif;
 }
 
@@ -23,7 +95,7 @@ html {
 #logo {
     display: inline-block;
     border-radius: 50%;
-    background: #eee;
+    background: var(--color-logo-bg);
     /* width: 75%; */
     margin: 0 auto;
     /* background-size: cover;
@@ -59,7 +131,7 @@ h1 {
 }
 
 a {
-    color: #5858a7;
+    color: var(--color-link);
 }
 
 .state-dashboard {
@@ -72,13 +144,13 @@ a {
 
 .state-header p {
     margin-top: 8px;
-    color: #b8b8b8;
+    color: var(--color-muted-strong);
 }
 
 .mode-indicator {
-    border: 1px solid #7f6b2f;
-    background: #3b2e11;
-    color: #f5dfa2;
+    border: 1px solid var(--color-mode-border);
+    background: var(--color-mode-bg);
+    color: var(--color-mode-fg);
     border-radius: 6px;
     padding: 10px 12px;
     margin-bottom: 14px;
@@ -96,9 +168,9 @@ a {
 .state-filters input,
 .state-filters select,
 .state-filters button {
-    border: 1px solid #444;
-    background: #1c1c1c;
-    color: #eee;
+    border: 1px solid var(--color-input-border);
+    background: var(--color-input-bg);
+    color: var(--color-input-fg);
     border-radius: 4px;
     padding: 6px 8px;
 }
@@ -117,20 +189,20 @@ a {
 
 .state-table th,
 .state-table td {
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--color-table-border);
     padding: 10px 8px;
     vertical-align: top;
     text-align: left;
 }
 
 .state-table th {
-    color: #bbb;
+    color: var(--color-table-head);
     font-weight: 600;
 }
 
 @keyframes row-flash-once {
     0% {
-        background-color: rgba(246, 196, 89, 0.45);
+        background-color: var(--color-row-flash);
     }
     100% {
         background-color: transparent;
@@ -144,7 +216,7 @@ a {
 .state-meta {
     display: flex;
     gap: 16px;
-    color: #b8b8b8;
+    color: var(--color-muted-strong);
     font-size: 0.9rem;
     margin-bottom: 10px;
     flex-wrap: wrap;
@@ -157,12 +229,12 @@ a {
 }
 
 .state-pagination .disabled {
-    color: #666;
+    color: var(--color-disabled);
 }
 
 .chip {
     display: inline-block;
-    border: 1px solid #454545;
+    border: 1px solid var(--color-chip-border);
     border-radius: 999px;
     padding: 2px 8px;
     font-size: 0.78rem;
@@ -171,36 +243,36 @@ a {
 }
 
 .chip-pr {
-    border-color: #5675b8;
+    border-color: var(--color-chip-pr-border);
 }
 
 .chip-status {
-    border-color: #6d6dbd;
+    border-color: var(--color-chip-status-border);
 }
 
 .chip-conclusion {
-    border-color: #6d966d;
+    border-color: var(--color-chip-conclusion-border);
 }
 
 .chip-bg-green {
-    background: #285b38;
-    border-color: #3f8a56;
-    color: #ecffef;
+    background: var(--color-chip-green-bg);
+    border-color: var(--color-chip-green-border);
+    color: var(--color-chip-green-fg);
 }
 
 .chip-bg-red {
-    background: #6f2525;
-    border-color: #a94444;
-    color: #ffecec;
+    background: var(--color-chip-red-bg);
+    border-color: var(--color-chip-red-border);
+    color: var(--color-chip-red-fg);
 }
 
 .muted {
-    color: #9a9a9a;
+    color: var(--color-muted);
     font-size: 0.82rem;
 }
 
 .error-text {
-    color: #d38787;
+    color: var(--color-error);
     max-width: 360px;
     overflow-wrap: anywhere;
     margin-top: 6px;
@@ -215,8 +287,8 @@ a {
 }
 
 .output-block pre {
-    background: #191919;
-    border: 1px solid #333;
+    background: var(--color-code-bg);
+    border: 1px solid var(--color-code-border);
     border-radius: 6px;
     padding: 10px;
     white-space: pre-wrap;
@@ -267,11 +339,11 @@ a {
 
 .rendered-check-table th,
 .rendered-check-table td {
-    border: 1px solid #333;
+    border: 1px solid var(--color-rendered-table-border);
     padding: 6px 8px;
     text-align: left;
 }
 
 .rendered-check-table th {
-    color: #c0c0c0;
+    color: var(--color-rendered-table-head);
 }
