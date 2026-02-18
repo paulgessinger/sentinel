@@ -153,6 +153,18 @@ a {
     border-color: #6d966d;
 }
 
+.chip-bg-green {
+    background: #285b38;
+    border-color: #3f8a56;
+    color: #ecffef;
+}
+
+.chip-bg-red {
+    background: #6f2525;
+    border-color: #a94444;
+    color: #ffecec;
+}
+
 .muted {
     color: #9a9a9a;
     font-size: 0.82rem;

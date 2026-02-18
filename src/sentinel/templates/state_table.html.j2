@@ -46,15 +46,15 @@
         <td><span class="chip chip-pr">{{ row.pr_state or "unknown" }}</span></td>
         <td>
             <div>
-                <span class="chip chip-status">{{ row.sentinel_status or "not_evaluated" }}</span>
+                <span class="chip chip-status {{ row.sentinel_status_class }}">{{ row.sentinel_status or "not_evaluated" }}</span>
                 {% if row.sentinel_conclusion %}
-                <span class="chip chip-conclusion">{{ row.sentinel_conclusion }}</span>
+                <span class="chip chip-conclusion {{ row.sentinel_conclusion_class }}">{{ row.sentinel_conclusion }}</span>
                 {% endif %}
             </div>
             <div class="muted">eval: {{ row.last_eval_at or "-" }}</div>
         </td>
         <td>
-            <div class="muted">result: {{ row.last_publish_result or "-" }}</div>
+            <div class="muted">result: {{ row.publish_result_display }}</div>
             <div class="muted">at: {{ row.last_publish_at or "-" }}</div>
             {% if row.check_run_url %}
             <a href="{{ row.check_run_url }}" target="_blank" rel="noreferrer">run {{ row.sentinel_check_run_id }}</a>

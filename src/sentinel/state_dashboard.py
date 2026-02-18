@@ -123,6 +123,15 @@ def _state_dashboard_context(
                 "pr_url": _github_pr_url(repo_full_name, pr_number),
                 "commit_url": _github_commit_url(repo_full_name, head_sha),
                 "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
+                "sentinel_status_class": _status_chip_class(row.get("sentinel_status")),
+                "sentinel_conclusion_class": _conclusion_chip_class(
+                    row.get("sentinel_conclusion")
+                ),
+                "publish_result_display": _publish_result_display(
+                    publish_result=row.get("last_publish_result"),
+                    status=row.get("sentinel_status"),
+                    conclusion=row.get("sentinel_conclusion"),
+                ),
                 "details_url": (
                     f"/state/pr/{row.get('repo_id')}/{pr_number}"
                     if row.get("repo_id") is not None and pr_number is not None
@@ -139,6 +148,36 @@ def _state_dashboard_context(
         "total_pages": total_pages,
         "repo_filter": repo_filter or "",
     }
+
+
+def _publish_result_display(
+    *, publish_result: Optional[str], status: Optional[str], conclusion: Optional[str]
+) -> str:
+    if not publish_result:
+        return "-"
+    if publish_result != "dry_run":
+        if publish_result != "unchanged":
+            return publish_result
+    would_post = status or "unknown"
+    if conclusion:
+        would_post = f"{would_post}/{conclusion}"
+    if publish_result == "dry_run":
+        return f"{would_post} (dry-run)"
+    return f"{would_post} (unchanged)"
+
+
+def _status_chip_class(status: Optional[str]) -> str:
+    if status == "failure":
+        return "chip-bg-red"
+    return ""
+
+
+def _conclusion_chip_class(conclusion: Optional[str]) -> str:
+    if conclusion == "success":
+        return "chip-bg-green"
+    if conclusion == "failure":
+        return "chip-bg-red"
+    return ""
 
 
 def _render_markdown(markdown_text: Optional[str]) -> str:
@@ -186,6 +225,15 @@ def _state_pr_detail_context(
             "pr_url": _github_pr_url(repo_full_name, pr_number),
             "commit_url": _github_commit_url(repo_full_name, head_sha),
             "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
+            "sentinel_status_class": _status_chip_class(row.get("sentinel_status")),
+            "sentinel_conclusion_class": _conclusion_chip_class(
+                row.get("sentinel_conclusion")
+            ),
+            "publish_result_display": _publish_result_display(
+                publish_result=row.get("last_publish_result"),
+                status=row.get("sentinel_status"),
+                conclusion=row.get("sentinel_conclusion"),
+            ),
             "rendered_output_summary": _render_markdown(output_summary),
             "rendered_output_text": _render_markdown(output_text),
         },

@@ -5,9 +5,12 @@ import pytest
 from sentinel.storage import WebhookStore
 from sentinel.state_dashboard import (
     StateUpdateBroadcaster,
+    _publish_result_display,
+    _conclusion_chip_class,
     _state_dashboard_context,
     _state_pr_detail_context,
     _state_query_params,
+    _status_chip_class,
 )
 from sentinel.web import create_app
 
@@ -85,6 +88,7 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
     assert row["check_run_url"] == "https://github.com/org/repo/runs/321?check_suite_focus=true"
     assert row["output_summary"] == "summary"
     assert row["output_text"] == "text"
+    assert row["publish_result_display"] == "published"
 
 
 @pytest.mark.asyncio
@@ -105,6 +109,35 @@ def test_state_routes_registered():
     assert "state/table" in paths
     assert "state/stream" in paths
     assert any("state/pr" in path for path in paths)
+
+
+def test_publish_result_display_for_dry_run_includes_would_post():
+    assert (
+        _publish_result_display(
+            publish_result="dry_run",
+            status="completed",
+            conclusion="success",
+        )
+        == "completed/success (dry-run)"
+    )
+
+
+def test_publish_result_display_for_unchanged_includes_latest_status():
+    assert (
+        _publish_result_display(
+            publish_result="unchanged",
+            status="completed",
+            conclusion="success",
+        )
+        == "completed/success (unchanged)"
+    )
+
+
+def test_chip_classes_for_status_and_conclusion():
+    assert _status_chip_class("completed") == ""
+    assert _status_chip_class("failure") == "chip-bg-red"
+    assert _conclusion_chip_class("success") == "chip-bg-green"
+    assert _conclusion_chip_class("failure") == "chip-bg-red"
 
 
 def test_state_pr_detail_context_renders_output_and_events(tmp_path):
@@ -187,7 +220,7 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
         output_text_hash="h2",
         last_eval_at="2026-02-18T12:00:01Z",
         last_publish_at="2026-02-18T12:00:02Z",
-        last_publish_result="published",
+        last_publish_result="dry_run",
         last_publish_error=None,
         last_delivery_id="d1",
     )
@@ -203,6 +236,7 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
     context = _state_pr_detail_context(app, repo_id=10, pr_number=42)
     assert context is not None
     assert context["row"]["pr_url"] == "https://github.com/org/repo/pull/42"
+    assert context["row"]["publish_result_display"] == "completed/success (dry-run)"
     assert "\u2705" in context["row"]["rendered_output_summary"]
     assert "rendered-check-table" in context["row"]["rendered_output_text"]
     assert len(context["events"]) >= 3
