@@ -118,6 +118,19 @@ a {
     font-weight: 600;
 }
 
+@keyframes row-flash-once {
+    0% {
+        background-color: rgba(246, 196, 89, 0.45);
+    }
+    100% {
+        background-color: transparent;
+    }
+}
+
+.state-table tr.row-flash-once td {
+    animation: row-flash-once 1.2s ease-out 1;
+}
+
 .state-meta {
     display: flex;
     gap: 16px;

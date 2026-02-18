@@ -11,17 +11,18 @@
     <thead>
     <tr>
         <th>Repository</th>
+        <th>PR State</th>
         <th>PR</th>
         <th>Head</th>
-        <th>PR State</th>
         <th>Sentinel Status</th>
         <th>Publish</th>
     </tr>
     </thead>
     <tbody>
     {% for row in rows %}
-    <tr>
+    <tr data-row-key="{{ row.row_key }}" data-row-signature="{{ row.row_update_signature }}">
         <td>{{ row.repo_full_name or "unknown" }}</td>
+        <td><span class="chip chip-pr {{ row.pr_state_class }}">{{ row.pr_state_display }}</span></td>
         <td>
             {% set pr_title_text = row.pr_title or ("PR #" ~ row.pr_number) %}
             {% if row.details_url %}
@@ -43,7 +44,6 @@
             <span title="{{ row.head_sha }}">{{ row.short_sha }}</span>
             {% endif %}
         </td>
-        <td><span class="chip chip-pr">{{ row.pr_state or "unknown" }}</span></td>
         <td>
             <div>
                 <span class="chip chip-status {{ row.sentinel_status_class }}">{{ row.sentinel_status or "not_evaluated" }}</span>

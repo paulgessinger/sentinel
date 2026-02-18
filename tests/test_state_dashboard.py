@@ -5,6 +5,7 @@ import pytest
 from sentinel.storage import WebhookStore
 from sentinel.state_dashboard import (
     StateUpdateBroadcaster,
+    _pr_state_chip_class,
     _publish_result_display,
     _conclusion_chip_class,
     _state_dashboard_context,
@@ -127,6 +128,10 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
     assert row["pr_title"] == "Add dashboard"
     assert row["commit_url"] == f"https://github.com/org/repo/commit/{'a'*40}"
     assert row["short_sha"] == "a" * 8
+    assert row["row_key"] == "10:42"
+    assert row["row_update_signature"] != ""
+    assert row["pr_state_display"] == "open"
+    assert row["pr_state_class"] == ""
     assert row["check_run_url"] == "https://github.com/org/repo/runs/321?check_suite_focus=true"
     assert row["output_summary"] == "summary"
     assert row["output_text"] == "text"
@@ -137,43 +142,46 @@ def test_state_dashboard_context_can_exclude_closed_prs(tmp_path):
     store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
     store.initialize()
 
+    open_payload = {
+        "action": "opened",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "pull_request": {
+            "id": 1001,
+            "number": 1,
+            "title": "Open PR",
+            "state": "open",
+            "updated_at": "2026-02-18T12:00:00Z",
+            "head": {"sha": "a" * 40},
+            "base": {"ref": "main"},
+        },
+    }
+    closed_payload = {
+        "action": "closed",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "pull_request": {
+            "id": 1002,
+            "number": 2,
+            "title": "Closed PR",
+            "state": "closed",
+            "merged": False,
+            "updated_at": "2026-02-18T12:10:00Z",
+            "head": {"sha": "b" * 40},
+            "base": {"ref": "main"},
+        },
+    }
     store.persist_event(
         delivery_id="pr-open-1",
         event="pull_request",
-        payload={
-            "action": "opened",
-            "installation": {"id": 1},
-            "repository": {"id": 10, "full_name": "org/repo"},
-            "pull_request": {
-                "id": 1001,
-                "number": 1,
-                "title": "Open PR",
-                "state": "open",
-                "updated_at": "2026-02-18T12:00:00Z",
-                "head": {"sha": "a" * 40},
-                "base": {"ref": "main"},
-            },
-        },
-        payload_json="{}",
+        payload=open_payload,
+        payload_json=store.payload_to_json(open_payload),
     )
     store.persist_event(
         delivery_id="pr-closed-1",
         event="pull_request",
-        payload={
-            "action": "closed",
-            "installation": {"id": 1},
-            "repository": {"id": 10, "full_name": "org/repo"},
-            "pull_request": {
-                "id": 1002,
-                "number": 2,
-                "title": "Closed PR",
-                "state": "closed",
-                "updated_at": "2026-02-18T12:10:00Z",
-                "head": {"sha": "b" * 40},
-                "base": {"ref": "main"},
-            },
-        },
-        payload_json="{}",
+        payload=closed_payload,
+        payload_json=store.payload_to_json(closed_payload),
     )
 
     app = SimpleNamespace(
@@ -203,6 +211,9 @@ def test_state_dashboard_context_can_exclude_closed_prs(tmp_path):
     assert open_only_context["total"] == 1
     assert len(open_only_context["rows"]) == 1
     assert open_only_context["rows"][0]["pr_number"] == 1
+    closed_row = next(row for row in all_rows_context["rows"] if row["pr_number"] == 2)
+    assert closed_row["pr_state_display"] == "closed (not merged)"
+    assert closed_row["pr_state_class"] == "chip-bg-red"
 
 
 @pytest.mark.asyncio
@@ -253,6 +264,10 @@ def test_chip_classes_for_status_and_conclusion():
     assert _status_chip_class("failure") == "chip-bg-red"
     assert _conclusion_chip_class("success") == "chip-bg-green"
     assert _conclusion_chip_class("failure") == "chip-bg-red"
+    assert _pr_state_chip_class("merged") == "chip-bg-green"
+    assert _pr_state_chip_class("closed") == "chip-bg-red"
+    assert _pr_state_chip_class("closed (not merged)") == "chip-bg-red"
+    assert _pr_state_chip_class("open") == ""
 
 
 def test_state_pr_detail_context_renders_output_and_events(tmp_path):

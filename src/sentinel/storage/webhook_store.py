@@ -718,7 +718,7 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             row = conn.execute(stmt).mappings().first()
-        return None if row is None else dict(row)
+        return None if row is None else self._normalize_pr_dashboard_row(dict(row))
 
     def list_pr_related_events(
         self,
@@ -828,14 +828,19 @@ class WebhookStore:
 
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
-        return [dict(row) for row in rows]
+        return [self._normalize_pr_dashboard_row(dict(row)) for row in rows]
 
     def _pr_dashboard_select(self, *, app_id: int, check_name: str):
+        pr_event = webhook_events.alias("pr_event")
         join_condition = and_(
             sentinel_check_run_state.c.repo_id == pr_heads_current.c.repo_id,
             sentinel_check_run_state.c.head_sha == pr_heads_current.c.head_sha,
             sentinel_check_run_state.c.check_name == check_name,
             sentinel_check_run_state.c.app_id == app_id,
+        )
+        pr_event_join_condition = and_(
+            pr_event.c.delivery_id == pr_heads_current.c.last_delivery_id,
+            pr_event.c.event == "pull_request",
         )
         return select(
             pr_heads_current.c.repo_id.label("repo_id"),
@@ -848,6 +853,8 @@ class WebhookStore:
             pr_heads_current.c.base_ref.label("base_ref"),
             pr_heads_current.c.action.label("action"),
             pr_heads_current.c.updated_at.label("pr_updated_at"),
+            pr_heads_current.c.last_delivery_id.label("pr_last_delivery_id"),
+            pr_event.c.payload_json.label("pr_event_payload_json"),
             sentinel_check_run_state.c.status.label("sentinel_status"),
             sentinel_check_run_state.c.conclusion.label("sentinel_conclusion"),
             sentinel_check_run_state.c.check_run_id.label("sentinel_check_run_id"),
@@ -861,7 +868,28 @@ class WebhookStore:
             sentinel_check_run_state.c.last_publish_result.label("last_publish_result"),
             sentinel_check_run_state.c.last_publish_error.label("last_publish_error"),
             sentinel_check_run_state.c.last_delivery_id.label("last_delivery_id"),
-        ).select_from(pr_heads_current.outerjoin(sentinel_check_run_state, join_condition))
+        ).select_from(
+            pr_heads_current.outerjoin(pr_event, pr_event_join_condition).outerjoin(
+                sentinel_check_run_state, join_condition
+            )
+        )
+
+    def _normalize_pr_dashboard_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        payload_json = row.pop("pr_event_payload_json", None)
+        pr_merged: Optional[bool] = None
+
+        if payload_json is not None:
+            try:
+                decoded = self.decode_payload_json(payload_json)
+                payload = json.loads(decoded)
+                merged_value = (payload.get("pull_request") or {}).get("merged")
+                if merged_value is not None:
+                    pr_merged = bool(merged_value)
+            except Exception:  # noqa: BLE001
+                pr_merged = None
+
+        row["pr_merged"] = pr_merged
+        return row
 
     @staticmethod
     def _event_matches_pr(

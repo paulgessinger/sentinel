@@ -77,20 +77,31 @@ def make_workflow_run_payload(status: str = "in_progress") -> dict:
     }
 
 
-def make_pull_request_payload(head_sha: str, title: str = "Update branch") -> dict:
+def make_pull_request_payload(
+    head_sha: str,
+    title: str = "Update branch",
+    *,
+    action: str = "synchronize",
+    state: str = "open",
+    merged: bool | None = None,
+) -> dict:
+    pull_request = {
+        "id": 5001,
+        "number": 42,
+        "title": title,
+        "state": state,
+        "updated_at": "2026-02-16T09:30:00Z",
+        "head": {"sha": head_sha},
+        "base": {"ref": "main"},
+    }
+    if merged is not None:
+        pull_request["merged"] = merged
+
     return {
-        "action": "synchronize",
+        "action": action,
         "installation": {"id": 13},
         "repository": {"id": 103, "full_name": "org/repo"},
-        "pull_request": {
-            "id": 5001,
-            "number": 42,
-            "title": title,
-            "state": "open",
-            "updated_at": "2026-02-16T09:30:00Z",
-            "head": {"sha": head_sha},
-            "base": {"ref": "main"},
-        },
+        "pull_request": pull_request,
     }
 
 
@@ -740,6 +751,56 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
     )
     assert len(open_only) == 1
     assert open_only[0]["repo_full_name"] == "org/repo-b"
+
+
+def test_dashboard_rows_include_pr_merged_flag_from_last_pr_event(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    merged_payload = make_pull_request_payload(
+        head_sha="a" * 40,
+        action="closed",
+        state="closed",
+        merged=True,
+    )
+    unmerged_payload = {
+        "action": "closed",
+        "installation": {"id": 13},
+        "repository": {"id": 103, "full_name": "org/repo"},
+        "pull_request": {
+            "id": 6001,
+            "number": 43,
+            "title": "Unmerged close",
+            "state": "closed",
+            "merged": False,
+            "updated_at": "2026-02-16T10:00:00Z",
+            "head": {"sha": "b" * 40},
+            "base": {"ref": "main"},
+        },
+    }
+    store.persist_event(
+        delivery_id="pr-merged-1",
+        event="pull_request",
+        payload=merged_payload,
+        payload_json=store.payload_to_json(merged_payload),
+    )
+    store.persist_event(
+        delivery_id="pr-unmerged-1",
+        event="pull_request",
+        payload=unmerged_payload,
+        payload_json=store.payload_to_json(unmerged_payload),
+    )
+
+    rows = store.list_pr_dashboard_rows(
+        app_id=999,
+        check_name="merge-sentinel",
+        page=1,
+        page_size=10,
+    )
+    by_pr = {row["pr_number"]: row for row in rows}
+    assert by_pr[42]["pr_merged"] is True
+    assert by_pr[43]["pr_merged"] is False
 
 
 def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):

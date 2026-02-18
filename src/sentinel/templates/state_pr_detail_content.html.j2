@@ -11,7 +11,7 @@
 </nav>
 
 <section class="pr-summary-grid">
-    <div><strong>PR State:</strong> <span class="chip chip-pr">{{ row.pr_state or "unknown" }}</span></div>
+    <div><strong>PR State:</strong> <span class="chip chip-pr {{ row.pr_state_class }}">{{ row.pr_state_display }}</span></div>
     <div>
         <strong>Sentinel:</strong>
         <span class="chip chip-status {{ row.sentinel_status_class }}">{{ row.sentinel_status or "not_evaluated" }}</span>

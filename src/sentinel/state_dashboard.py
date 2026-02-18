@@ -133,6 +133,45 @@ def _github_check_run_url(
     return f"https://github.com/{repo_full_name}/runs/{check_run_id}?check_suite_focus=true"
 
 
+def _pr_state_display(pr_state: Optional[str], pr_merged: Optional[bool]) -> str:
+    if pr_state == "closed":
+        if pr_merged is True:
+            return "merged"
+        if pr_merged is False:
+            return "closed (not merged)"
+        return "closed"
+    if not pr_state:
+        return "unknown"
+    return pr_state
+
+
+def _pr_state_chip_class(pr_state_display: str) -> str:
+    if pr_state_display == "merged":
+        return "chip-bg-green"
+    if pr_state_display.startswith("closed"):
+        return "chip-bg-red"
+    return ""
+
+
+def _row_update_signature(row: Dict[str, Any]) -> str:
+    values = (
+        row.get("pr_updated_at"),
+        row.get("pr_state"),
+        row.get("pr_merged"),
+        row.get("head_sha"),
+        row.get("sentinel_status"),
+        row.get("sentinel_conclusion"),
+        row.get("last_eval_at"),
+        row.get("last_publish_at"),
+        row.get("last_publish_result"),
+        row.get("last_publish_error"),
+        row.get("output_summary_hash"),
+        row.get("output_text_hash"),
+        row.get("sentinel_check_run_id"),
+    )
+    return "|".join("" if value is None else str(value) for value in values)
+
+
 def _state_dashboard_context(
     app: Sanic,
     *,
@@ -162,10 +201,24 @@ def _state_dashboard_context(
         pr_number = row.get("pr_number")
         head_sha = row.get("head_sha")
         check_run_id = row.get("sentinel_check_run_id")
+        repo_id = row.get("repo_id")
+        row_key = (
+            f"{repo_id}:{pr_number}"
+            if repo_id is not None and pr_number is not None
+            else ""
+        )
+        pr_state_display = _pr_state_display(
+            row.get("pr_state"),
+            row.get("pr_merged"),
+        )
         enriched_rows.append(
             {
                 **row,
                 "short_sha": head_sha[:8] if head_sha else "",
+                "row_key": row_key,
+                "row_update_signature": _row_update_signature(row),
+                "pr_state_display": pr_state_display,
+                "pr_state_class": _pr_state_chip_class(pr_state_display),
                 "pr_url": _github_pr_url(repo_full_name, pr_number),
                 "commit_url": _github_commit_url(repo_full_name, head_sha),
                 "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
@@ -265,6 +318,10 @@ def _state_pr_detail_context(
     for event in events:
         event["payload_pretty"] = json.dumps(event.get("payload") or {}, indent=2, sort_keys=True)
 
+    pr_state_display = _pr_state_display(
+        row.get("pr_state"),
+        row.get("pr_merged"),
+    )
     return {
         "row": {
             **row,
@@ -272,6 +329,8 @@ def _state_pr_detail_context(
             "pr_url": _github_pr_url(repo_full_name, pr_number),
             "commit_url": _github_commit_url(repo_full_name, head_sha),
             "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
+            "pr_state_display": pr_state_display,
+            "pr_state_class": _pr_state_chip_class(pr_state_display),
             "sentinel_status_class": _status_chip_class(row.get("sentinel_status")),
             "sentinel_conclusion_class": _conclusion_chip_class(
                 row.get("sentinel_conclusion")

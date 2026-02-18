@@ -46,6 +46,22 @@
     const streamUrl = `/state/stream${query}`;
     let refreshScheduled = false;
     let stream = null;
+    let relativeTimesTimer = null;
+
+    const captureRowSignatures = (root) => {
+        const signatures = new Map();
+        if (!root) {
+            return signatures;
+        }
+        root.querySelectorAll("tr[data-row-key]").forEach((row) => {
+            const key = row.getAttribute("data-row-key");
+            if (!key) {
+                return;
+            }
+            signatures.set(key, row.getAttribute("data-row-signature") || "");
+        });
+        return signatures;
+    };
 
     const formatLocalTimes = (root) => {
         if (!root) {
@@ -61,7 +77,7 @@
             const absSeconds = Math.abs(diffSeconds);
 
             if (absSeconds < 5) {
-                return "just now";
+                return { text: "just now", unit: "s" };
             }
 
             const units = [
@@ -85,9 +101,9 @@
             }
 
             if (diffSeconds < 0) {
-                return `${value}${unit} ago`;
+                return { text: `${value}${unit} ago`, unit };
             }
-            return `in ${value}${unit}`;
+            return { text: `in ${value}${unit}`, unit };
         };
         root.querySelectorAll("[data-utc]").forEach((el) => {
             const raw = el.getAttribute("data-utc");
@@ -98,19 +114,50 @@
             if (Number.isNaN(dt.getTime())) {
                 return;
             }
-            el.textContent = formatRelativeTime(dt);
+            const relative = formatRelativeTime(dt);
+            el.textContent = relative.text;
+            el.setAttribute("data-relative-unit", relative.unit);
             el.title = `${formatLocalDateTime(dt)} local (${raw})`;
         });
     };
 
+    const scheduleRelativeTimesRefresh = () => {
+        if (relativeTimesTimer !== null) {
+            window.clearTimeout(relativeTimesTimer);
+            relativeTimesTimer = null;
+        }
+        const hasSecondPrecision = document.querySelector("[data-relative-unit='s']") !== null;
+        const nextDelayMs = hasSecondPrecision ? 1000 : 30000;
+        relativeTimesTimer = window.setTimeout(() => {
+            formatLocalTimes(document);
+            scheduleRelativeTimesRefresh();
+        }, nextDelayMs);
+    };
+
     const refreshTable = async () => {
         try {
+            const previousSignatures = captureRowSignatures(tableContainer);
             const response = await fetch(`/state/table${query}`, { credentials: "same-origin" });
             if (!response.ok) {
                 return;
             }
-            tableContainer.innerHTML = await response.text();
+            const nextMarkup = await response.text();
+            const nextContainer = document.createElement("div");
+            nextContainer.innerHTML = nextMarkup;
+            nextContainer.querySelectorAll("tr[data-row-key]").forEach((row) => {
+                const key = row.getAttribute("data-row-key");
+                if (!key) {
+                    return;
+                }
+                const previousSignature = previousSignatures.get(key);
+                const nextSignature = row.getAttribute("data-row-signature") || "";
+                if (previousSignature !== undefined && previousSignature !== nextSignature) {
+                    row.classList.add("row-flash-once");
+                }
+            });
+            tableContainer.innerHTML = nextContainer.innerHTML;
             formatLocalTimes(tableContainer);
+            scheduleRelativeTimesRefresh();
         } finally {
             refreshScheduled = false;
         }
@@ -153,6 +200,10 @@
             stream.close();
             stream = null;
         }
+        if (relativeTimesTimer !== null) {
+            window.clearTimeout(relativeTimesTimer);
+            relativeTimesTimer = null;
+        }
     });
 
     document.addEventListener("visibilitychange", () => {
@@ -163,7 +214,7 @@
 
     connectStream();
     formatLocalTimes(document);
-    window.setInterval(() => formatLocalTimes(document), 30000);
+    scheduleRelativeTimesRefresh();
 })();
 </script>
 </body>

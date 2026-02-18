@@ -22,6 +22,7 @@
     const streamUrl = "/state/stream";
     let refreshScheduled = false;
     let stream = null;
+    let relativeTimesTimer = null;
 
     const formatLocalTimes = (root) => {
         if (!root) {
@@ -37,7 +38,7 @@
             const absSeconds = Math.abs(diffSeconds);
 
             if (absSeconds < 5) {
-                return "just now";
+                return { text: "just now", unit: "s" };
             }
 
             const units = [
@@ -61,9 +62,9 @@
             }
 
             if (diffSeconds < 0) {
-                return `${value}${unit} ago`;
+                return { text: `${value}${unit} ago`, unit };
             }
-            return `in ${value}${unit}`;
+            return { text: `in ${value}${unit}`, unit };
         };
         root.querySelectorAll("[data-utc]").forEach((el) => {
             const raw = el.getAttribute("data-utc");
@@ -74,9 +75,24 @@
             if (Number.isNaN(dt.getTime())) {
                 return;
             }
-            el.textContent = formatRelativeTime(dt);
+            const relative = formatRelativeTime(dt);
+            el.textContent = relative.text;
+            el.setAttribute("data-relative-unit", relative.unit);
             el.title = `${formatLocalDateTime(dt)} local (${raw})`;
         });
+    };
+
+    const scheduleRelativeTimesRefresh = () => {
+        if (relativeTimesTimer !== null) {
+            window.clearTimeout(relativeTimesTimer);
+            relativeTimesTimer = null;
+        }
+        const hasSecondPrecision = document.querySelector("[data-relative-unit='s']") !== null;
+        const nextDelayMs = hasSecondPrecision ? 1000 : 30000;
+        relativeTimesTimer = window.setTimeout(() => {
+            formatLocalTimes(document);
+            scheduleRelativeTimesRefresh();
+        }, nextDelayMs);
     };
 
     const refreshDetail = async () => {
@@ -87,6 +103,7 @@
             }
             detailContainer.innerHTML = await response.text();
             formatLocalTimes(detailContainer);
+            scheduleRelativeTimesRefresh();
         } finally {
             refreshScheduled = false;
         }
@@ -129,6 +146,10 @@
             stream.close();
             stream = null;
         }
+        if (relativeTimesTimer !== null) {
+            window.clearTimeout(relativeTimesTimer);
+            relativeTimesTimer = null;
+        }
     });
 
     document.addEventListener("visibilitychange", () => {
@@ -139,7 +160,7 @@
 
     connectStream();
     formatLocalTimes(document);
-    window.setInterval(() => formatLocalTimes(document), 30000);
+    scheduleRelativeTimesRefresh();
 })();
 </script>
 </body>
