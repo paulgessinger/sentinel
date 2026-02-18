@@ -114,6 +114,32 @@ def projection_eval_enabled(app: Sanic) -> bool:
     return bool(getattr(cfg, "PROJECTION_EVAL_ENABLED", False))
 
 
+def is_projection_manual_refresh_requested(app: Sanic, event: sansio.Event) -> bool:
+    if event.event != "check_run":
+        return False
+    payload = event.data
+    if payload.get("action") != "requested_action":
+        return False
+
+    cfg = getattr(app, "config", None)
+    action_identifier = getattr(
+        cfg,
+        "PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER",
+        "refresh_from_api",
+    )
+    check_run_name = getattr(cfg, "PROJECTION_CHECK_RUN_NAME", "merge-sentinel")
+    github_app_id = getattr(cfg, "GITHUB_APP_ID", None)
+
+    check_run = payload.get("check_run") or {}
+    requested_action = payload.get("requested_action") or {}
+    if requested_action.get("identifier") != action_identifier:
+        return False
+    if check_run.get("name") != check_run_name:
+        return False
+    source_app_id = ((check_run.get("app") or {}).get("id"))
+    return source_app_id == github_app_id
+
+
 def persist_webhook_event(
     app: Sanic, event: sansio.Event, delivery_id: str, payload_json: str
 ):
@@ -140,7 +166,12 @@ def persist_webhook_event(
 
 
 def projection_trigger_from_event(
-    event: sansio.Event, delivery_id: str
+    event: sansio.Event,
+    delivery_id: str,
+    *,
+    projection_check_run_name: str,
+    manual_refresh_action_identifier: str,
+    projection_app_id: int | None = None,
 ) -> ProjectionTrigger | None:
     payload = event.data
     repo = payload.get("repository") or {}
@@ -175,6 +206,19 @@ def projection_trigger_from_event(
         delivery_id=delivery_id or None,
         event=event.event,
         action=payload.get("action"),
+        force_api_refresh=bool(
+            event.event == "check_run"
+            and payload.get("action") == "requested_action"
+            and ((payload.get("requested_action") or {}).get("identifier"))
+            == manual_refresh_action_identifier
+            and ((payload.get("check_run") or {}).get("name"))
+            == projection_check_run_name
+            and (
+                projection_app_id is None
+                or ((payload.get("check_run") or {}).get("app") or {}).get("id")
+                == projection_app_id
+            )
+        ),
     )
 
 
@@ -183,10 +227,15 @@ async def process_github_event(
 ) -> None:
     name = webhook_display_name(event)
     webhook_counter.labels(event=event.event, name=name).inc()
+    manual_refresh_requested = is_projection_manual_refresh_requested(app, event)
     source_app_id = event_source_app_id(event)
     excluded_app_ids = excluded_app_ids_for_event(app)
 
-    if source_app_id is not None and source_app_id in excluded_app_ids:
+    if (
+        not manual_refresh_requested
+        and source_app_id is not None
+        and source_app_id in excluded_app_ids
+    ):
         webhook_skipped_counter.labels(event=event.event, name=name).inc()
         logger.debug(
             "Skipping webhook event %s name=%s due to source app id=%s",
@@ -198,7 +247,7 @@ async def process_github_event(
 
     name_filter = getattr(getattr(app, "config", None), "CHECK_RUN_NAME_FILTER", None)
 
-    if should_skip_event_by_name_filter(event, name_filter):
+    if (not manual_refresh_requested) and should_skip_event_by_name_filter(event, name_filter):
         webhook_skipped_counter.labels(event=event.event, name=name).inc()
         logger.debug(
             "Skipping webhook event %s name=%s due to CHECK_RUN_NAME_FILTER=%s",
@@ -244,7 +293,19 @@ async def process_github_event(
         and persist_result.projection_error is None
         and app.ctx.projection_scheduler is not None
     ):
-        trigger = projection_trigger_from_event(event, delivery_id)
+        trigger = projection_trigger_from_event(
+            event,
+            delivery_id,
+            projection_check_run_name=getattr(
+                app.config, "PROJECTION_CHECK_RUN_NAME", "merge-sentinel"
+            ),
+            manual_refresh_action_identifier=getattr(
+                app.config,
+                "PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER",
+                "refresh_from_api",
+            ),
+            projection_app_id=getattr(app.config, "GITHUB_APP_ID", None),
+        )
         if trigger is not None:
             try:
                 await app.ctx.projection_scheduler.enqueue(trigger)
@@ -375,6 +436,10 @@ def create_app():
                 app_id=app.config.GITHUB_APP_ID,
                 check_run_name=app.config.PROJECTION_CHECK_RUN_NAME,
                 publish_enabled=app.config.PROJECTION_PUBLISH_ENABLED,
+                manual_refresh_action_enabled=app.config.PROJECTION_MANUAL_REFRESH_ACTION_ENABLED,
+                manual_refresh_action_identifier=app.config.PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER,
+                manual_refresh_action_label=app.config.PROJECTION_MANUAL_REFRESH_ACTION_LABEL,
+                manual_refresh_action_description=app.config.PROJECTION_MANUAL_REFRESH_ACTION_DESCRIPTION,
                 path_rule_fallback_enabled=app.config.PROJECTION_PATH_RULE_FALLBACK_ENABLED,
                 config_cache_seconds=app.config.PROJECTION_CONFIG_CACHE_SECONDS,
                 pr_files_cache_seconds=app.config.PROJECTION_PR_FILES_CACHE_SECONDS,

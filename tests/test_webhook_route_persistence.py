@@ -50,10 +50,25 @@ def make_check_run_event(app_id: int = 1234):
     return SimpleNamespace(event="check_run", data=payload)
 
 
+def make_requested_action_event(
+    *,
+    app_id: int = 1234,
+    check_run_name: str = "merge-sentinel",
+    identifier: str = "refresh_from_api",
+):
+    payload = make_check_run_event(app_id=app_id).data
+    payload["action"] = "requested_action"
+    payload["check_run"]["name"] = check_run_name
+    payload["requested_action"] = {"identifier": identifier}
+    return SimpleNamespace(event="check_run", data=payload)
+
+
 def make_config(**overrides):
     data = {
         "WEBHOOK_DISPATCH_ENABLED": False,
         "PROJECTION_EVAL_ENABLED": False,
+        "PROJECTION_CHECK_RUN_NAME": "merge-sentinel",
+        "PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER": "refresh_from_api",
     }
     data.update(overrides)
     return SimpleNamespace(**data)
@@ -365,3 +380,52 @@ async def test_configured_app_id_filter_skips_persistence(tmp_path):
     with sqlite3.connect(str(db_path)) as conn:
         count = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_requested_action_from_self_app_enqueues_force_api_refresh(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    enqueued = []
+
+    class _Scheduler:
+        async def enqueue(self, trigger):
+            enqueued.append(trigger)
+
+    app = SimpleNamespace(
+        config=make_config(
+            PROJECTION_EVAL_ENABLED=True,
+            GITHUB_APP_ID=1234,
+            WEBHOOK_FILTER_SELF_APP_ID=True,
+            WEBHOOK_FILTER_APP_IDS=(),
+            PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+            PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER="refresh_from_api",
+        ),
+        ctx=SimpleNamespace(
+            webhook_store=store,
+            projection_scheduler=_Scheduler(),
+            state_broadcaster=_RecordingBroadcaster(),
+        ),
+    )
+
+    request = make_request()
+    event = make_requested_action_event(
+        app_id=1234,
+        check_run_name="merge-sentinel",
+        identifier="refresh_from_api",
+    )
+    await process_github_event(
+        app,
+        event,
+        request.headers["X-GitHub-Delivery"],
+        request.body.decode("utf-8"),
+    )
+
+    assert len(enqueued) == 1
+    assert enqueued[0].force_api_refresh is True
+
+    with sqlite3.connect(str(db_path)) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
+    assert count == 1

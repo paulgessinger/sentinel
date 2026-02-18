@@ -5,6 +5,7 @@ import copy
 
 from sentinel.github.model import (
     ActionsJob,
+    ActionsRun,
     CheckRun,
     CheckSuite,
     CommitStatus,
@@ -41,9 +42,10 @@ class API:
         if check_run.output is not None:
             payload["output"] = check_run.output.model_dump(exclude_none=True)
 
-        payload_pre = copy.deepcopy(payload)
+        if check_run.actions:
+            payload["actions"] = [action.model_dump(exclude_none=True) for action in check_run.actions]
 
-        payload["actions"] = []
+        payload_pre = copy.deepcopy(payload)
 
         for k, v in payload.items():
             if isinstance(v, datetime):
@@ -133,6 +135,15 @@ class API:
         logger.debug("Get check runs for ref %s", url)
         async for item in self.gh.getiter(url, iterable_key="check_suites"):
             yield CheckSuite.model_validate(item)
+
+    async def get_workflow_runs_for_ref(
+        self, repo: Repository, ref: str
+    ) -> AsyncIterator[ActionsRun]:
+        self.call_count += 1
+        url = f"{repo.url}/actions/runs?head_sha={ref}"
+        logger.debug("Get workflow runs for ref %s", url)
+        async for item in self.gh.getiter(url, iterable_key="workflow_runs"):
+            yield ActionsRun.model_validate(item)
 
     async def get_content(self, repo_url: str, path: str) -> Content:
         self.call_count += 1

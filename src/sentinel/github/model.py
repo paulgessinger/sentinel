@@ -142,6 +142,12 @@ class CheckRunOutput(Model):
     text: Optional[str] = None
 
 
+class CheckRunAction(Model):
+    label: str
+    description: str
+    identifier: str
+
+
 class CheckRun(Model):
     id: Optional[int]
     name: str
@@ -165,6 +171,7 @@ class CheckRun(Model):
     app: Optional[App] = None
     check_suite: Optional[PartialCheckSuite] = None
     output: Optional[CheckRunOutput] = None
+    actions: List[CheckRunAction] = pydantic.Field(default_factory=list)
     html_url: Optional[str] = None
 
     @property

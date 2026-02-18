@@ -14,7 +14,11 @@ import yaml
 
 from sentinel.github import determine_rules
 from sentinel.github.api import API
-from sentinel.github.model import CheckRun, CheckRunOutput
+from sentinel.github.model import (
+    CheckRun,
+    CheckRunAction,
+    CheckRunOutput,
+)
 from sentinel.metric import (
     sentinel_projection_eval_total,
     sentinel_projection_fallback_total,
@@ -42,6 +46,10 @@ class ProjectionEvaluator:
         app_id: int,
         check_run_name: str,
         publish_enabled: bool,
+        manual_refresh_action_enabled: bool,
+        manual_refresh_action_identifier: str,
+        manual_refresh_action_label: str,
+        manual_refresh_action_description: str,
         path_rule_fallback_enabled: bool,
         config_cache_seconds: int,
         pr_files_cache_seconds: int,
@@ -51,6 +59,10 @@ class ProjectionEvaluator:
         self.app_id = app_id
         self.check_run_name = check_run_name
         self.publish_enabled = publish_enabled
+        self.manual_refresh_action_enabled = manual_refresh_action_enabled
+        self.manual_refresh_action_identifier = manual_refresh_action_identifier
+        self.manual_refresh_action_label = manual_refresh_action_label
+        self.manual_refresh_action_description = manual_refresh_action_description
         self.path_rule_fallback_enabled = path_rule_fallback_enabled
         self.config_cache_seconds = config_cache_seconds
         self.pr_files_cache_seconds = pr_files_cache_seconds
@@ -164,9 +176,20 @@ class ProjectionEvaluator:
             len(rules),
         )
 
-        check_rows = self.store.get_check_runs_for_head(repo_id, head_sha)
-        workflow_rows = self.store.get_workflow_runs_for_head(repo_id, head_sha)
-        status_rows = self.store.get_commit_statuses_for_sha(repo_id, head_sha)
+        if trigger.force_api_refresh:
+            logger.info(
+                "Projection eval forcing API refresh repo=%s sha=%s",
+                trigger.repo_full_name,
+                head_sha,
+            )
+            check_rows, workflow_rows, status_rows = await self._load_head_rows_from_api(
+                api=api,
+                trigger=trigger,
+            )
+        else:
+            check_rows = self.store.get_check_runs_for_head(repo_id, head_sha)
+            workflow_rows = self.store.get_workflow_runs_for_head(repo_id, head_sha)
+            status_rows = self.store.get_commit_statuses_for_sha(repo_id, head_sha)
         logger.debug(
             "Projection eval projections repo=%s sha=%s checks=%d workflows=%d statuses=%d",
             trigger.repo_full_name,
@@ -437,6 +460,7 @@ class ProjectionEvaluator:
                     summary=output_summary,
                     text=output_text,
                 ),
+                actions=self._build_manual_refresh_actions(new_status),
             )
 
             if check_run.id is None:
@@ -639,6 +663,107 @@ class ProjectionEvaluator:
             len(files),
         )
         return files
+
+    def _build_manual_refresh_actions(self, status: str) -> List[CheckRunAction]:
+        if not self.manual_refresh_action_enabled:
+            return []
+        if status != "completed":
+            return []
+        return [
+            CheckRunAction(
+                label=self.manual_refresh_action_label,
+                description=self.manual_refresh_action_description,
+                identifier=self.manual_refresh_action_identifier,
+            )
+        ]
+
+    async def _load_head_rows_from_api(
+        self, *, api: API, trigger: ProjectionTrigger
+    ) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]], list[Dict[str, Any]]]:
+        repo = await api.get_repository(self._repo_url(trigger.repo_full_name))
+        check_runs = [
+            check_run async for check_run in api.get_check_runs_for_ref(repo, trigger.head_sha)
+        ]
+        workflow_runs = [
+            workflow_run
+            async for workflow_run in api.get_workflow_runs_for_ref(repo, trigger.head_sha)
+        ]
+        statuses = [
+            status async for status in api.get_status_for_ref(repo, trigger.head_sha)
+        ]
+
+        check_rows = [self._check_run_to_row(check_run) for check_run in check_runs]
+        workflow_rows = [
+            self._workflow_run_to_row(workflow_run) for workflow_run in workflow_runs
+        ]
+        status_rows = [self._status_to_row(status) for status in statuses]
+        persisted = self.store.upsert_head_snapshot_from_api(
+            repo_id=trigger.repo_id,
+            repo_full_name=trigger.repo_full_name,
+            head_sha=trigger.head_sha,
+            delivery_id=trigger.delivery_id,
+            check_rows=check_rows,
+            workflow_rows=workflow_rows,
+            status_rows=status_rows,
+        )
+        logger.debug(
+            "Projection eval API snapshot persisted repo=%s sha=%s checks=%d workflows=%d statuses=%d",
+            trigger.repo_full_name,
+            trigger.head_sha,
+            persisted["check_runs"],
+            persisted["workflow_runs"],
+            persisted["commit_statuses"],
+        )
+        return check_rows, workflow_rows, status_rows
+
+    @staticmethod
+    def _check_run_to_row(check_run: CheckRun) -> Dict[str, Any]:
+        app = check_run.app
+        check_suite = check_run.check_suite
+        return {
+            "check_run_id": check_run.id,
+            "name": check_run.name,
+            "status": check_run.status,
+            "conclusion": check_run.conclusion,
+            "app_id": app.id if app is not None else None,
+            "app_slug": app.slug if app is not None else None,
+            "check_suite_id": check_suite.id if check_suite is not None else None,
+            "started_at": ProjectionEvaluator._dt_to_iso(check_run.started_at),
+            "completed_at": ProjectionEvaluator._dt_to_iso(check_run.completed_at),
+        }
+
+    @staticmethod
+    def _workflow_run_to_row(workflow_run: Any) -> Dict[str, Any]:
+        return {
+            "workflow_run_id": workflow_run.id,
+            "name": workflow_run.name,
+            "event": workflow_run.event,
+            "status": workflow_run.status,
+            "conclusion": workflow_run.conclusion,
+            "run_number": workflow_run.run_number,
+            "workflow_id": workflow_run.workflow_id,
+            "check_suite_id": workflow_run.check_suite_id,
+            "created_at": ProjectionEvaluator._dt_to_iso(workflow_run.created_at),
+            "updated_at": ProjectionEvaluator._dt_to_iso(workflow_run.updated_at),
+        }
+
+    @staticmethod
+    def _status_to_row(status: Any) -> Dict[str, Any]:
+        return {
+            "status_id": status.id,
+            "url": status.url,
+            "sha": status.sha,
+            "context": status.context,
+            "state": status.state,
+            "created_at": ProjectionEvaluator._dt_to_iso(status.created_at),
+            "updated_at": ProjectionEvaluator._dt_to_iso(status.updated_at),
+        }
+
+    @staticmethod
+    def _dt_to_iso(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     @staticmethod
     def _status_from_check_run(row: Dict[str, Any]) -> str:

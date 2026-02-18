@@ -678,6 +678,161 @@ class WebhookStore:
             rows = conn.execute(stmt).mappings().all()
         return [dict(row) for row in rows]
 
+    def upsert_head_snapshot_from_api(
+        self,
+        *,
+        repo_id: int,
+        repo_full_name: Optional[str],
+        head_sha: str,
+        delivery_id: Optional[str],
+        check_rows: Sequence[Mapping[str, Any]],
+        workflow_rows: Sequence[Mapping[str, Any]],
+        status_rows: Sequence[Mapping[str, Any]],
+    ) -> Dict[str, int]:
+        now = utcnow_iso()
+        resolved_delivery_id = delivery_id or "api-refresh"
+        counts = {"check_runs": 0, "workflow_runs": 0, "commit_statuses": 0}
+
+        with self.engine.begin() as conn:
+            for row in check_rows:
+                check_run_id = row.get("check_run_id")
+                name = row.get("name")
+                status = row.get("status")
+                if check_run_id is None or not name or not status:
+                    continue
+                values = {
+                    "repo_id": repo_id,
+                    "repo_full_name": repo_full_name,
+                    "check_run_id": int(check_run_id),
+                    "head_sha": head_sha,
+                    "name": str(name),
+                    "status": str(status),
+                    "conclusion": row.get("conclusion"),
+                    "app_id": row.get("app_id"),
+                    "app_slug": row.get("app_slug"),
+                    "check_suite_id": row.get("check_suite_id"),
+                    "started_at": row.get("started_at"),
+                    "completed_at": row.get("completed_at"),
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "last_delivery_id": resolved_delivery_id,
+                }
+                self._upsert(
+                    conn=conn,
+                    table=check_runs_current,
+                    values=values,
+                    conflict_columns=["repo_id", "check_run_id"],
+                    update_columns=[
+                        "repo_full_name",
+                        "head_sha",
+                        "name",
+                        "status",
+                        "conclusion",
+                        "app_id",
+                        "app_slug",
+                        "check_suite_id",
+                        "started_at",
+                        "completed_at",
+                        "last_seen_at",
+                        "last_delivery_id",
+                    ],
+                )
+                counts["check_runs"] += 1
+
+            for row in workflow_rows:
+                workflow_run_id = row.get("workflow_run_id")
+                name = row.get("name")
+                if workflow_run_id is None or not name:
+                    continue
+                values = {
+                    "repo_id": repo_id,
+                    "repo_full_name": repo_full_name,
+                    "workflow_run_id": int(workflow_run_id),
+                    "name": str(name),
+                    "event": row.get("event"),
+                    "status": row.get("status"),
+                    "conclusion": row.get("conclusion"),
+                    "head_sha": head_sha,
+                    "run_number": row.get("run_number"),
+                    "workflow_id": row.get("workflow_id"),
+                    "check_suite_id": row.get("check_suite_id"),
+                    "app_id": row.get("app_id"),
+                    "app_slug": row.get("app_slug"),
+                    "created_at": row.get("created_at"),
+                    "updated_at": row.get("updated_at"),
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "last_delivery_id": resolved_delivery_id,
+                }
+                self._upsert(
+                    conn=conn,
+                    table=workflow_runs_current,
+                    values=values,
+                    conflict_columns=["repo_id", "workflow_run_id"],
+                    update_columns=[
+                        "repo_full_name",
+                        "name",
+                        "event",
+                        "status",
+                        "conclusion",
+                        "head_sha",
+                        "run_number",
+                        "workflow_id",
+                        "check_suite_id",
+                        "app_id",
+                        "app_slug",
+                        "created_at",
+                        "updated_at",
+                        "last_seen_at",
+                        "last_delivery_id",
+                    ],
+                )
+                counts["workflow_runs"] += 1
+
+            for row in status_rows:
+                context = row.get("context")
+                state = row.get("state")
+                status_id = row.get("status_id")
+                if (
+                    status_id is None
+                    or not context
+                    or not state
+                ):
+                    continue
+                values = {
+                    "repo_id": repo_id,
+                    "repo_full_name": repo_full_name,
+                    "sha": row.get("sha") or head_sha,
+                    "context": str(context),
+                    "status_id": int(status_id),
+                    "state": str(state),
+                    "created_at": row.get("created_at"),
+                    "updated_at": row.get("updated_at"),
+                    "url": row.get("url"),
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "last_delivery_id": resolved_delivery_id,
+                }
+                self._upsert(
+                    conn=conn,
+                    table=commit_status_current,
+                    values=values,
+                    conflict_columns=["repo_id", "sha", "context"],
+                    update_columns=[
+                        "repo_full_name",
+                        "status_id",
+                        "state",
+                        "created_at",
+                        "updated_at",
+                        "url",
+                        "last_seen_at",
+                        "last_delivery_id",
+                    ],
+                )
+                counts["commit_statuses"] += 1
+
+        return counts
+
     def get_sentinel_check_run(
         self,
         *,

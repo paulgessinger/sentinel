@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import sqlite3
 from typing import Optional
 
 import pytest
 
+from sentinel.github.model import (
+    ActionsRun,
+    App,
+    CheckRun,
+    CommitStatus,
+    PartialCheckSuite,
+    Repository,
+)
 from sentinel.projection import ProjectionEvaluator, ProjectionTrigger
 from sentinel.storage import WebhookStore
 
@@ -47,6 +56,21 @@ class _FakeAPI:
         raise AssertionError("get_pull_request_files should not be called in this test")
         yield  # noqa: B018
 
+    async def get_repository(self, _repo_url: str):  # pragma: no cover
+        raise AssertionError("get_repository should not be called in this test")
+
+    async def get_check_runs_for_ref(self, _repo, _ref):  # pragma: no cover
+        raise AssertionError("get_check_runs_for_ref should not be called in this test")
+        yield  # noqa: B018
+
+    async def get_workflow_runs_for_ref(self, _repo, _ref):  # pragma: no cover
+        raise AssertionError("get_workflow_runs_for_ref should not be called in this test")
+        yield  # noqa: B018
+
+    async def get_status_for_ref(self, _repo, _ref):  # pragma: no cover
+        raise AssertionError("get_status_for_ref should not be called in this test")
+        yield  # noqa: B018
+
     async def find_existing_sentinel_check_run(
         self,
         *,
@@ -61,6 +85,57 @@ class _FakeAPI:
     async def post_check_run(self, repo_url: str, check_run):
         self.post_calls.append((repo_url, check_run))
         return self._post_id
+
+
+class _FakeAPIRefresh(_FakeAPI):
+    async def get_repository(self, _repo_url: str):
+        return Repository(
+            id=11,
+            name="repo",
+            full_name="org/repo",
+            url="https://api.github.com/repos/org/repo",
+            html_url="https://github.com/org/repo",
+            private=False,
+        )
+
+    async def get_check_runs_for_ref(self, _repo, _ref):
+        yield CheckRun(
+            id=7001,
+            name="tests",
+            head_sha="a" * 40,
+            status="completed",
+            conclusion="success",
+            started_at=datetime(2026, 2, 17, 10, 0, tzinfo=timezone.utc),
+            completed_at=datetime(2026, 2, 17, 10, 1, tzinfo=timezone.utc),
+            app=App(id=1, slug="ci"),
+            check_suite=PartialCheckSuite(id=9901),
+        )
+
+    async def get_workflow_runs_for_ref(self, _repo, _ref):
+        yield ActionsRun(
+            id=8001,
+            name="Builds",
+            head_sha="a" * 40,
+            run_number=10,
+            event="pull_request",
+            status="completed",
+            conclusion="success",
+            workflow_id=123,
+            check_suite_id=9901,
+            created_at=datetime(2026, 2, 17, 10, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 2, 17, 10, 1, tzinfo=timezone.utc),
+        )
+
+    async def get_status_for_ref(self, _repo, _ref):
+        yield CommitStatus(
+            id=8801,
+            url="https://api.github.com/repos/org/repo/statuses/8801",
+            sha="a" * 40,
+            context="lint",
+            state="success",
+            created_at=datetime(2026, 2, 17, 10, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 2, 17, 10, 1, tzinfo=timezone.utc),
+        )
 
 
 def _check_run_payload(conclusion: str = "success") -> dict:
@@ -165,6 +240,10 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
         app_id=2877723,
         check_run_name="merge-sentinel",
         publish_enabled=False,
+        manual_refresh_action_enabled=True,
+        manual_refresh_action_identifier="refresh_from_api",
+        manual_refresh_action_label="Re-evaluate now",
+        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
         path_rule_fallback_enabled=True,
         config_cache_seconds=300,
         pr_files_cache_seconds=86400,
@@ -236,6 +315,10 @@ async def test_projection_second_identical_eval_is_unchanged(tmp_path):
         app_id=2877723,
         check_run_name="merge-sentinel",
         publish_enabled=False,
+        manual_refresh_action_enabled=True,
+        manual_refresh_action_identifier="refresh_from_api",
+        manual_refresh_action_label="Re-evaluate now",
+        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
         path_rule_fallback_enabled=True,
         config_cache_seconds=300,
         pr_files_cache_seconds=86400,
@@ -291,6 +374,10 @@ async def test_projection_publish_persists_real_id(tmp_path):
         app_id=2877723,
         check_run_name="merge-sentinel",
         publish_enabled=True,
+        manual_refresh_action_enabled=True,
+        manual_refresh_action_identifier="refresh_from_api",
+        manual_refresh_action_label="Re-evaluate now",
+        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
         path_rule_fallback_enabled=True,
         config_cache_seconds=300,
         pr_files_cache_seconds=86400,
@@ -311,6 +398,8 @@ async def test_projection_publish_persists_real_id(tmp_path):
     assert result.result == "published"
     assert api.lookup_calls == 1
     assert len(api.post_calls) == 1
+    posted_check_run = api.post_calls[0][1]
+    assert [action.identifier for action in posted_check_run.actions] == ["refresh_from_api"]
 
     with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
         rows = conn.execute(
@@ -353,6 +442,10 @@ async def test_projection_publish_skips_when_pr_closed_during_evaluation(tmp_pat
         app_id=2877723,
         check_run_name="merge-sentinel",
         publish_enabled=True,
+        manual_refresh_action_enabled=True,
+        manual_refresh_action_identifier="refresh_from_api",
+        manual_refresh_action_label="Re-evaluate now",
+        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
         path_rule_fallback_enabled=True,
         config_cache_seconds=300,
         pr_files_cache_seconds=86400,
@@ -384,3 +477,66 @@ async def test_projection_publish_skips_when_pr_closed_during_evaluation(tmp_pat
         ).fetchone()[0]
 
     assert row_count == 0
+
+
+@pytest.mark.asyncio
+async def test_force_api_refresh_persists_projection_rows(tmp_path):
+    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store.initialize()
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=_pull_request_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPIRefresh(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n"
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = ProjectionEvaluator(
+        store=store,
+        app_id=2877723,
+        check_run_name="merge-sentinel",
+        publish_enabled=False,
+        manual_refresh_action_enabled=True,
+        manual_refresh_action_identifier="refresh_from_api",
+        manual_refresh_action_label="Re-evaluate now",
+        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
+        path_rule_fallback_enabled=True,
+        config_cache_seconds=300,
+        pr_files_cache_seconds=86400,
+        api_factory=api_factory,
+    )
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-api-1",
+            event="check_run",
+            force_api_refresh=True,
+        )
+    )
+
+    assert result.result == "dry_run"
+
+    check_rows = store.get_check_runs_for_head(11, "a" * 40)
+    assert len(check_rows) == 1
+    assert check_rows[0]["name"] == "tests"
+    assert check_rows[0]["last_delivery_id"] == "d-api-1"
+
+    workflow_rows = store.get_workflow_runs_for_head(11, "a" * 40)
+    assert len(workflow_rows) == 1
+    assert workflow_rows[0]["name"] == "Builds"
+    assert workflow_rows[0]["last_delivery_id"] == "d-api-1"
+
+    status_rows = store.get_commit_statuses_for_sha(11, "a" * 40)
+    assert len(status_rows) == 1
+    assert status_rows[0]["context"] == "lint"
+    assert status_rows[0]["last_delivery_id"] == "d-api-1"

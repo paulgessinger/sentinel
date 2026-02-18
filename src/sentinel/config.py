@@ -126,6 +126,23 @@ PROJECTION_PULL_REQUEST_SYNCHRONIZE_DELAY_SECONDS = float(
 PROJECTION_CHECK_RUN_NAME = os.environ.get(
     "PROJECTION_CHECK_RUN_NAME", "merge-sentinel"
 )
+# Enable a manual check-run action button that requests immediate re-evaluation.
+PROJECTION_MANUAL_REFRESH_ACTION_ENABLED = (
+    os.environ.get("PROJECTION_MANUAL_REFRESH_ACTION_ENABLED", "true").lower() == "true"
+)
+# GitHub requested_action identifier used by Sentinel re-evaluation button.
+PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER = os.environ.get(
+    "PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER", "refresh_from_api"
+)
+# Label shown for the manual re-evaluation action in GitHub UI.
+PROJECTION_MANUAL_REFRESH_ACTION_LABEL = os.environ.get(
+    "PROJECTION_MANUAL_REFRESH_ACTION_LABEL", "Re-evaluate now"
+)
+# Description shown for the manual re-evaluation action in GitHub UI.
+PROJECTION_MANUAL_REFRESH_ACTION_DESCRIPTION = os.environ.get(
+    "PROJECTION_MANUAL_REFRESH_ACTION_DESCRIPTION",
+    "Force refresh checks from GitHub and re-evaluate",
+)
 # Cache TTL for repository config fetches (.merge-sentinel.yml).
 PROJECTION_CONFIG_CACHE_SECONDS = int(
     os.environ.get("PROJECTION_CONFIG_CACHE_SECONDS", 300)
