@@ -19,9 +19,30 @@
         <span class="chip chip-conclusion {{ row.sentinel_conclusion_class }}">{{ row.sentinel_conclusion }}</span>
         {% endif %}
     </div>
-    <div><strong>Head SHA:</strong> {{ row.head_sha or "-" }}</div>
-    <div><strong>Last Eval:</strong> {{ row.last_eval_at or "-" }}</div>
-    <div><strong>Last Publish:</strong> {{ row.publish_result_display }} at {{ row.last_publish_at or "-" }}</div>
+    <div>
+        <strong>Head SHA:</strong>
+        {% if row.head_sha %}
+        <span title="{{ row.head_sha }}"><code>{{ row.short_sha }}</code></span>
+        {% else %}
+        -
+        {% endif %}
+    </div>
+    <div>
+        <strong>Last Eval:</strong>
+        {% if row.last_eval_at %}
+        <span data-utc="{{ row.last_eval_at }}">{{ row.last_eval_at }}</span>
+        {% else %}
+        -
+        {% endif %}
+    </div>
+    <div>
+        <strong>Last Publish:</strong> {{ row.publish_result_display }} at
+        {% if row.last_publish_at %}
+        <span data-utc="{{ row.last_publish_at }}">{{ row.last_publish_at }}</span>
+        {% else %}
+        -
+        {% endif %}
+    </div>
 </section>
 
 <section class="detail-section">
@@ -50,7 +71,7 @@
         <tbody>
         {% for event in events %}
         <tr>
-            <td class="muted">{{ event.received_at }}</td>
+            <td class="muted"><span data-utc="{{ event.received_at }}">{{ event.received_at }}</span></td>
             <td>{{ event.event }}</td>
             <td>{{ event.action or "-" }}</td>
             <td>{{ event.detail or "-" }}</td>

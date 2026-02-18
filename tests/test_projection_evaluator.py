@@ -20,13 +20,24 @@ class _FakeContent:
 
 
 class _FakeAPI:
-    def __init__(self, *, config_yaml: str, post_id: Optional[int] = None):
+    def __init__(
+        self,
+        *,
+        config_yaml: str,
+        post_id: Optional[int] = None,
+        on_get_content=None,
+    ):
         self._config_yaml = config_yaml
         self._post_id = post_id
+        self._on_get_content = on_get_content
         self.post_calls = []
         self.lookup_calls = 0
 
     async def get_content(self, _repo_url: str, _path: str):
+        callback = self._on_get_content
+        if callback is not None:
+            self._on_get_content = None
+            callback()
         return _FakeContent(self._config_yaml)
 
     async def get_pull(self, _repo_url: str, _number: int):  # pragma: no cover
@@ -71,17 +82,22 @@ def _check_run_payload(conclusion: str = "success") -> dict:
     }
 
 
-def _pull_request_payload() -> dict:
+def _pull_request_payload(
+    *,
+    action: str = "synchronize",
+    state: str = "open",
+    head_sha: str = "a" * 40,
+) -> dict:
     return {
-        "action": "synchronize",
+        "action": action,
         "installation": {"id": 321},
         "repository": {"id": 11, "full_name": "org/repo"},
         "pull_request": {
             "id": 5001,
             "number": 42,
-            "state": "open",
+            "state": state,
             "updated_at": "2026-02-17T10:02:00Z",
-            "head": {"sha": "a" * 40},
+            "head": {"sha": head_sha},
             "base": {"ref": "main"},
         },
     }
@@ -307,3 +323,64 @@ async def test_projection_publish_persists_real_id(tmp_path):
         ).fetchall()
 
     assert rows == [(91234, "published")]
+
+
+@pytest.mark.asyncio
+async def test_projection_publish_skips_when_pr_closed_during_evaluation(tmp_path):
+    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store.initialize()
+    await _seed(store)
+
+    def close_pr() -> None:
+        store.persist_event(
+            delivery_id="pr-closed-1",
+            event="pull_request",
+            payload=_pull_request_payload(action="closed", state="closed"),
+            payload_json="{}",
+        )
+
+    api = _FakeAPI(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n",
+        post_id=91234,
+        on_get_content=close_pr,
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = ProjectionEvaluator(
+        store=store,
+        app_id=2877723,
+        check_run_name="merge-sentinel",
+        publish_enabled=True,
+        path_rule_fallback_enabled=True,
+        config_cache_seconds=300,
+        pr_files_cache_seconds=86400,
+        api_factory=api_factory,
+    )
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-4",
+            event="check_run",
+        )
+    )
+
+    assert result.result == "no_pr"
+    assert api.post_calls == []
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        row_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ? AND app_id = ?
+            """,
+            (11, "a" * 40, "merge-sentinel", 2877723),
+        ).fetchone()[0]
+
+    assert row_count == 0

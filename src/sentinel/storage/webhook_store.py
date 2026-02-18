@@ -787,10 +787,16 @@ class WebhookStore:
 
         return events
 
-    def count_pr_dashboard_rows(self, repo_full_name: Optional[str] = None) -> int:
+    def count_pr_dashboard_rows(
+        self,
+        repo_full_name: Optional[str] = None,
+        include_closed: bool = True,
+    ) -> int:
         stmt = select(func.count()).select_from(pr_heads_current)
         if repo_full_name:
             stmt = stmt.where(pr_heads_current.c.repo_full_name == repo_full_name)
+        if not include_closed:
+            stmt = stmt.where(pr_heads_current.c.state == "open")
         with self.engine.begin() as conn:
             count = conn.execute(stmt).scalar_one()
         return int(count)
@@ -803,6 +809,7 @@ class WebhookStore:
         page: int,
         page_size: int,
         repo_full_name: Optional[str] = None,
+        include_closed: bool = True,
     ) -> list[Dict[str, Any]]:
         page = max(1, int(page))
         page_size = min(200, max(1, int(page_size)))
@@ -816,6 +823,8 @@ class WebhookStore:
         )
         if repo_full_name:
             stmt = stmt.where(pr_heads_current.c.repo_full_name == repo_full_name)
+        if not include_closed:
+            stmt = stmt.where(pr_heads_current.c.state == "open")
 
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()

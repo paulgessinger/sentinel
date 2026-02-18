@@ -634,6 +634,25 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
         payload_json="{}",
     )
     store.persist_event(
+        delivery_id="pr-a-closed",
+        event="pull_request",
+        payload={
+            "action": "closed",
+            "installation": {"id": 1},
+            "repository": {"id": 1, "full_name": "org/repo-a"},
+            "pull_request": {
+                "id": 10,
+                "number": 1,
+                "title": "Repo A PR",
+                "state": "closed",
+                "updated_at": "2026-02-18T10:30:00Z",
+                "head": {"sha": "a" * 40},
+                "base": {"ref": "main"},
+            },
+        },
+        payload_json="{}",
+    )
+    store.persist_event(
         delivery_id="pr-b",
         event="pull_request",
         payload={
@@ -677,6 +696,7 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
     )
 
     assert store.count_pr_dashboard_rows() == 2
+    assert store.count_pr_dashboard_rows(include_closed=False) == 1
     assert store.count_pr_dashboard_rows(repo_full_name="org/repo-b") == 1
 
     page1 = store.list_pr_dashboard_rows(
@@ -710,6 +730,16 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
     )
     assert len(filtered) == 1
     assert filtered[0]["repo_full_name"] == "org/repo-a"
+
+    open_only = store.list_pr_dashboard_rows(
+        app_id=999,
+        check_name="merge-sentinel",
+        page=1,
+        page_size=10,
+        include_closed=False,
+    )
+    assert len(open_only) == 1
+    assert open_only[0]["repo_full_name"] == "org/repo-b"
 
 
 def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):

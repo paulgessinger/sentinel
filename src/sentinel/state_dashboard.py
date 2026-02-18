@@ -47,10 +47,35 @@ class StateUpdateBroadcaster:
 
 
 def _arg_value(request: Request, key: str, default: Optional[str] = None) -> Optional[str]:
-    value = request.args.get(key, default)
-    if isinstance(value, list):
-        return value[0] if value else default
-    return value
+    values = _arg_values(request, key)
+    if not values:
+        return default
+    return values[-1]
+
+
+def _arg_values(request: Request, key: str) -> list[str]:
+    args = request.args
+    values: list[Any]
+
+    if hasattr(args, "getlist"):
+        values = list(args.getlist(key))
+    elif hasattr(args, "getall"):
+        values = list(args.getall(key))
+    else:
+        value = args.get(key)
+        if value is None:
+            values = []
+        elif isinstance(value, list):
+            values = value
+        else:
+            values = [value]
+
+    normalized: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        normalized.append(str(value))
+    return normalized
 
 
 def _parse_int(value: Optional[str], default: int) -> int:
@@ -62,14 +87,30 @@ def _parse_int(value: Optional[str], default: int) -> int:
         return default
 
 
-def _state_query_params(request: Request) -> tuple[int, int, Optional[str]]:
+def _parse_bool(value: Optional[str], default: bool) -> bool:
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _state_query_params(request: Request) -> tuple[int, int, Optional[str], bool]:
     page = max(1, _parse_int(_arg_value(request, "page"), 1))
     page_size = _parse_int(_arg_value(request, "page_size"), DEFAULT_STATE_PAGE_SIZE)
     page_size = min(MAX_STATE_PAGE_SIZE, max(1, page_size))
     repo = _arg_value(request, "repo")
     if repo is not None:
         repo = repo.strip() or None
-    return page, page_size, repo
+    include_closed_values = _arg_values(request, "include_closed")
+    if include_closed_values:
+        include_closed = any(_parse_bool(value, False) for value in include_closed_values)
+    else:
+        include_closed = True
+    return page, page_size, repo, include_closed
 
 
 def _github_pr_url(repo_full_name: Optional[str], pr_number: Optional[int]) -> Optional[str]:
@@ -98,8 +139,12 @@ def _state_dashboard_context(
     page: int,
     page_size: int,
     repo_filter: Optional[str],
+    include_closed: bool,
 ) -> Dict[str, Any]:
-    total = app.ctx.webhook_store.count_pr_dashboard_rows(repo_full_name=repo_filter)
+    total = app.ctx.webhook_store.count_pr_dashboard_rows(
+        repo_full_name=repo_filter,
+        include_closed=include_closed,
+    )
     total_pages = max(1, ceil(total / page_size)) if total > 0 else 1
     page = min(page, total_pages)
 
@@ -109,6 +154,7 @@ def _state_dashboard_context(
         page=page,
         page_size=page_size,
         repo_full_name=repo_filter,
+        include_closed=include_closed,
     )
     enriched_rows = []
     for row in rows:
@@ -119,7 +165,7 @@ def _state_dashboard_context(
         enriched_rows.append(
             {
                 **row,
-                "short_sha": head_sha[:12] if head_sha else "",
+                "short_sha": head_sha[:8] if head_sha else "",
                 "pr_url": _github_pr_url(repo_full_name, pr_number),
                 "commit_url": _github_commit_url(repo_full_name, head_sha),
                 "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
@@ -147,6 +193,7 @@ def _state_dashboard_context(
         "page_size": page_size,
         "total_pages": total_pages,
         "repo_filter": repo_filter or "",
+        "include_closed": include_closed,
     }
 
 
@@ -221,7 +268,7 @@ def _state_pr_detail_context(
     return {
         "row": {
             **row,
-            "short_sha": head_sha[:12] if head_sha else "",
+            "short_sha": head_sha[:8] if head_sha else "",
             "pr_url": _github_pr_url(repo_full_name, pr_number),
             "commit_url": _github_commit_url(repo_full_name, head_sha),
             "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
@@ -245,7 +292,7 @@ def register_state_routes(app: Sanic) -> None:
     @app.get("/state")
     @app.ext.template("state.html.j2")
     async def state(_request):
-        page, page_size, repo_filter = _state_query_params(_request)
+        page, page_size, repo_filter, include_closed = _state_query_params(_request)
         return {
             "app": app,
             **_state_dashboard_context(
@@ -253,13 +300,14 @@ def register_state_routes(app: Sanic) -> None:
                 page=page,
                 page_size=page_size,
                 repo_filter=repo_filter,
+                include_closed=include_closed,
             ),
         }
 
     @app.get("/state/table")
     @app.ext.template("state_table.html.j2")
     async def state_table(_request):
-        page, page_size, repo_filter = _state_query_params(_request)
+        page, page_size, repo_filter, include_closed = _state_query_params(_request)
         return {
             "app": app,
             **_state_dashboard_context(
@@ -267,6 +315,7 @@ def register_state_routes(app: Sanic) -> None:
                 page=page,
                 page_size=page_size,
                 repo_filter=repo_filter,
+                include_closed=include_closed,
             ),
         }
 

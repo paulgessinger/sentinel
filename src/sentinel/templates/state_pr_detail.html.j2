@@ -23,6 +23,62 @@
     let refreshScheduled = false;
     let stream = null;
 
+    const formatLocalTimes = (root) => {
+        if (!root) {
+            return;
+        }
+        const pad2 = (value) => String(value).padStart(2, "0");
+        const formatLocalDateTime = (dt) =>
+            `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())} ` +
+            `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}`;
+        const formatRelativeTime = (dt) => {
+            const nowMs = Date.now();
+            const diffSeconds = Math.round((dt.getTime() - nowMs) / 1000);
+            const absSeconds = Math.abs(diffSeconds);
+
+            if (absSeconds < 5) {
+                return "just now";
+            }
+
+            const units = [
+                { seconds: 31536000, label: "y" },
+                { seconds: 2592000, label: "mo" },
+                { seconds: 604800, label: "w" },
+                { seconds: 86400, label: "d" },
+                { seconds: 3600, label: "h" },
+                { seconds: 60, label: "m" },
+                { seconds: 1, label: "s" },
+            ];
+
+            let value = absSeconds;
+            let unit = "s";
+            for (const candidate of units) {
+                if (absSeconds >= candidate.seconds) {
+                    value = Math.floor(absSeconds / candidate.seconds);
+                    unit = candidate.label;
+                    break;
+                }
+            }
+
+            if (diffSeconds < 0) {
+                return `${value}${unit} ago`;
+            }
+            return `in ${value}${unit}`;
+        };
+        root.querySelectorAll("[data-utc]").forEach((el) => {
+            const raw = el.getAttribute("data-utc");
+            if (!raw) {
+                return;
+            }
+            const dt = new Date(raw);
+            if (Number.isNaN(dt.getTime())) {
+                return;
+            }
+            el.textContent = formatRelativeTime(dt);
+            el.title = `${formatLocalDateTime(dt)} local (${raw})`;
+        });
+    };
+
     const refreshDetail = async () => {
         try {
             const response = await fetch(contentUrl, { credentials: "same-origin" });
@@ -30,6 +86,7 @@
                 return;
             }
             detailContainer.innerHTML = await response.text();
+            formatLocalTimes(detailContainer);
         } finally {
             refreshScheduled = false;
         }
@@ -81,6 +138,8 @@
     });
 
     connectStream();
+    formatLocalTimes(document);
+    window.setInterval(() => formatLocalTimes(document), 30000);
 })();
 </script>
 </body>

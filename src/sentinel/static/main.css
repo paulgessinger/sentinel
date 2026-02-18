@@ -93,6 +93,12 @@ a {
     padding: 6px 8px;
 }
 
+.state-filters input[type="checkbox"] {
+    padding: 0;
+    width: auto;
+    height: auto;
+}
+
 .state-table {
     width: 100%;
     border-collapse: collapse;

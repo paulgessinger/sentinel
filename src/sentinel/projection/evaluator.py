@@ -331,6 +331,15 @@ class ProjectionEvaluator:
             app_id=self.app_id,
         )
 
+        if not self.store.get_open_pr_candidates(repo_id, head_sha):
+            logger.info(
+                "Projection eval skip repo=%s sha=%s reason=no_open_pr_before_publish",
+                trigger.repo_full_name,
+                head_sha,
+            )
+            sentinel_projection_eval_total.labels(result="no_pr").inc()
+            return EvaluationResult(result="no_pr")
+
         previous_status = sentinel_row.get("status") if sentinel_row else None
         existing_id = sentinel_row.get("check_run_id") if sentinel_row else None
         check_run_id = (

@@ -324,6 +324,15 @@ wheels = [
 ]
 
 [[package]]
+name = "emoji"
+version = "2.15.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/78/0d2db9382c92a163d7095fc08efff7800880f830a152cfced40161e7638d/emoji-2.15.0.tar.gz", hash = "sha256:eae4ab7d86456a70a00a985125a03263a5eac54cd55e51d7e184b1ed3b6757e4", size = 615483, upload-time = "2025-09-21T12:13:02.755Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/5e/4b5aaaabddfacfe36ba7768817bd1f71a7a810a43705e531f3ae4c690767/emoji-2.15.0-py3-none-any.whl", hash = "sha256:205296793d66a89d88af4688fa57fd6496732eb48917a87175a023c8138995eb", size = 608433, upload-time = "2025-09-21T12:13:01.197Z" },
+]
+
+[[package]]
 name = "frozenlist"
 version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1086,9 +1095,11 @@ dependencies = [
     { name = "alembic" },
     { name = "cachetools" },
     { name = "diskcache" },
+    { name = "emoji" },
     { name = "gidgethub" },
     { name = "humanize" },
     { name = "jinja2" },
+    { name = "markdown-it-py" },
     { name = "more-itertools" },
     { name = "notifiers" },
     { name = "prometheus-client" },
@@ -1121,9 +1132,11 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.16.0" },
     { name = "cachetools", specifier = ">=5.0.0" },
     { name = "diskcache", specifier = ">=5.4.0" },
+    { name = "emoji", specifier = ">=2.14.1" },
     { name = "gidgethub", specifier = ">=5.1.0" },
     { name = "humanize", specifier = ">=4.3.0" },
     { name = "jinja2", specifier = ">=3.1.2" },
+    { name = "markdown-it-py", specifier = ">=3.0.0" },
     { name = "more-itertools", specifier = ">=8.13.0" },
     { name = "notifiers", specifier = ">=1.3.3" },
     { name = "prometheus-client", specifier = ">=0.14.1" },

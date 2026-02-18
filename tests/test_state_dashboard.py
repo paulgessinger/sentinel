@@ -16,11 +16,46 @@ from sentinel.web import create_app
 
 
 def test_state_query_params_parses_and_clamps():
-    request = SimpleNamespace(args={"page": ["-2"], "page_size": ["999"], "repo": [" org/repo "]})
-    page, page_size, repo = _state_query_params(request)
+    request = SimpleNamespace(
+        args={
+            "page": ["-2"],
+            "page_size": ["999"],
+            "repo": [" org/repo "],
+            "include_closed": ["0"],
+        }
+    )
+    page, page_size, repo, include_closed = _state_query_params(request)
     assert page == 1
     assert page_size == 200
     assert repo == "org/repo"
+    assert include_closed is False
+
+
+def test_state_query_params_include_closed_uses_all_values_when_duplicated():
+    class _FakeArgs:
+        def __init__(self):
+            self._data = {
+                "page": ["1"],
+                "page_size": ["100"],
+                "repo": [""],
+                "include_closed": ["0", "1"],
+            }
+
+        def get(self, key, default=None):
+            values = self._data.get(key)
+            if not values:
+                return default
+            return values[0]
+
+        def getlist(self, key):
+            return list(self._data.get(key, []))
+
+    request = SimpleNamespace(args=_FakeArgs())
+    page, page_size, repo, include_closed = _state_query_params(request)
+    assert page == 1
+    assert page_size == 100
+    assert repo is None
+    assert include_closed is True
 
 
 def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
@@ -77,7 +112,13 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
         ctx=SimpleNamespace(webhook_store=store),
     )
 
-    context = _state_dashboard_context(app, page=1, page_size=100, repo_filter=None)
+    context = _state_dashboard_context(
+        app,
+        page=1,
+        page_size=100,
+        repo_filter=None,
+        include_closed=True,
+    )
     assert context["total"] == 1
     assert context["total_pages"] == 1
     assert len(context["rows"]) == 1
@@ -85,10 +126,83 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
     assert row["pr_url"] == "https://github.com/org/repo/pull/42"
     assert row["pr_title"] == "Add dashboard"
     assert row["commit_url"] == f"https://github.com/org/repo/commit/{'a'*40}"
+    assert row["short_sha"] == "a" * 8
     assert row["check_run_url"] == "https://github.com/org/repo/runs/321?check_suite_focus=true"
     assert row["output_summary"] == "summary"
     assert row["output_text"] == "text"
     assert row["publish_result_display"] == "published"
+
+
+def test_state_dashboard_context_can_exclude_closed_prs(tmp_path):
+    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store.initialize()
+
+    store.persist_event(
+        delivery_id="pr-open-1",
+        event="pull_request",
+        payload={
+            "action": "opened",
+            "installation": {"id": 1},
+            "repository": {"id": 10, "full_name": "org/repo"},
+            "pull_request": {
+                "id": 1001,
+                "number": 1,
+                "title": "Open PR",
+                "state": "open",
+                "updated_at": "2026-02-18T12:00:00Z",
+                "head": {"sha": "a" * 40},
+                "base": {"ref": "main"},
+            },
+        },
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="pr-closed-1",
+        event="pull_request",
+        payload={
+            "action": "closed",
+            "installation": {"id": 1},
+            "repository": {"id": 10, "full_name": "org/repo"},
+            "pull_request": {
+                "id": 1002,
+                "number": 2,
+                "title": "Closed PR",
+                "state": "closed",
+                "updated_at": "2026-02-18T12:10:00Z",
+                "head": {"sha": "b" * 40},
+                "base": {"ref": "main"},
+            },
+        },
+        payload_json="{}",
+    )
+
+    app = SimpleNamespace(
+        config=SimpleNamespace(
+            GITHUB_APP_ID=2877723,
+            PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+        ),
+        ctx=SimpleNamespace(webhook_store=store),
+    )
+
+    all_rows_context = _state_dashboard_context(
+        app,
+        page=1,
+        page_size=100,
+        repo_filter=None,
+        include_closed=True,
+    )
+    open_only_context = _state_dashboard_context(
+        app,
+        page=1,
+        page_size=100,
+        repo_filter=None,
+        include_closed=False,
+    )
+
+    assert all_rows_context["total"] == 2
+    assert open_only_context["total"] == 1
+    assert len(open_only_context["rows"]) == 1
+    assert open_only_context["rows"][0]["pr_number"] == 1
 
 
 @pytest.mark.asyncio
