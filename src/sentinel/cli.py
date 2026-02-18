@@ -1,21 +1,26 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import logging
+from pathlib import Path
+import shutil
+import sqlite3
+from typing import Annotated
 
 import typer
 from gidgethub import aiohttp as gh_aiohttp
 from gidgethub.apps import get_jwt, get_installation_access_token
 import aiohttp
 import cachetools
-from prometheus_client import push_to_gateway
 
+from sentinel.db_migrations import migrate_webhook_db as run_webhook_db_migrations
 from sentinel.github import get_access_token, process_pull_request, API
 from sentinel.logger import get_log_handlers
 from sentinel import config
 from sentinel.cache import Cache, QueueItem, get_cache
-from sentinel.web import client_for_installation
 from sentinel.github.model import PullRequest
-from sentinel.metric import push_registry, worker_error_count, api_call_count
+from sentinel.metric import worker_error_count, api_call_count
+from sentinel.storage import WebhookStore
 
 
 logging.basicConfig(
@@ -61,19 +66,6 @@ async def job_loop():
             worker_error_count.inc()
             logger.error("Job loop encountered error", exc_info=True)
             pass
-        finally:
-            if config.PUSH_GATEWAY is not None:
-                try:
-                    push_to_gateway(
-                        config.PUSH_GATEWAY, "sentinel_worker", push_registry
-                    )
-                except:
-                    logger.error(
-                        "Error pushing to pushgateway %s",
-                        config.PUSH_GATEWAY,
-                        exc_info=True,
-                    )
-                    pass
 
 
 app = typer.Typer()
@@ -102,7 +94,8 @@ async def installation_client(installation: int):
         gh = gh_aiohttp.GitHubAPI(session, __name__)
 
         jwt = get_jwt(
-            app_id=config.GITHUB_APP_ID, private_key=config.GITHUB_PRIVATE_KEY
+            app_id=str(config.GITHUB_APP_ID),
+            private_key=config.GITHUB_PRIVATE_KEY,
         )
 
         app_info = await gh.getitem("/app", jwt=jwt)
@@ -120,7 +113,11 @@ async def installation_client(installation: int):
 
 
 @app.command()
-def queue_pr(repo: str, number: int, installation: int):
+def queue_pr(
+    repo: Annotated[str, typer.Argument(help="Repository in owner/name format")],
+    number: Annotated[int, typer.Argument(help="Pull request number")],
+    installation: Annotated[int, typer.Argument(help="GitHub App installation ID")],
+):
     async def handle():
         async with installation_client(installation) as gh:
 
@@ -136,7 +133,11 @@ def queue_pr(repo: str, number: int, installation: int):
 
 
 @app.command()
-def pr(repo: str, number: int, installation: int):
+def pr(
+    repo: Annotated[str, typer.Argument(help="Repository in owner/name format")],
+    number: Annotated[int, typer.Argument(help="Pull request number")],
+    installation: Annotated[int, typer.Argument(help="GitHub App installation ID")],
+):
     async def handle():
         async with installation_client(installation) as gh:
             pr = PullRequest.model_validate(
@@ -146,3 +147,194 @@ def pr(repo: str, number: int, installation: int):
             await process_pull_request(pr, api)
 
     asyncio.run(handle())
+
+
+@app.command("vacuum-webhook-db")
+def vacuum_webhook_db(
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = config.WEBHOOK_DB_PATH,
+):
+    db_path = Path(path)
+    if not db_path.exists():
+        typer.echo(f"Database does not exist: {db_path}")
+        raise typer.Exit(code=1)
+
+    try:
+        with sqlite3.connect(str(db_path), timeout=60.0) as conn:
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("VACUUM")
+    except sqlite3.Error as exc:
+        typer.echo(f"VACUUM failed for {db_path}: {exc}")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"VACUUM completed for {db_path}")
+
+
+@app.command("migrate-webhook-db")
+def migrate_webhook_db(
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = config.WEBHOOK_DB_PATH,
+    revision: Annotated[
+        str,
+        typer.Option("--revision", help="Alembic revision target (default: head)"),
+    ] = "head",
+):
+    try:
+        run_webhook_db_migrations(path, revision=revision)
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"Alembic migration failed for {path}: {exc}")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Migrated webhook database to {revision}: {path}")
+
+
+@app.command("prune-webhook-db")
+def prune_webhook_db(
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = config.WEBHOOK_DB_PATH,
+    retention_seconds: Annotated[
+        int,
+        typer.Option(
+            "--retention-seconds",
+            help="Delete webhook_events older than this many seconds",
+        ),
+    ] = config.WEBHOOK_DB_RETENTION_SECONDS,
+):
+    db_path = Path(path)
+    if not db_path.exists():
+        typer.echo(f"Database does not exist: {db_path}")
+        raise typer.Exit(code=1)
+
+    if retention_seconds < 0:
+        typer.echo(f"Invalid retention-seconds: {retention_seconds}")
+        raise typer.Exit(code=1)
+
+    store = WebhookStore(
+        db_path=str(db_path),
+        retention_seconds=retention_seconds,
+    )
+
+    try:
+        pruned = store.prune_old_events(retention_seconds=retention_seconds)
+    except sqlite3.Error as exc:
+        typer.echo(f"Prune failed for {db_path}: {exc}")
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"Pruned {pruned} webhook_events older than {retention_seconds}s in {db_path}"
+    )
+
+
+@app.command("prune-webhook-projections")
+def prune_webhook_projections(
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = config.WEBHOOK_DB_PATH,
+    completed_retention_seconds: Annotated[
+        int,
+        typer.Option(
+            "--completed-retention-seconds",
+            help="Delete terminal projection rows older than this many seconds",
+        ),
+    ] = config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS,
+    active_retention_seconds: Annotated[
+        int,
+        typer.Option(
+            "--active-retention-seconds",
+            help="Delete active projection rows older than this many seconds",
+        ),
+    ] = config.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS,
+):
+    db_path = Path(path)
+    if not db_path.exists():
+        typer.echo(f"Database does not exist: {db_path}")
+        raise typer.Exit(code=1)
+
+    if completed_retention_seconds < 0:
+        typer.echo(
+            f"Invalid completed-retention-seconds: {completed_retention_seconds}"
+        )
+        raise typer.Exit(code=1)
+    if active_retention_seconds < 0:
+        typer.echo(f"Invalid active-retention-seconds: {active_retention_seconds}")
+        raise typer.Exit(code=1)
+
+    store = WebhookStore(db_path=str(db_path))
+
+    try:
+        counts = store.prune_old_projections(
+            completed_retention_seconds=completed_retention_seconds,
+            active_retention_seconds=active_retention_seconds,
+        )
+    except sqlite3.Error as exc:
+        typer.echo(f"Projection prune failed for {db_path}: {exc}")
+        raise typer.Exit(code=1)
+
+    total = sum(counts.values())
+    typer.echo(
+        "Pruned "
+        f"{total} projection rows in {db_path} "
+        f"(completed>{completed_retention_seconds}s, active>{active_retention_seconds}s)"
+    )
+
+
+@app.command("migrate-webhook-db-zstd")
+def migrate_webhook_db_zstd(
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = config.WEBHOOK_DB_PATH,
+    batch_size: Annotated[
+        int,
+        typer.Option(
+            "--batch-size",
+            help="Number of rows to update per transaction batch",
+        ),
+    ] = 500,
+    backup: Annotated[
+        bool,
+        typer.Option(
+            "--backup/--no-backup",
+            help="Create a timestamped backup before migration",
+        ),
+    ] = True,
+):
+    db_path = Path(path)
+    if not db_path.exists():
+        typer.echo(f"Database does not exist: {db_path}")
+        raise typer.Exit(code=1)
+    if batch_size < 1:
+        typer.echo(f"Invalid batch-size: {batch_size}")
+        raise typer.Exit(code=1)
+
+    if backup:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        backup_path = Path(f"{db_path}.bak.{timestamp}")
+        try:
+            shutil.copy2(db_path, backup_path)
+        except OSError as exc:
+            typer.echo(f"Backup failed for {db_path}: {exc}")
+            raise typer.Exit(code=1)
+        typer.echo(f"Backup created: {backup_path}")
+
+    store = WebhookStore(db_path=str(db_path))
+    try:
+        result = store.migrate_event_payloads_to_zstd(batch_size=batch_size)
+    except sqlite3.Error as exc:
+        typer.echo(f"Migration failed for {db_path}: {exc}")
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        "Migration complete for "
+        f"{db_path}: scanned={result['scanned_rows']}, "
+        f"converted={result['converted_rows']}, "
+        f"already_compressed={result['already_compressed_rows']}, "
+        f"skipped={result['skipped_rows']}"
+    )

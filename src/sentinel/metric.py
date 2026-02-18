@@ -1,5 +1,6 @@
-from cProfile import label
-from prometheus_client import core, Counter, Gauge, CollectorRegistry
+from pathlib import Path
+
+from prometheus_client import core, Counter, Gauge
 
 request_counter = Counter(
     "sentinel_num_req", "Total number of requests", labelnames=["path"]
@@ -37,21 +38,92 @@ error_counter = Counter(
     "sentinel_error_counter", "Total number of errors", labelnames=["context"]
 )
 
-push_registry = CollectorRegistry()
-
-api_call_count = Counter(
-    "sentinel_num_api_calls", "Total number of GitHub API calls", registry=push_registry
-)
+api_call_count = Counter("sentinel_num_api_calls", "Total number of GitHub API calls")
 
 check_run_post = Counter(
     "sentinel_check_run_post",
     "Number of check run update posts",
     labelnames=["skipped", "difference"],
-    registry=push_registry,
 )
 
 worker_error_count = Counter(
     "sentinel_num_worker_error",
     "Number of errors encountered by the update worker",
-    registry=push_registry,
 )
+
+webhook_persist_total = Counter(
+    "sentinel_webhook_persist_total",
+    "Webhook persistence outcomes",
+    labelnames=["event", "result"],
+)
+
+webhook_project_total = Counter(
+    "sentinel_webhook_project_total",
+    "Webhook projection outcomes",
+    labelnames=["projection", "result"],
+)
+
+webhook_event_pruned_total = Counter(
+    "sentinel_webhook_event_pruned_total",
+    "Number of old webhook_events rows pruned",
+)
+
+webhook_projection_pruned_total = Counter(
+    "sentinel_webhook_projection_pruned_total",
+    "Number of old projection rows pruned",
+    labelnames=["table", "kind"],
+)
+
+sentinel_projection_eval_total = Counter(
+    "sentinel_projection_eval_total",
+    "Projection evaluation outcomes",
+    labelnames=["result"],
+)
+
+sentinel_projection_debounce_total = Counter(
+    "sentinel_projection_debounce_total",
+    "Projection debounce scheduling outcomes",
+    labelnames=["result"],
+)
+
+sentinel_projection_publish_total = Counter(
+    "sentinel_projection_publish_total",
+    "Projection publish outcomes",
+    labelnames=["result"],
+)
+
+sentinel_projection_lookup_total = Counter(
+    "sentinel_projection_lookup_total",
+    "Projection check run lookup outcomes",
+    labelnames=["result"],
+)
+
+sentinel_projection_fallback_total = Counter(
+    "sentinel_projection_fallback_total",
+    "Projection fallback cache/read outcomes",
+    labelnames=["kind", "result"],
+)
+
+webhook_db_size_bytes = Gauge(
+    "sentinel_webhook_db_size_bytes",
+    "Total SQLite webhook DB size on disk in bytes (db + wal + shm)",
+)
+
+
+def sqlite_db_total_size_bytes(db_path: Path) -> float:
+    total_size = 0
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(f"{db_path}{suffix}")
+        try:
+            if candidate.is_file():
+                total_size += candidate.stat().st_size
+        except OSError:
+            continue
+    return float(total_size)
+
+
+def configure_webhook_db_size_metric(db_path: str) -> None:
+    db_path_value = Path(db_path)
+    webhook_db_size_bytes.set_function(
+        lambda: sqlite_db_total_size_bytes(db_path_value)
+    )

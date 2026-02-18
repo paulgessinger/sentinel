@@ -1,5 +1,4 @@
-src/sentinel/.DS_Store
-.env
+/.env*
 
 
 .venv
@@ -9,3 +8,9 @@ src/sentinel/.DS_Store
 cache
 
 settings.json
+
+/CLAUDE.md
+/AGENTS.md
+.DS_Store
+
+*.pem

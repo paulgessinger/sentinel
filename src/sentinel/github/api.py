@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import AsyncIterator, List
+from typing import AsyncIterator, List, Optional
 from gidgethub.abc import GitHubAPI
 import copy
 
@@ -28,7 +28,7 @@ class API:
         self.installation = installation
         self.call_count = 0
 
-    async def post_check_run(self, repo_url: str, check_run: CheckRun) -> None:
+    async def post_check_run(self, repo_url: str, check_run: CheckRun) -> Optional[int]:
         self.call_count += 1
         fields = {"name", "head_sha", "status", "started_at"}
         if check_run.completed_at is not None:
@@ -65,21 +65,46 @@ class API:
             if check_run.id is not None:
                 url = f"{repo_url}/check-runs/{check_run.id}"
                 logger.debug("Updating check run %d, %s", check_run.id, url)
-                await self.gh.patch(
+                response = await self.gh.patch(
                     url,
                     data=payload,
                 )
             else:
                 url = f"{repo_url}/check-runs"
                 logger.debug("Creating check run %s on sha %s", url, check_run.head_sha)
-                await self.gh.post(
+                response = await self.gh.post(
                     url,
                     data=payload,
                 )
+            if isinstance(response, dict):
+                run_id = response.get("id")
+                return None if run_id is None else int(run_id)
+            return None
         except:
             logger.error("Error patch/post with payload: %s", payload)
             logger.error("           -> pre payload was: %s", payload_pre)
             raise
+
+    async def find_existing_sentinel_check_run(
+        self,
+        *,
+        repo_url: str,
+        head_sha: str,
+        check_name: str,
+        app_id: Optional[int] = None,
+    ) -> Optional[CheckRun]:
+        self.call_count += 1
+        url = f"{repo_url}/commits/{head_sha}/check-runs"
+        async for item in self.gh.getiter(url, iterable_key="check_runs"):
+            check_run = CheckRun.model_validate(item)
+            if check_run.name != check_name:
+                continue
+            if app_id is not None:
+                app = check_run.app
+                if app is None or app.id != app_id:
+                    continue
+            return check_run
+        return None
 
     async def get_check_runs_for_ref(
         self, repo: Repository, ref: str

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Sentinel PR Detail</title>
+    <link rel="stylesheet" href="{{ app.url_for('static', filename='main.css') }}">
+</head>
+<body>
+<main class="state-dashboard pr-detail">
+    <section id="state-pr-detail-container">
+        {% include "state_pr_detail_content.html.j2" %}
+    </section>
+</main>
+
+<script>
+(() => {
+    const detailContainer = document.getElementById("state-pr-detail-container");
+    const repoId = "{{ row.repo_id }}";
+    const prNumber = "{{ row.pr_number }}";
+    const contentUrl = `/state/pr/${repoId}/${prNumber}/content`;
+    const streamUrl = "/state/stream";
+    let refreshScheduled = false;
+    let stream = null;
+    let relativeTimesTimer = null;
+
+    const formatLocalTimes = (root) => {
+        if (!root) {
+            return;
+        }
+        const pad2 = (value) => String(value).padStart(2, "0");
+        const formatLocalDateTime = (dt) =>
+            `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())} ` +
+            `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}`;
+        const formatRelativeTime = (dt) => {
+            const nowMs = Date.now();
+            const diffSeconds = Math.round((dt.getTime() - nowMs) / 1000);
+            const absSeconds = Math.abs(diffSeconds);
+
+            if (absSeconds < 5) {
+                return { text: "just now", unit: "s" };
+            }
+
+            const units = [
+                { seconds: 31536000, label: "y" },
+                { seconds: 2592000, label: "mo" },
+                { seconds: 604800, label: "w" },
+                { seconds: 86400, label: "d" },
+                { seconds: 3600, label: "h" },
+                { seconds: 60, label: "m" },
+                { seconds: 1, label: "s" },
+            ];
+
+            let value = absSeconds;
+            let unit = "s";
+            for (const candidate of units) {
+                if (absSeconds >= candidate.seconds) {
+                    value = Math.floor(absSeconds / candidate.seconds);
+                    unit = candidate.label;
+                    break;
+                }
+            }
+
+            if (diffSeconds < 0) {
+                return { text: `${value}${unit} ago`, unit };
+            }
+            return { text: `in ${value}${unit}`, unit };
+        };
+        root.querySelectorAll("[data-utc]").forEach((el) => {
+            const raw = el.getAttribute("data-utc");
+            if (!raw) {
+                return;
+            }
+            const dt = new Date(raw);
+            if (Number.isNaN(dt.getTime())) {
+                return;
+            }
+            const relative = formatRelativeTime(dt);
+            el.textContent = relative.text;
+            el.setAttribute("data-relative-unit", relative.unit);
+            el.title = `${formatLocalDateTime(dt)} local (${raw})`;
+        });
+    };
+
+    const scheduleRelativeTimesRefresh = () => {
+        if (relativeTimesTimer !== null) {
+            window.clearTimeout(relativeTimesTimer);
+            relativeTimesTimer = null;
+        }
+        const hasSecondPrecision = document.querySelector("[data-relative-unit='s']") !== null;
+        const nextDelayMs = hasSecondPrecision ? 1000 : 30000;
+        relativeTimesTimer = window.setTimeout(() => {
+            formatLocalTimes(document);
+            scheduleRelativeTimesRefresh();
+        }, nextDelayMs);
+    };
+
+    const refreshDetail = async () => {
+        try {
+            const response = await fetch(contentUrl, { credentials: "same-origin" });
+            if (!response.ok) {
+                return;
+            }
+            detailContainer.innerHTML = await response.text();
+            formatLocalTimes(detailContainer);
+            scheduleRelativeTimesRefresh();
+        } finally {
+            refreshScheduled = false;
+        }
+    };
+
+    const scheduleRefresh = () => {
+        if (refreshScheduled) {
+            return;
+        }
+        refreshScheduled = true;
+        window.setTimeout(refreshDetail, 500);
+    };
+
+    const connectStream = () => {
+        if (stream) {
+            stream.close();
+        }
+        stream = new EventSource(streamUrl);
+        stream.addEventListener("state_update", scheduleRefresh);
+        stream.addEventListener("ready", () => {});
+        stream.onerror = () => {
+            if (!stream) {
+                return;
+            }
+            if (stream.readyState === EventSource.CLOSED && !document.hidden) {
+                window.setTimeout(connectStream, 1000);
+            }
+        };
+    };
+
+    window.addEventListener("pageshow", (event) => {
+        if (event.persisted) {
+            connectStream();
+            scheduleRefresh();
+        }
+    });
+
+    window.addEventListener("pagehide", () => {
+        if (stream) {
+            stream.close();
+            stream = null;
+        }
+        if (relativeTimesTimer !== null) {
+            window.clearTimeout(relativeTimesTimer);
+            relativeTimesTimer = null;
+        }
+    });
+
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden && (!stream || stream.readyState === EventSource.CLOSED)) {
+            connectStream();
+        }
+    });
+
+    connectStream();
+    formatLocalTimes(document);
+    scheduleRelativeTimesRefresh();
+})();
+</script>
+</body>
+</html>

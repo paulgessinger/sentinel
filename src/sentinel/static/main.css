@@ -61,3 +61,217 @@ h1 {
 a {
     color: #5858a7;
 }
+
+.state-dashboard {
+    margin: 24px;
+}
+
+.state-header h1 {
+    margin-bottom: 0;
+}
+
+.state-header p {
+    margin-top: 8px;
+    color: #b8b8b8;
+}
+
+.mode-indicator {
+    border: 1px solid #7f6b2f;
+    background: #3b2e11;
+    color: #f5dfa2;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 14px;
+    font-size: 0.9rem;
+}
+
+.state-filters {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 20px 0;
+    flex-wrap: wrap;
+}
+
+.state-filters input,
+.state-filters select,
+.state-filters button {
+    border: 1px solid #444;
+    background: #1c1c1c;
+    color: #eee;
+    border-radius: 4px;
+    padding: 6px 8px;
+}
+
+.state-filters input[type="checkbox"] {
+    padding: 0;
+    width: auto;
+    height: auto;
+}
+
+.state-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+}
+
+.state-table th,
+.state-table td {
+    border-bottom: 1px solid #2f2f2f;
+    padding: 10px 8px;
+    vertical-align: top;
+    text-align: left;
+}
+
+.state-table th {
+    color: #bbb;
+    font-weight: 600;
+}
+
+@keyframes row-flash-once {
+    0% {
+        background-color: rgba(246, 196, 89, 0.45);
+    }
+    100% {
+        background-color: transparent;
+    }
+}
+
+.state-table tr.row-flash-once td {
+    animation: row-flash-once 1.2s ease-out 1;
+}
+
+.state-meta {
+    display: flex;
+    gap: 16px;
+    color: #b8b8b8;
+    font-size: 0.9rem;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.state-pagination {
+    margin-top: 14px;
+    display: flex;
+    gap: 12px;
+}
+
+.state-pagination .disabled {
+    color: #666;
+}
+
+.chip {
+    display: inline-block;
+    border: 1px solid #454545;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 0.78rem;
+    margin-right: 4px;
+    margin-bottom: 4px;
+}
+
+.chip-pr {
+    border-color: #5675b8;
+}
+
+.chip-status {
+    border-color: #6d6dbd;
+}
+
+.chip-conclusion {
+    border-color: #6d966d;
+}
+
+.chip-bg-green {
+    background: #285b38;
+    border-color: #3f8a56;
+    color: #ecffef;
+}
+
+.chip-bg-red {
+    background: #6f2525;
+    border-color: #a94444;
+    color: #ffecec;
+}
+
+.muted {
+    color: #9a9a9a;
+    font-size: 0.82rem;
+}
+
+.error-text {
+    color: #d38787;
+    max-width: 360px;
+    overflow-wrap: anywhere;
+    margin-top: 6px;
+}
+
+.output-block {
+    margin-top: 8px;
+}
+
+.output-block h4 {
+    margin: 8px 0 4px 0;
+}
+
+.output-block pre {
+    background: #191919;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 10px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-width: 560px;
+}
+
+.pr-detail {
+    max-width: 1400px;
+}
+
+.pr-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 10px;
+    margin: 18px 0;
+}
+
+.detail-section {
+    margin-top: 24px;
+}
+
+.rendered-markdown {
+    margin-top: 8px;
+}
+
+.rendered-markdown h2,
+.rendered-markdown h3,
+.rendered-markdown h4 {
+    margin: 10px 0 6px 0;
+}
+
+.rendered-markdown p {
+    margin: 8px 0;
+}
+
+.rendered-markdown ul {
+    margin: 8px 0;
+    padding-left: 20px;
+}
+
+.rendered-check-table {
+    border-collapse: collapse;
+    width: 100%;
+    max-width: 900px;
+    margin: 10px 0;
+}
+
+.rendered-check-table th,
+.rendered-check-table td {
+    border: 1px solid #333;
+    padding: 6px 8px;
+    text-align: left;
+}
+
+.rendered-check-table th {
+    color: #c0c0c0;
+}

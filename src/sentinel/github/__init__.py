@@ -151,8 +151,8 @@ async def get_access_token(gh: gh_aiohttp.GitHubAPI, installation_id: int) -> st
     logger.debug("Getting NEW installation access token for %d", installation_id)
     access_token_response = await get_installation_access_token(
         gh,
-        installation_id=installation_id,
-        app_id=app_config.GITHUB_APP_ID,
+        installation_id=str(installation_id),
+        app_id=str(app_config.GITHUB_APP_ID),
         private_key=app_config.GITHUB_PRIVATE_KEY,
     )
 

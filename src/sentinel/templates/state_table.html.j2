@@ -1,0 +1,105 @@
+<div class="state-meta">
+    <span>Total PRs: {{ total }}</span>
+    <span>Page {{ page }} / {{ total_pages }}</span>
+    <span>{% if include_closed %}Including closed{% else %}Open only{% endif %}</span>
+    {% if repo_filter %}
+    <span>Filter: {{ repo_filter }}</span>
+    {% endif %}
+</div>
+
+<table class="state-table">
+    <thead>
+    <tr>
+        <th>Repository</th>
+        <th>PR State</th>
+        <th>PR</th>
+        <th>Head</th>
+        <th>Sentinel Status</th>
+        <th>Publish</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% for row in rows %}
+    <tr data-row-key="{{ row.row_key }}" data-row-signature="{{ row.row_update_signature }}">
+        <td>{{ row.repo_full_name or "unknown" }}</td>
+        <td><span class="chip chip-pr {{ row.pr_state_class }}">{{ row.pr_state_display }}</span></td>
+        <td>
+            {% set pr_title_text = row.pr_title or ("PR #" ~ row.pr_number) %}
+            {% if row.details_url %}
+            <a href="{{ row.details_url }}">{{ pr_title_text }}</a>
+            {% else %}
+            {{ pr_title_text }}
+            {% endif %}
+            {% if row.pr_url %}
+            (<a href="{{ row.pr_url }}" target="_blank" rel="noreferrer">#{{ row.pr_number }}</a>)
+            {% endif %}
+            {% if row.pr_updated_at %}
+            <div class="muted">Updated: <span data-utc="{{ row.pr_updated_at }}">{{ row.pr_updated_at }}</span></div>
+            {% endif %}
+        </td>
+        <td>
+            {% if row.commit_url %}
+            <a href="{{ row.commit_url }}" target="_blank" rel="noreferrer" title="{{ row.head_sha }}">{{ row.short_sha }}</a>
+            {% else %}
+            <span title="{{ row.head_sha }}">{{ row.short_sha }}</span>
+            {% endif %}
+        </td>
+        <td>
+            <div>
+                <span class="chip chip-status {{ row.sentinel_status_class }}">{{ row.sentinel_status or "not_evaluated" }}</span>
+                {% if row.sentinel_conclusion %}
+                <span class="chip chip-conclusion {{ row.sentinel_conclusion_class }}">{{ row.sentinel_conclusion }}</span>
+                {% endif %}
+            </div>
+            <div class="muted">
+                eval:
+                {% if row.last_eval_at %}
+                <span data-utc="{{ row.last_eval_at }}">{{ row.last_eval_at }}</span>
+                {% else %}
+                -
+                {% endif %}
+            </div>
+        </td>
+        <td>
+            <div class="muted">result: {{ row.publish_result_display }}</div>
+            <div class="muted">
+                at:
+                {% if row.last_publish_at %}
+                <span data-utc="{{ row.last_publish_at }}">{{ row.last_publish_at }}</span>
+                {% else %}
+                -
+                {% endif %}
+            </div>
+            {% if row.check_run_url %}
+            <a href="{{ row.check_run_url }}" target="_blank" rel="noreferrer">run {{ row.sentinel_check_run_id }}</a>
+            {% elif row.sentinel_check_run_id %}
+            run {{ row.sentinel_check_run_id }}
+            {% endif %}
+            {% if row.last_publish_error %}
+            <div class="error-text">{{ row.last_publish_error }}</div>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    {% if rows|length == 0 %}
+    <tr>
+        <td colspan="6">No PR rows available.</td>
+    </tr>
+    {% endif %}
+    </tbody>
+</table>
+
+<nav class="state-pagination">
+    {% set prev_page = page - 1 %}
+    {% set next_page = page + 1 %}
+    {% if page > 1 %}
+    <a href="/state?page={{ prev_page }}&page_size={{ page_size }}&include_closed={{ 1 if include_closed else 0 }}{% if repo_filter %}&repo={{ repo_filter }}{% endif %}">Previous</a>
+    {% else %}
+    <span class="disabled">Previous</span>
+    {% endif %}
+    {% if page < total_pages %}
+    <a href="/state?page={{ next_page }}&page_size={{ page_size }}&include_closed={{ 1 if include_closed else 0 }}{% if repo_filter %}&repo={{ repo_filter }}{% endif %}">Next</a>
+    {% else %}
+    <span class="disabled">Next</span>
+    {% endif %}
+</nav>

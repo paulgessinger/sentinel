@@ -1,9 +1,11 @@
 from datetime import date, datetime
 from functools import cached_property
-from typing import List, Literal, Optional, Type, TypeVar
+from typing import Any, List, Literal, Optional, Type, TypeVar
 import base64
 
 import pydantic
+from pydantic import GetCoreSchemaHandler
+from pydantic_core import core_schema
 
 
 class Model(pydantic.BaseModel):
@@ -12,8 +14,10 @@ class Model(pydantic.BaseModel):
 
 class CommitSha(str):
     @classmethod
-    def __get_validators__(cls):
-        yield cls.validate_commit_sha
+    def __get_pydantic_core_schema__(
+        cls, source_type: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        return core_schema.no_info_after_validator_function(cls, handler(str))
 
     @classmethod
     def validate_commit_sha(cls, sha: str) -> str:
