@@ -1,0 +1,29 @@
+Sentinel has been deployed!
+
+Web server: {{ include "sentinel.fullname" . }}-web
+
+{{- if .Values.route.enabled }}
+
+The app is exposed via an OpenShift Route.
+{{- if .Values.route.host }}
+URL: https://{{ .Values.route.host }}/
+{{- else }}
+Run the following to get the auto-assigned hostname:
+  oc get route {{ include "sentinel.fullname" . }} -o jsonpath='{.spec.host}'
+{{- end }}
+{{- else }}
+No Route was created. To access the app within the cluster:
+  oc port-forward svc/{{ include "sentinel.fullname" . }} 8080:{{ .Values.service.port }}
+Then open http://localhost:8080/
+{{- end }}
+
+Health check:
+  curl https://<hostname>/status
+
+Prometheus metrics:
+  curl https://<hostname>/metrics
+
+GitHub Webhook endpoint:
+  https://<hostname>/webhook
+
+Make sure your GitHub App is configured to send webhooks to that URL.

@@ -13,15 +13,21 @@ sha := "sha-" + `git rev-parse --short HEAD`
 image_build:
     docker build --platform linux/amd64,linux/arm64 -t {{image_url}}:{{sha}} .
 
-image:
+image: image_build
     docker tag {{image_url}}:{{sha}} {{image_url}}:latest
     docker push {{image_url}}:{{sha}}
     docker push {{image_url}}:latest
 
 
+helm_namespace := "sentinel"
+helm_values := "my-values.yaml"
+
 deploy: image
-    sleep 1
-    oc import-image sentinel --all
+    helm upgrade --install sentinel ./helm \
+        --namespace {{helm_namespace}} \
+        -f {{helm_values}} \
+        --set image.tag={{sha}} \
+        --wait
 
 docker: image_build
     docker run --rm -it --env-file .env.dev -e DISKCACHE_DIR=/cache -v$PWD/cache:/cache -p8080:8080 {{image_url}}:{{sha}}
