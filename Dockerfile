@@ -17,7 +17,9 @@ RUN --mount=type=cache,target=/root/.cache \
     --no-dev \
     --no-install-project
 
-COPY . /src
+COPY src /src/src
+COPY pyproject.toml /src/pyproject.toml
+COPY uv.lock /src/uv.lock
 WORKDIR /src
 
 RUN --mount=type=cache,target=/root/.cache \

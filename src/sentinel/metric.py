@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from prometheus_client import core, Counter, Gauge
 
 request_counter = Counter(
@@ -101,3 +103,27 @@ sentinel_projection_fallback_total = Counter(
     "Projection fallback cache/read outcomes",
     labelnames=["kind", "result"],
 )
+
+webhook_db_size_bytes = Gauge(
+    "sentinel_webhook_db_size_bytes",
+    "Total SQLite webhook DB size on disk in bytes (db + wal + shm)",
+)
+
+
+def sqlite_db_total_size_bytes(db_path: Path) -> float:
+    total_size = 0
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(f"{db_path}{suffix}")
+        try:
+            if candidate.is_file():
+                total_size += candidate.stat().st_size
+        except OSError:
+            continue
+    return float(total_size)
+
+
+def configure_webhook_db_size_metric(db_path: str) -> None:
+    db_path_value = Path(db_path)
+    webhook_db_size_bytes.set_function(
+        lambda: sqlite_db_total_size_bytes(db_path_value)
+    )

@@ -8,6 +8,12 @@
 </head>
 <body>
 <main id="state-dashboard" class="state-dashboard">
+    {% if not app.config.PROJECTION_PUBLISH_ENABLED %}
+    <section class="mode-indicator mode-indicator-dry-run">
+        Dry run mode active: evaluation runs, GitHub publish is disabled.
+    </section>
+    {% endif %}
+
     <header class="state-header">
         <h1>Sentinel State Dashboard</h1>
         <p>Live view from webhook projections and sentinel evaluation state.</p>

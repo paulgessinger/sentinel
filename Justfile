@@ -24,7 +24,7 @@ deploy: image
     oc import-image sentinel --all
 
 docker: image_build
-    docker run --rm -it --env-file .env {{image_url}}:{{sha}}
+    docker run --rm -it --env-file .env.dev -e DISKCACHE_DIR=/cache -v$PWD/cache:/cache -p8080:8080 {{image_url}}:{{sha}}
 
 smee:
     smee -u https://smee.io/k8smrd9B27JqKRBg -t http://localhost:8080/webhook

@@ -1,3 +1,9 @@
+{% if not app.config.PROJECTION_PUBLISH_ENABLED %}
+<section class="mode-indicator mode-indicator-dry-run">
+    Dry run mode active: evaluation runs, GitHub publish is disabled.
+</section>
+{% endif %}
+
 <header class="state-header">
     <h1>PR #{{ row.pr_number }}{% if row.pr_title %}: {{ row.pr_title }}{% endif %}</h1>
     <p>{{ row.repo_full_name }}</p>

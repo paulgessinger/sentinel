@@ -75,6 +75,16 @@ a {
     color: #b8b8b8;
 }
 
+.mode-indicator {
+    border: 1px solid #7f6b2f;
+    background: #3b2e11;
+    color: #f5dfa2;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 14px;
+    font-size: 0.9rem;
+}
+
 .state-filters {
     display: flex;
     align-items: center;

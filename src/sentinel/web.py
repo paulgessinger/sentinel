@@ -27,6 +27,7 @@ from sentinel.metric import (
     webhook_skipped_counter,
     queue_size,
     error_counter,
+    configure_webhook_db_size_metric,
 )
 from sentinel.projection import (
     ProjectionEvaluator,
@@ -334,6 +335,8 @@ def create_app():
 
     @app.listener("before_server_start")
     async def init(app):
+        configure_webhook_db_size_metric(app.config.WEBHOOK_DB_PATH)
+
         if webhook_dispatch_enabled(app) or projection_eval_enabled(app):
             logger.debug("Creating aiohttp session")
             app.ctx.aiohttp_session = aiohttp.ClientSession()
