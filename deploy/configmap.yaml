@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: sentinel-config
+  name: merge-sentinel-config
 data:
   DISKCACHE_DIR: /data
   WEBHOOK_DB_PATH: /data/webhooks.sqlite3
@@ -21,6 +21,7 @@ data:
   WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS: "604800"
   WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS: "2592000"
   WEBHOOK_FILTER_SELF_APP_ID: "true"
+  WEBHOOK_FILTER_APP_IDS: "226075,29196"
   PROJECTION_EVAL_ENABLED: "true"
   PROJECTION_PUBLISH_ENABLED: "false"
   PROJECTION_DEBOUNCE_SECONDS: "2"

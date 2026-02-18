@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: sentinel
+  name: merge-sentinel
 spec:
   selector:
-    app: sentinel
+    app: merge-sentinel
   ports:
     - port: 8080
       targetPort: 8080

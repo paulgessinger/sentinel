@@ -1,24 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: sentinel-web
+  name: merge-sentinel-web
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: sentinel
+      app: merge-sentinel
   template:
     metadata:
       labels:
-        app: sentinel
+        app: merge-sentinel
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
         prometheus.io/path: /metrics
     spec:
-      serviceAccountName: sentinel
-      securityContext:
-        fsGroup: 1000
       initContainers:
         - name: migrate
           image: ghcr.io/paulgessinger/sentinel:latest
@@ -26,26 +23,25 @@ spec:
           command: ["sentinel", "migrate-webhook-db"]
           envFrom:
             - configMapRef:
-                name: sentinel-config
+                name: merge-sentinel-config
           env:
             - name: GITHUB_APP_ID
               valueFrom:
                 secretKeyRef:
-                  name: sentinel-github
+                  name: merge-sentinel-github
                   key: GITHUB_APP_ID
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: sentinel-github
+                  name: merge-sentinel-github
                   key: GITHUB_WEBHOOK_SECRET
             - name: GITHUB_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: sentinel-github
+                  name: merge-sentinel-github
                   key: GITHUB_PRIVATE_KEY
           securityContext:
             runAsNonRoot: true
-            runAsUser: 1000
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
@@ -61,26 +57,25 @@ spec:
               name: http
           envFrom:
             - configMapRef:
-                name: sentinel-config
+                name: merge-sentinel-config
           env:
             - name: GITHUB_APP_ID
               valueFrom:
                 secretKeyRef:
-                  name: sentinel-github
+                  name: merge-sentinel-github
                   key: GITHUB_APP_ID
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: sentinel-github
+                  name: merge-sentinel-github
                   key: GITHUB_WEBHOOK_SECRET
             - name: GITHUB_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: sentinel-github
+                  name: merge-sentinel-github
                   key: GITHUB_PRIVATE_KEY
           securityContext:
             runAsNonRoot: true
-            runAsUser: 1000
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
@@ -113,4 +108,4 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: sentinel-data
+            claimName: merge-sentinel-data

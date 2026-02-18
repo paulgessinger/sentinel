@@ -1,11 +1,11 @@
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: sentinel
+  name: merge-sentinel
 spec:
   to:
     kind: Service
-    name: sentinel
+    name: merge-sentinel
   port:
     targetPort: http
   tls:

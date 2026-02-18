@@ -13,17 +13,17 @@
 ### 1. Create the project
 
 ```bash
-oc new-project sentinel
+oc new-project merge-sentinel
 ```
 
 ### 2. Create the GitHub credentials secret
 
 ```bash
-oc create secret generic sentinel-github \
+oc create secret generic merge-sentinel-github \
   --from-literal=GITHUB_APP_ID="<APP_ID>" \
   --from-literal=GITHUB_WEBHOOK_SECRET="<WEBHOOK_SECRET>" \
   --from-file=GITHUB_PRIVATE_KEY=path/to/private-key.pem \
-  -n sentinel
+  -n merge-sentinel
 ```
 
 This secret is never committed to the repo. Re-run the command if credentials rotate.
@@ -38,7 +38,7 @@ This builds and pushes the image, applies all files in `deploy/`, and rolls out
 the deployment. OpenShift will auto-assign a hostname for the Route; retrieve it with:
 
 ```bash
-oc get route sentinel -n sentinel -o jsonpath='{.spec.host}'
+oc get route merge-sentinel -n merge-sentinel -o jsonpath='{.spec.host}'
 ```
 
 ### 4. Configure the GitHub App webhook
@@ -74,14 +74,14 @@ just apply
 ## Rollback
 
 ```bash
-oc rollout undo deployment/sentinel-web -n sentinel
+oc rollout undo deployment/merge-sentinel-web -n merge-sentinel
 ```
 
 To roll back to a specific revision:
 
 ```bash
-oc rollout history deployment/sentinel-web -n sentinel
-oc rollout undo deployment/sentinel-web --to-revision=<N> -n sentinel
+oc rollout history deployment/merge-sentinel-web -n merge-sentinel
+oc rollout undo deployment/merge-sentinel-web --to-revision=<N> -n merge-sentinel
 ```
 
 ---
@@ -95,7 +95,7 @@ idempotent — no action needed on normal deploys.
 To run migrations manually:
 
 ```bash
-oc exec -n sentinel deployment/sentinel-web -- sentinel migrate-webhook-db
+oc exec -n merge-sentinel deployment/merge-sentinel-web -- sentinel migrate-webhook-db
 ```
 
 ---
@@ -104,16 +104,16 @@ oc exec -n sentinel deployment/sentinel-web -- sentinel migrate-webhook-db
 
 ```bash
 # Pod status
-oc get pods -n sentinel
+oc get pods -n merge-sentinel
 
 # Logs (follow)
-oc logs -n sentinel deployment/sentinel-web -c web -f
+oc logs -n merge-sentinel deployment/merge-sentinel-web -c web -f
 
 # Health check
-curl https://$(oc get route sentinel -n sentinel -o jsonpath='{.spec.host}')/status
+curl https://$(oc get route merge-sentinel -n merge-sentinel -o jsonpath='{.spec.host}')/status
 
 # Prometheus metrics
-curl https://$(oc get route sentinel -n sentinel -o jsonpath='{.spec.host}')/metrics
+curl https://$(oc get route merge-sentinel -n merge-sentinel -o jsonpath='{.spec.host}')/metrics
 ```
 
 ---
@@ -121,11 +121,11 @@ curl https://$(oc get route sentinel -n sentinel -o jsonpath='{.spec.host}')/met
 ## Uninstall
 
 ```bash
-oc delete -f deploy/ -n sentinel
-oc delete secret sentinel-github -n sentinel
+oc delete -f deploy/ -n merge-sentinel
+oc delete secret merge-sentinel-github -n merge-sentinel
 
 # PVC is not deleted by the above — remove manually if desired:
-oc delete pvc sentinel-data -n sentinel
+oc delete pvc merge-sentinel-data -n merge-sentinel
 ```
 
 ---
@@ -136,5 +136,5 @@ Non-sensitive settings live in [deploy/configmap.yaml](deploy/configmap.yaml).
 Edit the file and run `just apply` to pick up changes (a pod restart is needed
 for the new values to take effect).
 
-Sensitive values (GitHub credentials) are in the `sentinel-github` Secret
+Sensitive values (GitHub credentials) are in the `merge-sentinel-github` Secret
 created during setup. See the one-time setup section to recreate it.

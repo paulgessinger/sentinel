@@ -19,19 +19,28 @@ image: image_build
     docker push {{image_url}}:latest
 
 
-oc_namespace := "sentinel"
+oc_namespace := "merge-sentinel"
 
 # Apply all manifests (idempotent; run after changing files in deploy/)
 apply:
     oc apply -f deploy/ -n {{oc_namespace}}
 
+rollout:
+    oc rollout status deployment/merge-sentinel-web -n {{oc_namespace}}
+
+restart:
+    oc rollout restart deployment/merge-sentinel-web -n {{oc_namespace}}
+
 # Build image, apply manifests, roll out new version
 deploy: image apply
-    oc set image deployment/sentinel-web web={{image_url}}:{{sha}} -n {{oc_namespace}}
-    oc rollout status deployment/sentinel-web -n {{oc_namespace}}
+    oc set image deployment/merge-sentinel-web web={{image_url}}:{{sha}} -n {{oc_namespace}}
+    oc rollout status deployment/merge-sentinel-web -n {{oc_namespace}}
 
 docker: image_build
     docker run --rm -it --env-file .env.dev -e DISKCACHE_DIR=/cache -v$PWD/cache:/cache -p8080:8080 {{image_url}}:{{sha}}
 
 smee:
     smee -u https://smee.io/k8smrd9B27JqKRBg -t http://localhost:8080/webhook
+
+smee-remote:
+    smee -u https://smee.io/k8smrd9B27JqKRBg -t https://merge-sentinel.app.cern.ch/webhook
