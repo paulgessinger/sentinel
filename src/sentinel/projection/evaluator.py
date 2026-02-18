@@ -47,6 +47,17 @@ class _RulePullRequestLike:
     base: _RuleBaseRef
 
 
+@dataclass(frozen=True)
+class _ComputedEvaluation:
+    check_by_name: Dict[str, Dict[str, Any]]
+    result_items: Dict[str, _ResultItem]
+    failures: list[_ResultItem]
+    explicit_failures: list[_ResultItem]
+    in_progress: list[_ResultItem]
+    required_successes: list[_ResultItem]
+    missing_pattern_failures: list[str]
+
+
 class ProjectionEvaluator:
     def __init__(
         self,
@@ -60,6 +71,9 @@ class ProjectionEvaluator:
         manual_refresh_action_label: str,
         manual_refresh_action_description: str,
         path_rule_fallback_enabled: bool,
+        auto_refresh_on_missing_enabled: bool,
+        auto_refresh_on_missing_stale_seconds: int,
+        auto_refresh_on_missing_cooldown_seconds: int,
         config_cache_seconds: int,
         pr_files_cache_seconds: int,
         api_factory: Callable[[int], Awaitable[API]],
@@ -73,11 +87,19 @@ class ProjectionEvaluator:
         self.manual_refresh_action_label = manual_refresh_action_label
         self.manual_refresh_action_description = manual_refresh_action_description
         self.path_rule_fallback_enabled = path_rule_fallback_enabled
+        self.auto_refresh_on_missing_enabled = auto_refresh_on_missing_enabled
+        self.auto_refresh_on_missing_stale_seconds = max(
+            0, int(auto_refresh_on_missing_stale_seconds)
+        )
+        self.auto_refresh_on_missing_cooldown_seconds = max(
+            0, int(auto_refresh_on_missing_cooldown_seconds)
+        )
         self.config_cache_seconds = config_cache_seconds
         self.pr_files_cache_seconds = pr_files_cache_seconds
         self.api_factory = api_factory
         self._config_cache: Dict[int, tuple[float, Config | None]] = {}
         self._pr_files_cache: Dict[tuple[int, int, str], tuple[float, List[str]]] = {}
+        self._auto_refresh_missing_cooldown: Dict[str, float] = {}
 
     async def evaluate_and_publish(
         self, trigger: ProjectionTrigger
@@ -217,109 +239,46 @@ class ProjectionEvaluator:
             len(status_rows),
         )
 
-        check_rows = [
-            row
-            for row in check_rows
-            if not (
-                row.get("app_id") == self.app_id
-                and row.get("name") == self.check_run_name
+        computed = self._evaluate_rows(
+            check_rows=check_rows,
+            workflow_rows=workflow_rows,
+            status_rows=status_rows,
+            rules=rules,
+        )
+        if self._should_auto_refresh_on_missing(
+            trigger=trigger,
+            pr_row=pr_row,
+            missing_pattern_failures=computed.missing_pattern_failures,
+            explicit_failures=computed.explicit_failures,
+        ):
+            logger.info(
+                "Projection eval auto-refreshing from API repo=%s sha=%s missing_patterns=%d",
+                trigger.repo_full_name,
+                head_sha,
+                len(computed.missing_pattern_failures),
             )
-        ]
-
-        workflow_name_by_suite = {
-            row.get("check_suite_id"): row.get("name")
-            for row in workflow_rows
-            if row.get("check_suite_id") is not None and row.get("name")
-        }
-
-        normalized_checks = []
-        for row in check_rows:
-            name = row["name"]
-            check_suite_id = row.get("check_suite_id")
-            workflow_name = workflow_name_by_suite.get(check_suite_id)
-            if workflow_name:
-                name = f"{workflow_name} / {name}"
-            normalized_checks.append({**row, "normalized_name": name})
-
-        check_by_name: Dict[str, Dict[str, Any]] = {}
-        for row in normalized_checks:
-            name = row["normalized_name"]
-            existing = check_by_name.get(name)
-            if existing is None:
-                check_by_name[name] = row
-                continue
-            row_completed = row.get("completed_at")
-            existing_completed = existing.get("completed_at")
-            if row_completed is None or existing_completed is None:
-                check_by_name[name] = row
-                continue
-            if row_completed > existing_completed:
-                check_by_name[name] = row
-
-        result_items: Dict[str, _ResultItem] = {}
-        for row in check_by_name.values():
-            item = _ResultItem(
-                name=row["normalized_name"],
-                status=self._status_from_check_run(row),
-                required=False,
+            sentinel_projection_fallback_total.labels(
+                kind="missing_refresh", result="triggered"
+            ).inc()
+            check_rows, workflow_rows, status_rows = await self._load_head_rows_from_api(
+                api=api,
+                trigger=trigger,
             )
-            result_items[item.name] = item
-
-        for row in status_rows:
-            context = row["context"]
-            if context == self.check_run_name:
-                continue
-            state = row["state"]
-            status = "failure" if state in ("failure", "error") else state
-            if status not in ("success", "pending", "failure"):
-                continue
-            result_items[context] = _ResultItem(
-                name=context, status=status, required=False
+            computed = self._evaluate_rows(
+                check_rows=check_rows,
+                workflow_rows=workflow_rows,
+                status_rows=status_rows,
+                rules=rules,
             )
 
-        for rule in rules:
-            if rule.required_checks:
-                seen = set()
-                for name, item in list(result_items.items()):
-                    if name in rule.required_checks:
-                        result_items[name] = _ResultItem(
-                            name=item.name, status=item.status, required=True
-                        )
-                        seen.add(name)
-                for missing in rule.required_checks - seen:
-                    result_items[missing] = _ResultItem(
-                        name=missing, status="missing", required=True
-                    )
-
-            for pattern in rule.required_pattern:
-                matched = False
-                for name, item in list(result_items.items()):
-                    if fnmatch(name, pattern):
-                        result_items[name] = _ResultItem(
-                            name=item.name, status=item.status, required=True
-                        )
-                        matched = True
-                if not matched:
-                    result_items[pattern] = _ResultItem(
-                        name=pattern, status="failure", required=True
-                    )
-
-        failures = [item for item in result_items.values() if item.status == "failure"]
-        in_progress = [
-            item
-            for item in result_items.values()
-            if item.required and item.status in ("pending", "missing")
-        ]
-        required_successes = [
-            item
-            for item in result_items.values()
-            if item.required and item.status == "success"
-        ]
+        failures = computed.failures
+        in_progress = computed.in_progress
+        required_successes = computed.required_successes
         logger.debug(
             "Projection eval aggregate repo=%s sha=%s items=%d failures=%d required_pending=%d required_success=%d",
             trigger.repo_full_name,
             head_sha,
-            len(result_items),
+            len(computed.result_items),
             len(failures),
             len(in_progress),
             len(required_successes),
@@ -370,7 +329,7 @@ class ProjectionEvaluator:
             "| Check | Status | Required? |",
             "| --- | --- | --- |",
         ]
-        for item in sorted(result_items.values(), key=lambda item: item.name):
+        for item in sorted(computed.result_items.values(), key=lambda item: item.name):
             text_lines.append(
                 f"| {item.name} | {item.status} | {'yes' if item.required else 'no'} |"
             )
@@ -425,9 +384,9 @@ class ProjectionEvaluator:
         )
 
         now_iso = utcnow_iso()
-        started_at = self._min_started_at(check_by_name.values())
+        started_at = self._min_started_at(computed.check_by_name.values())
         completed_at = (
-            self._max_completed_at(check_by_name.values())
+            self._max_completed_at(computed.check_by_name.values())
             if new_status == "completed"
             else None
         )
@@ -727,6 +686,181 @@ class ProjectionEvaluator:
                 identifier=self.manual_refresh_action_identifier,
             )
         ]
+
+    def _evaluate_rows(
+        self,
+        *,
+        check_rows: list[Dict[str, Any]],
+        workflow_rows: list[Dict[str, Any]],
+        status_rows: list[Dict[str, Any]],
+        rules: list[Any],
+    ) -> _ComputedEvaluation:
+        filtered_check_rows = [
+            row
+            for row in check_rows
+            if not (
+                row.get("app_id") == self.app_id
+                and row.get("name") == self.check_run_name
+            )
+        ]
+        workflow_name_by_suite = {
+            row.get("check_suite_id"): row.get("name")
+            for row in workflow_rows
+            if row.get("check_suite_id") is not None and row.get("name")
+        }
+
+        normalized_checks = []
+        for row in filtered_check_rows:
+            name = row["name"]
+            check_suite_id = row.get("check_suite_id")
+            workflow_name = workflow_name_by_suite.get(check_suite_id)
+            if workflow_name:
+                name = f"{workflow_name} / {name}"
+            normalized_checks.append({**row, "normalized_name": name})
+
+        check_by_name: Dict[str, Dict[str, Any]] = {}
+        for row in normalized_checks:
+            name = row["normalized_name"]
+            existing = check_by_name.get(name)
+            if existing is None:
+                check_by_name[name] = row
+                continue
+            row_completed = row.get("completed_at")
+            existing_completed = existing.get("completed_at")
+            if row_completed is None or existing_completed is None:
+                check_by_name[name] = row
+                continue
+            if row_completed > existing_completed:
+                check_by_name[name] = row
+
+        result_items: Dict[str, _ResultItem] = {}
+        for row in check_by_name.values():
+            item = _ResultItem(
+                name=row["normalized_name"],
+                status=self._status_from_check_run(row),
+                required=False,
+            )
+            result_items[item.name] = item
+
+        for row in status_rows:
+            context = row["context"]
+            if context == self.check_run_name:
+                continue
+            state = row["state"]
+            status = "failure" if state in ("failure", "error") else state
+            if status not in ("success", "pending", "failure"):
+                continue
+            result_items[context] = _ResultItem(
+                name=context, status=status, required=False
+            )
+
+        observed_names = set(result_items.keys())
+        missing_pattern_failures: list[str] = []
+        for rule in rules:
+            if rule.required_checks:
+                seen = set()
+                for name, item in list(result_items.items()):
+                    if name in rule.required_checks:
+                        result_items[name] = _ResultItem(
+                            name=item.name, status=item.status, required=True
+                        )
+                        seen.add(name)
+                for missing in rule.required_checks - seen:
+                    result_items[missing] = _ResultItem(
+                        name=missing, status="missing", required=True
+                    )
+
+            for pattern in rule.required_pattern:
+                matched = False
+                for name, item in list(result_items.items()):
+                    if fnmatch(name, pattern):
+                        result_items[name] = _ResultItem(
+                            name=item.name, status=item.status, required=True
+                        )
+                        matched = True
+                if not matched:
+                    result_items[pattern] = _ResultItem(
+                        name=pattern, status="failure", required=True
+                    )
+                    missing_pattern_failures.append(pattern)
+
+        failures = [item for item in result_items.values() if item.status == "failure"]
+        explicit_failures = [item for item in failures if item.name in observed_names]
+        in_progress = [
+            item
+            for item in result_items.values()
+            if item.required and item.status in ("pending", "missing")
+        ]
+        required_successes = [
+            item
+            for item in result_items.values()
+            if item.required and item.status == "success"
+        ]
+        return _ComputedEvaluation(
+            check_by_name=check_by_name,
+            result_items=result_items,
+            failures=failures,
+            explicit_failures=explicit_failures,
+            in_progress=in_progress,
+            required_successes=required_successes,
+            missing_pattern_failures=missing_pattern_failures,
+        )
+
+    def _should_auto_refresh_on_missing(
+        self,
+        *,
+        trigger: ProjectionTrigger,
+        pr_row: Dict[str, Any],
+        missing_pattern_failures: list[str],
+        explicit_failures: list[_ResultItem],
+    ) -> bool:
+        if trigger.force_api_refresh:
+            sentinel_projection_fallback_total.labels(
+                kind="missing_refresh", result="skip_force_api_refresh"
+            ).inc()
+            return False
+        if not self.auto_refresh_on_missing_enabled:
+            sentinel_projection_fallback_total.labels(
+                kind="missing_refresh", result="skip_disabled"
+            ).inc()
+            return False
+        if not missing_pattern_failures:
+            sentinel_projection_fallback_total.labels(
+                kind="missing_refresh", result="skip_no_missing"
+            ).inc()
+            return False
+        if explicit_failures:
+            sentinel_projection_fallback_total.labels(
+                kind="missing_refresh", result="skip_explicit_failure"
+            ).inc()
+            return False
+
+        pr_updated_at = self._parse_dt(pr_row.get("updated_at"))
+        if pr_updated_at is None:
+            sentinel_projection_fallback_total.labels(
+                kind="missing_refresh", result="skip_no_pr_updated_at"
+            ).inc()
+            return False
+        pr_age_seconds = (
+            datetime.now(timezone.utc) - pr_updated_at
+        ).total_seconds()
+        if pr_age_seconds < self.auto_refresh_on_missing_stale_seconds:
+            sentinel_projection_fallback_total.labels(
+                kind="missing_refresh", result="skip_recent_pr"
+            ).inc()
+            return False
+
+        now = time.monotonic()
+        retry_after = self._auto_refresh_missing_cooldown.get(trigger.key, 0.0)
+        if retry_after > now:
+            sentinel_projection_fallback_total.labels(
+                kind="missing_refresh", result="skip_cooldown"
+            ).inc()
+            return False
+        self._auto_refresh_missing_cooldown[trigger.key] = (
+            now + self.auto_refresh_on_missing_cooldown_seconds
+        )
+        return True
 
     async def _load_head_rows_from_api(
         self, *, api: API, trigger: ProjectionTrigger

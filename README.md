@@ -34,6 +34,11 @@ and fragment refresh endpoint `/state/table`. PR detail pages are available at
 - `PROJECTION_CONFIG_CACHE_SECONDS` (default: `300`)
 - `PROJECTION_PR_FILES_CACHE_SECONDS` (default: `86400`)
 - `PROJECTION_PATH_RULE_FALLBACK_ENABLED` (default: `true`)
+- `PROJECTION_AUTO_REFRESH_ON_MISSING_ENABLED` (default: `true`; when evaluation
+  fails only due to missing required-pattern checks and PR projection is stale,
+  refresh checks/workflows/statuses from API once before deciding)
+- `PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS` (default: `1800`)
+- `PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS` (default: `300`)
 - `CHECK_RUN_NAME_FILTER` (optional regex; matching `check_run` names and `status`
   contexts are skipped before persistence/dispatch)
 - `WEBHOOK_FILTER_SELF_APP_ID` (default: `true`; skip events whose source app id

@@ -140,6 +140,16 @@ class _FakeAPIRefresh(_FakeAPI):
         )
 
 
+class _FakeAPIRefreshTracking(_FakeAPIRefresh):
+    def __init__(self, *, config_yaml: str):
+        super().__init__(config_yaml=config_yaml)
+        self.refresh_calls = 0
+
+    async def get_repository(self, _repo_url: str):
+        self.refresh_calls += 1
+        return await super().get_repository(_repo_url)
+
+
 def _check_run_payload(conclusion: str = "success") -> dict:
     return {
         "action": "completed",
@@ -247,6 +257,9 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
         manual_refresh_action_label="Re-evaluate now",
         manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
         path_rule_fallback_enabled=True,
+        auto_refresh_on_missing_enabled=True,
+        auto_refresh_on_missing_stale_seconds=1800,
+        auto_refresh_on_missing_cooldown_seconds=300,
         config_cache_seconds=300,
         pr_files_cache_seconds=86400,
         api_factory=api_factory,
@@ -322,6 +335,9 @@ async def test_projection_second_identical_eval_is_unchanged(tmp_path):
         manual_refresh_action_label="Re-evaluate now",
         manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
         path_rule_fallback_enabled=True,
+        auto_refresh_on_missing_enabled=True,
+        auto_refresh_on_missing_stale_seconds=1800,
+        auto_refresh_on_missing_cooldown_seconds=300,
         config_cache_seconds=300,
         pr_files_cache_seconds=86400,
         api_factory=api_factory,
@@ -381,6 +397,9 @@ async def test_projection_publish_persists_real_id(tmp_path):
         manual_refresh_action_label="Re-evaluate now",
         manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
         path_rule_fallback_enabled=True,
+        auto_refresh_on_missing_enabled=True,
+        auto_refresh_on_missing_stale_seconds=1800,
+        auto_refresh_on_missing_cooldown_seconds=300,
         config_cache_seconds=300,
         pr_files_cache_seconds=86400,
         api_factory=api_factory,
@@ -451,6 +470,9 @@ async def test_projection_publish_skips_when_pr_closed_during_evaluation(tmp_pat
         manual_refresh_action_label="Re-evaluate now",
         manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
         path_rule_fallback_enabled=True,
+        auto_refresh_on_missing_enabled=True,
+        auto_refresh_on_missing_stale_seconds=1800,
+        auto_refresh_on_missing_cooldown_seconds=300,
         config_cache_seconds=300,
         pr_files_cache_seconds=86400,
         api_factory=api_factory,
@@ -511,6 +533,9 @@ async def test_force_api_refresh_persists_projection_rows(tmp_path):
         manual_refresh_action_label="Re-evaluate now",
         manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
         path_rule_fallback_enabled=True,
+        auto_refresh_on_missing_enabled=True,
+        auto_refresh_on_missing_stale_seconds=1800,
+        auto_refresh_on_missing_cooldown_seconds=300,
         config_cache_seconds=300,
         pr_files_cache_seconds=86400,
         api_factory=api_factory,
@@ -544,3 +569,75 @@ async def test_force_api_refresh_persists_projection_rows(tmp_path):
     assert len(status_rows) == 1
     assert status_rows[0]["context"] == "lint"
     assert status_rows[0]["last_delivery_id"] == "d-api-1"
+
+
+@pytest.mark.asyncio
+async def test_auto_refresh_on_missing_pattern_for_stale_pr(tmp_path):
+    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store.initialize()
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=_pull_request_payload(),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=_check_run_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPIRefreshTracking(
+        config_yaml="rules:\n  - required_pattern: ['Builds / *']\n"
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = ProjectionEvaluator(
+        store=store,
+        app_id=2877723,
+        check_run_name="merge-sentinel",
+        publish_enabled=False,
+        manual_refresh_action_enabled=True,
+        manual_refresh_action_identifier="refresh_from_api",
+        manual_refresh_action_label="Re-evaluate now",
+        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
+        path_rule_fallback_enabled=True,
+        auto_refresh_on_missing_enabled=True,
+        auto_refresh_on_missing_stale_seconds=60,
+        auto_refresh_on_missing_cooldown_seconds=300,
+        config_cache_seconds=300,
+        pr_files_cache_seconds=86400,
+        api_factory=api_factory,
+    )
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-auto-refresh-1",
+            event="check_run",
+        )
+    )
+
+    assert result.result == "dry_run"
+    assert api.refresh_calls == 1
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        row = conn.execute(
+            """
+            SELECT conclusion, output_summary
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ?
+            LIMIT 1
+            """,
+            (11, "a" * 40, "merge-sentinel"),
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == "success"
+    assert "Builds / tests" in row[1]

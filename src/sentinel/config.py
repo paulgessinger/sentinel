@@ -164,3 +164,17 @@ PROJECTION_PR_FILES_CACHE_SECONDS: int = int(
 PROJECTION_PATH_RULE_FALLBACK_ENABLED: bool = (
     os.environ.get("PROJECTION_PATH_RULE_FALLBACK_ENABLED", "true").lower() == "true"
 )
+# Auto-refresh projections from API when evaluation fails only due to missing
+# required-pattern matches and the PR projection appears stale.
+PROJECTION_AUTO_REFRESH_ON_MISSING_ENABLED: bool = (
+    os.environ.get("PROJECTION_AUTO_REFRESH_ON_MISSING_ENABLED", "true").lower()
+    == "true"
+)
+# Minimum PR projection age before missing-pattern auto-refresh is attempted.
+PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS: int = int(
+    os.environ.get("PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS", 1800)
+)
+# Cooldown per (repo_id, head_sha) between automatic missing-pattern refreshes.
+PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS: int = int(
+    os.environ.get("PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS", 300)
+)
