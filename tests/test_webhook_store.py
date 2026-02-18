@@ -415,7 +415,9 @@ def test_retention_prunes_old_events_only(tmp_path):
 
     with sqlite3.connect(str(db_path)) as conn:
         remaining = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
-        projected = conn.execute("SELECT COUNT(*) FROM check_runs_current").fetchone()[0]
+        projected = conn.execute("SELECT COUNT(*) FROM check_runs_current").fetchone()[
+            0
+        ]
 
     assert remaining == 1
     assert projected == 1
@@ -609,7 +611,9 @@ def test_prune_old_projections_uses_completed_and_active_windows(tmp_path):
     assert counts["pr_heads_current:active"] == 0
 
     with sqlite3.connect(str(db_path)) as conn:
-        run_count = conn.execute("SELECT COUNT(*) FROM check_runs_current").fetchone()[0]
+        run_count = conn.execute("SELECT COUNT(*) FROM check_runs_current").fetchone()[
+            0
+        ]
         status_count = conn.execute(
             "SELECT COUNT(*) FROM commit_status_current"
         ).fetchone()[0]
@@ -809,7 +813,9 @@ def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):
     store.initialize()
 
     head_sha = "c" * 40
-    tracked_pr_payload = make_pull_request_payload(head_sha=head_sha, title="Tracked PR")
+    tracked_pr_payload = make_pull_request_payload(
+        head_sha=head_sha, title="Tracked PR"
+    )
     store.persist_event(
         delivery_id="pr-1",
         event="pull_request",

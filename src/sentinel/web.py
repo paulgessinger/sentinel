@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 import logging
 import logging.config
 from pathlib import Path
@@ -42,6 +42,7 @@ from sentinel.storage import WebhookStore
 logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s - %(message)s", level=logging.INFO
 )
+
 
 async def client_for_installation(app, installation_id):
     gh_pre = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
@@ -136,7 +137,7 @@ def is_projection_manual_refresh_requested(app: Sanic, event: sansio.Event) -> b
         return False
     if check_run.get("name") != check_run_name:
         return False
-    source_app_id = ((check_run.get("app") or {}).get("id"))
+    source_app_id = (check_run.get("app") or {}).get("id")
     return source_app_id == github_app_id
 
 
@@ -247,7 +248,9 @@ async def process_github_event(
 
     name_filter = getattr(getattr(app, "config", None), "CHECK_RUN_NAME_FILTER", None)
 
-    if (not manual_refresh_requested) and should_skip_event_by_name_filter(event, name_filter):
+    if (not manual_refresh_requested) and should_skip_event_by_name_filter(
+        event, name_filter
+    ):
         webhook_skipped_counter.labels(event=event.event, name=name).inc()
         logger.debug(
             "Skipping webhook event %s name=%s due to CHECK_RUN_NAME_FILTER=%s",
@@ -284,7 +287,9 @@ async def process_github_event(
                 }
             )
         except Exception:  # noqa: BLE001
-            logger.debug("Failed to publish state update for webhook event", exc_info=True)
+            logger.debug(
+                "Failed to publish state update for webhook event", exc_info=True
+            )
 
     if (
         projection_eval_enabled(app)
@@ -520,7 +525,6 @@ def create_app():
     @app.ext.template("queue.html.j2")
     async def queue(request):
         with get_cache() as dcache:
-
             cooldown = timedelta(seconds=config.PR_TIMEOUT)
             data = []
             for item in dcache.deque:
@@ -532,7 +536,9 @@ def create_app():
                         (
                             humanize.naturaltime(last_dt + cooldown)
                             if last_dt is not None
-                            else None if delta is not None else None
+                            else None
+                            if delta is not None
+                            else None
                         ),
                     )
                 )

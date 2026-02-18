@@ -1,45 +1,28 @@
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from fnmatch import fnmatch
-import hmac
-from importlib.resources import is_resource, path
 import io
 import logging
-from multiprocessing.sharedctypes import Value
-from tabnanny import check
-from tracemalloc import start
-from typing import Any, AsyncIterable, AsyncIterator, Dict, List, Mapping, Set
-import json
-from typing_extensions import Required
-import gidgethub
-import dateutil.parser
-from pprint import pprint
-import textwrap
-import io
-from aiolimiter import AsyncLimiter
+from typing import Dict, List, Protocol, Set
 import aiocache
 import re
 
-from gidgethub.routing import Router
-from sanic.log import logger
-from sanic import Sanic
-from gidgethub.abc import GitHubAPI
-from gidgethub.sansio import Event
-from gidgethub import aiohttp as gh_aiohttp
 from gidgethub import BadRequest
-import aiohttp
-import yaml
-from gidgethub.apps import get_installation_access_token, get_jwt
-import pydantic
-from tabulate import tabulate
+from gidgethub import aiohttp as gh_aiohttp
+from gidgethub.apps import get_installation_access_token
+from gidgethub.routing import Router
+from gidgethub.sansio import Event
 import humanize
-import pytz
-import diskcache
+import pydantic
+from sanic import Sanic
+from sanic.log import logger
+from tabulate import tabulate
+import yaml
 
 from sentinel import config as app_config
-from sentinel.cache import Cache, QueueItem, get_cache
+from sentinel.cache import QueueItem, get_cache
 from sentinel.github.api import API
 from sentinel.github.model import (
     ActionsJob,
@@ -146,6 +129,16 @@ class InvalidConfig(Exception):
         super().__init__(*args, **kwargs)
 
 
+class _BaseRefLike(Protocol):
+    @property
+    def ref(self) -> str: ...
+
+
+class _PullRequestLike(Protocol):
+    @property
+    def base(self) -> _BaseRefLike: ...
+
+
 @aiocache.cached(ttl=app_config.ACCESS_TOKEN_TTL, key_builder=lambda fn, gh, id: id)
 async def get_access_token(gh: gh_aiohttp.GitHubAPI, installation_id: int) -> str:
     logger.debug("Getting NEW installation access token for %d", installation_id)
@@ -178,7 +171,7 @@ async def get_config_from_repo(api: API, repo: Repository) -> Config | None:
 
         try:
             return Config() if data is None else Config.model_validate(data)
-        except pydantic.error_wrappers.ValidationError as e:
+        except pydantic.ValidationError as e:
             raise InvalidConfig(
                 str(e), raw_config=decoded_content, source_url=content.html_url
             )
@@ -200,14 +193,17 @@ async def populate_check_run(
 
     changed_files = None
 
-    is_gha = lambda cr: cr.app.id == 15368 and cr.app.slug == "github-actions"
+    def is_gha(check_run: CheckRun) -> bool:
+        app = check_run.app
+        return app is not None and app.id == 15368 and app.slug == "github-actions"
 
     gha_runs = [cr for cr in check_runs if is_gha(cr)]
+    gha_job_ids = [cr.id for cr in gha_runs if cr.id is not None]
 
     actions_jobs: Dict[int, ActionsJob] = {
         j.id: j
         for j in await asyncio.gather(
-            *(api.get_actions_job(pr.base.repo.url, r.id) for r in gha_runs)
+            *(api.get_actions_job(pr.base.repo.url, run_id) for run_id in gha_job_ids)
         )
     }
 
@@ -241,13 +237,13 @@ async def populate_check_run(
     #     print("-", ar.id, ar.created_at, ar.name, ar.status, ar.conclusion)
 
     for cr in check_runs:
-        if cr.id in actions_jobs:
+        if cr.id is not None and cr.id in actions_jobs:
             job = actions_jobs[cr.id]
             run = actions_runs[job.run_id]
             cr.name = f"{run.name} / {cr.name}"
 
     for cr in list(check_runs):
-        if job := actions_jobs.get(cr.id):
+        if cr.id is not None and (job := actions_jobs.get(cr.id)):
             run = actions_runs[job.run_id]
             if run.event not in ("pull_request", "pull_request_target"):
                 logger.debug(
@@ -287,8 +283,6 @@ async def populate_check_run(
     if logger.getEffectiveLevel() == logging.DEBUG:
         for s in statuses:
             logger.debug("- %d : [%s] %s", s.id, s.updated_at, s.context)
-
-    check_runs_by_name = {cr.name: cr for cr in check_runs}
 
     logger.debug("Considered check runs:")
     if logger.getEffectiveLevel() == logging.DEBUG:
@@ -411,14 +405,17 @@ async def populate_check_run(
                 duration = (
                     "completed **"
                     + humanize.naturaltime(
-                        ri.completed_at.replace(tzinfo=None), when=datetime.utcnow()
+                        ri.completed_at.astimezone(timezone.utc),
+                        when=datetime.now(timezone.utc),
                     )
                     + "** in **"
                     + humanize.naturaldelta(ri.completed_at - ri.started_at)
                     + "**"
                 )
             else:
-                duration = datetime.utcnow() - ri.started_at.replace(tzinfo=None)
+                duration = datetime.now(timezone.utc) - ri.started_at.replace(
+                    tzinfo=timezone.utc
+                )
                 duration = "running for **" + humanize.naturaldelta(duration) + "**"
 
         if ri.status == ResultStatus.neutral:
@@ -438,7 +435,7 @@ async def populate_check_run(
         summary += [f":x: failed: {', '.join(str(ri) for ri in failures)}"]
 
     if len(in_progress) > 0:
-        s = f":yellow_circle: waiting for: "
+        s = ":yellow_circle: waiting for: "
         names = [f"{ri}" for ri in in_progress]
         summary += [s + ", ".join(sorted(names))]
     if len(successful) > 0:
@@ -493,7 +490,7 @@ async def populate_check_run(
 
 
 def determine_rules(
-    changed_files: List[str], pr: PullRequest, rules: List[Rule]
+    changed_files: List[str], pr: _PullRequestLike, rules: List[Rule]
 ) -> List[Rule]:
     selected_rules: List[Rule] = []
     for idx, rule in enumerate(rules, start=1):
@@ -517,7 +514,6 @@ def determine_rules(
                 continue
 
         if rule.paths is not None or rule.paths_ignore is not None:
-
             paths = rule.paths or []
             paths_ignore = rule.paths_ignore or []
 
@@ -576,7 +572,7 @@ async def process_pull_request(pr: PullRequest, api: API):
         for cs in check_suites:
             logger.debug("- %d", cs.id)
 
-    async def load_check_runs(cs: CheckSuite) -> AsyncIterator[CheckRun]:
+    async def load_check_runs(cs: CheckSuite) -> list[CheckRun]:
         api.call_count += 1
         check_runs = [
             CheckRun.model_validate(raw)
@@ -611,7 +607,11 @@ async def process_pull_request(pr: PullRequest, api: API):
     # check_runs = {cr for cr in check_runs if len(cr.pull_requests) > 0}
     # logger.debug("Have %d check runs after PR filter", len(check_runs))
 
-    check_runs = {cr for cr in check_runs if cr.app.id != app_config.GITHUB_APP_ID}
+    check_runs = {
+        cr
+        for cr in check_runs
+        if cr.app is None or cr.app.id != app_config.GITHUB_APP_ID
+    }
     logger.debug("Have %d check runs after app id filter", len(check_runs))
 
     # check_runs = list(
@@ -624,7 +624,7 @@ async def process_pull_request(pr: PullRequest, api: API):
     check_run = None
 
     for cr in all_check_runs:
-        if cr.app.id == app_config.GITHUB_APP_ID:
+        if cr.app is not None and cr.app.id == app_config.GITHUB_APP_ID:
             check_run = cr
             break
 
@@ -755,7 +755,7 @@ def create_router():
     async def on_check_run(event: Event, api: API, app: Sanic):
         check_run = CheckRun.model_validate(event.data["check_run"])
 
-        if check_run.app.id == app_config.GITHUB_APP_ID:
+        if check_run.app is not None and check_run.app.id == app_config.GITHUB_APP_ID:
             logger.debug("Check run from us, skip handling")
             webhook_skipped_counter.labels(name=check_run.name, event="check_run").inc()
             return
@@ -775,11 +775,9 @@ def create_router():
         repo = Repository.model_validate(event.data["repository"])
 
         with get_cache() as dcache:
-
             cr_key = f"check_run_{check_run.head_sha}_{check_run.name}"
 
             async with dcache.lock:
-
                 # check if we've seen this check run for this commit with this status
                 cr_hit: CheckRun
                 if cr_hit := dcache.get(cr_key):

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from prometheus_client import core, Counter, Gauge
+from prometheus_client import Counter, Gauge
 
 request_counter = Counter(
     "sentinel_num_req", "Total number of requests", labelnames=["path"]

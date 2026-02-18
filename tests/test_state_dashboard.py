@@ -1,6 +1,8 @@
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from sanic import Request, Sanic
 
 from sentinel.storage import WebhookStore
 from sentinel.state_dashboard import (
@@ -25,7 +27,7 @@ def test_state_query_params_parses_and_clamps():
             "include_closed": ["0"],
         }
     )
-    page, page_size, repo, include_closed = _state_query_params(request)
+    page, page_size, repo, include_closed = _state_query_params(cast(Request, request))
     assert page == 1
     assert page_size == 200
     assert repo == "org/repo"
@@ -52,7 +54,7 @@ def test_state_query_params_include_closed_uses_all_values_when_duplicated():
             return list(self._data.get(key, []))
 
     request = SimpleNamespace(args=_FakeArgs())
-    page, page_size, repo, include_closed = _state_query_params(request)
+    page, page_size, repo, include_closed = _state_query_params(cast(Request, request))
     assert page == 1
     assert page_size == 100
     assert repo is None
@@ -114,7 +116,7 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
     )
 
     context = _state_dashboard_context(
-        app,
+        cast(Sanic, app),
         page=1,
         page_size=100,
         repo_filter=None,
@@ -126,13 +128,16 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
     row = context["rows"][0]
     assert row["pr_url"] == "https://github.com/org/repo/pull/42"
     assert row["pr_title"] == "Add dashboard"
-    assert row["commit_url"] == f"https://github.com/org/repo/commit/{'a'*40}"
+    assert row["commit_url"] == f"https://github.com/org/repo/commit/{'a' * 40}"
     assert row["short_sha"] == "a" * 8
     assert row["row_key"] == "10:42"
     assert row["row_update_signature"] != ""
     assert row["pr_state_display"] == "open"
     assert row["pr_state_class"] == ""
-    assert row["check_run_url"] == "https://github.com/org/repo/runs/321?check_suite_focus=true"
+    assert (
+        row["check_run_url"]
+        == "https://github.com/org/repo/runs/321?check_suite_focus=true"
+    )
     assert row["output_summary"] == "summary"
     assert row["output_text"] == "text"
     assert row["publish_result_display"] == "published"
@@ -193,14 +198,14 @@ def test_state_dashboard_context_can_exclude_closed_prs(tmp_path):
     )
 
     all_rows_context = _state_dashboard_context(
-        app,
+        cast(Sanic, app),
         page=1,
         page_size=100,
         repo_filter=None,
         include_closed=True,
     )
     open_only_context = _state_dashboard_context(
-        app,
+        cast(Sanic, app),
         page=1,
         page_size=100,
         repo_filter=None,
@@ -363,7 +368,7 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
         ctx=SimpleNamespace(webhook_store=store),
     )
 
-    context = _state_pr_detail_context(app, repo_id=10, pr_number=42)
+    context = _state_pr_detail_context(cast(Sanic, app), repo_id=10, pr_number=42)
     assert context is not None
     assert context["row"]["pr_url"] == "https://github.com/org/repo/pull/42"
     assert context["row"]["publish_result_display"] == "completed/success (dry-run)"

@@ -9,7 +9,7 @@ from typing import Annotated
 
 import typer
 from gidgethub import aiohttp as gh_aiohttp
-from gidgethub.apps import get_jwt, get_installation_access_token
+from gidgethub.apps import get_jwt
 import aiohttp
 import cachetools
 
@@ -17,7 +17,7 @@ from sentinel.db_migrations import migrate_webhook_db as run_webhook_db_migratio
 from sentinel.github import get_access_token, process_pull_request, API
 from sentinel.logger import get_log_handlers
 from sentinel import config
-from sentinel.cache import Cache, QueueItem, get_cache
+from sentinel.cache import QueueItem, get_cache
 from sentinel.github.model import PullRequest
 from sentinel.metric import worker_error_count, api_call_count
 from sentinel.storage import WebhookStore
@@ -35,7 +35,6 @@ async def job_loop():
     logger.info("Entering job loop")
     i = 0
     while True:
-
         try:
             logger.debug("Sleeping for %d", config.WORKER_SLEEP)
             await asyncio.sleep(config.WORKER_SLEEP)
@@ -53,19 +52,20 @@ async def job_loop():
 
                 logger.info("Processing %s", item.pr)
 
+                api_calls = 0
                 if not config.DRY_RUN:
                     async with installation_client(item.installation_id) as gh:
                         api = API(gh, item.installation_id)
                         await process_pull_request(item.pr, api)
+                        api_calls = api.call_count
 
-                api_call_count.inc(api.call_count)
+                api_call_count.inc(api_calls)
 
-        except (KeyboardInterrupt, asyncio.exceptions.CancelledError):
+        except KeyboardInterrupt, asyncio.exceptions.CancelledError:
             raise
-        except:
+        except Exception:
             worker_error_count.inc()
             logger.error("Job loop encountered error", exc_info=True)
-            pass
 
 
 app = typer.Typer()
@@ -98,7 +98,7 @@ async def installation_client(installation: int):
             private_key=config.GITHUB_PRIVATE_KEY,
         )
 
-        app_info = await gh.getitem("/app", jwt=jwt)
+        await gh.getitem("/app", jwt=jwt)
 
         token = await get_access_token(gh, installation)
 
@@ -120,7 +120,6 @@ def queue_pr(
 ):
     async def handle():
         async with installation_client(installation) as gh:
-
             pr = PullRequest.model_validate(
                 await gh.getitem(f"/repos/{repo}/pulls/{number}")
             )

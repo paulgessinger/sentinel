@@ -621,13 +621,15 @@ class WebhookStore:
             for table, kind, statement in statements:
                 deleted = conn.execute(statement).rowcount or 0
                 if deleted > 0:
-                    webhook_projection_pruned_total.labels(
-                        table=table, kind=kind
-                    ).inc(deleted)
+                    webhook_projection_pruned_total.labels(table=table, kind=kind).inc(
+                        deleted
+                    )
                 counts[f"{table}:{kind}"] = deleted
         return counts
 
-    def get_open_pr_candidates(self, repo_id: int, head_sha: str) -> list[Dict[str, Any]]:
+    def get_open_pr_candidates(
+        self, repo_id: int, head_sha: str
+    ) -> list[Dict[str, Any]]:
         stmt = (
             select(pr_heads_current)
             .where(
@@ -643,7 +645,9 @@ class WebhookStore:
             rows = conn.execute(stmt).mappings().all()
         return [dict(row) for row in rows]
 
-    def get_check_runs_for_head(self, repo_id: int, head_sha: str) -> list[Dict[str, Any]]:
+    def get_check_runs_for_head(
+        self, repo_id: int, head_sha: str
+    ) -> list[Dict[str, Any]]:
         stmt = select(check_runs_current).where(
             and_(
                 check_runs_current.c.repo_id == repo_id,
@@ -667,7 +671,9 @@ class WebhookStore:
             rows = conn.execute(stmt).mappings().all()
         return [dict(row) for row in rows]
 
-    def get_commit_statuses_for_sha(self, repo_id: int, sha: str) -> list[Dict[str, Any]]:
+    def get_commit_statuses_for_sha(
+        self, repo_id: int, sha: str
+    ) -> list[Dict[str, Any]]:
         stmt = select(commit_status_current).where(
             and_(
                 commit_status_current.c.repo_id == repo_id,
@@ -793,11 +799,7 @@ class WebhookStore:
                 context = row.get("context")
                 state = row.get("state")
                 status_id = row.get("status_id")
-                if (
-                    status_id is None
-                    or not context
-                    or not state
-                ):
+                if status_id is None or not context or not state:
                     continue
                 values = {
                     "repo_id": repo_id,
@@ -899,7 +901,13 @@ class WebhookStore:
                 and_(
                     webhook_events.c.repo_id == repo_id,
                     webhook_events.c.event.in_(
-                        ("pull_request", "check_run", "check_suite", "workflow_run", "status")
+                        (
+                            "pull_request",
+                            "check_run",
+                            "check_suite",
+                            "workflow_run",
+                            "status",
+                        )
                     ),
                 )
             )
@@ -933,7 +941,9 @@ class WebhookStore:
                     "event": event_name,
                     "action": row.get("action"),
                     "projection_error": row.get("projection_error"),
-                    "detail": self._event_detail(event_name=event_name, payload=payload),
+                    "detail": self._event_detail(
+                        event_name=event_name, payload=payload
+                    ),
                     "payload": payload,
                 }
             )
@@ -972,7 +982,10 @@ class WebhookStore:
 
         stmt = (
             self._pr_dashboard_select(app_id=app_id, check_name=check_name)
-            .order_by(pr_heads_current.c.updated_at.desc(), pr_heads_current.c.pr_number.desc())
+            .order_by(
+                pr_heads_current.c.updated_at.desc(),
+                pr_heads_current.c.pr_number.desc(),
+            )
             .limit(page_size)
             .offset(offset)
         )
@@ -1079,7 +1092,11 @@ class WebhookStore:
         if event_name == "pull_request":
             pull_request = payload.get("pull_request") or {}
             head = (pull_request.get("head") or {}).get("sha")
-            return f"PR #{pull_request.get('number')} head={head}" if head else "pull_request"
+            return (
+                f"PR #{pull_request.get('number')} head={head}"
+                if head
+                else "pull_request"
+            )
         if event_name == "check_run":
             check_run = payload.get("check_run") or {}
             name = check_run.get("name") or "check_run"

@@ -6,8 +6,7 @@ from fnmatch import fnmatch
 import hashlib
 import io
 import time
-from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Dict, List, Sequence
+from typing import Any, Awaitable, Callable, Dict, Iterable, List
 
 from sanic.log import logger
 import yaml
@@ -36,6 +35,16 @@ class _ResultItem:
     name: str
     status: str
     required: bool = False
+
+
+@dataclass(frozen=True)
+class _RuleBaseRef:
+    ref: str
+
+
+@dataclass(frozen=True)
+class _RulePullRequestLike:
+    base: _RuleBaseRef
 
 
 class ProjectionEvaluator:
@@ -70,7 +79,9 @@ class ProjectionEvaluator:
         self._config_cache: Dict[int, tuple[float, Config | None]] = {}
         self._pr_files_cache: Dict[tuple[int, int, str], tuple[float, List[str]]] = {}
 
-    async def evaluate_and_publish(self, trigger: ProjectionTrigger) -> EvaluationResult:
+    async def evaluate_and_publish(
+        self, trigger: ProjectionTrigger
+    ) -> EvaluationResult:
         started = time.monotonic()
         logger.info(
             "Projection eval start repo=%s sha=%s event=%s delivery=%s",
@@ -103,7 +114,9 @@ class ProjectionEvaluator:
             )
             return EvaluationResult(result="error", error=str(exc))
 
-    async def _evaluate_and_publish(self, trigger: ProjectionTrigger) -> EvaluationResult:
+    async def _evaluate_and_publish(
+        self, trigger: ProjectionTrigger
+    ) -> EvaluationResult:
         repo_id = trigger.repo_id
         head_sha = trigger.head_sha
 
@@ -142,7 +155,8 @@ class ProjectionEvaluator:
 
         changed_files: List[str] = []
         has_path_rules = any(
-            rule.paths is not None or rule.paths_ignore is not None for rule in config.rules
+            rule.paths is not None or rule.paths_ignore is not None
+            for rule in config.rules
         )
         logger.debug(
             "Projection eval inputs repo=%s sha=%s pr=%s rules=%d has_path_rules=%s",
@@ -166,7 +180,7 @@ class ProjectionEvaluator:
                 len(changed_files),
             )
 
-        pr_like = SimpleNamespace(base=SimpleNamespace(ref=pr_row["base_ref"]))
+        pr_like = _RulePullRequestLike(base=_RuleBaseRef(ref=str(pr_row["base_ref"])))
         rules = determine_rules(changed_files, pr_like, config.rules)
         logger.debug(
             "Projection eval selected rules repo=%s sha=%s pr=%s selected=%d",
@@ -182,7 +196,11 @@ class ProjectionEvaluator:
                 trigger.repo_full_name,
                 head_sha,
             )
-            check_rows, workflow_rows, status_rows = await self._load_head_rows_from_api(
+            (
+                check_rows,
+                workflow_rows,
+                status_rows,
+            ) = await self._load_head_rows_from_api(
                 api=api,
                 trigger=trigger,
             )
@@ -255,7 +273,9 @@ class ProjectionEvaluator:
             status = "failure" if state in ("failure", "error") else state
             if status not in ("success", "pending", "failure"):
                 continue
-            result_items[context] = _ResultItem(name=context, status=status, required=False)
+            result_items[context] = _ResultItem(
+                name=context, status=status, required=False
+            )
 
         for rule in rules:
             if rule.required_checks:
@@ -308,11 +328,19 @@ class ProjectionEvaluator:
         if failures:
             new_status = "completed"
             new_conclusion = "failure"
-            title = "1 job has failed" if len(failures) == 1 else f"{len(failures)} jobs have failed"
+            title = (
+                "1 job has failed"
+                if len(failures) == 1
+                else f"{len(failures)} jobs have failed"
+            )
         elif in_progress:
             new_status = "in_progress"
             new_conclusion = None
-            title = "Waiting for 1 job" if len(in_progress) == 1 else f"Waiting for {len(in_progress)} jobs"
+            title = (
+                "Waiting for 1 job"
+                if len(in_progress) == 1
+                else f"Waiting for {len(in_progress)} jobs"
+            )
             if len(in_progress) <= 3:
                 title += ": " + ", ".join(sorted(item.name for item in in_progress))
         else:
@@ -336,7 +364,12 @@ class ProjectionEvaluator:
                 + ", ".join(sorted(item.name for item in required_successes))
             )
 
-        text_lines = ["# Checks", "", "| Check | Status | Required? |", "| --- | --- | --- |"]
+        text_lines = [
+            "# Checks",
+            "",
+            "| Check | Status | Required? |",
+            "| --- | --- | --- |",
+        ]
         for item in sorted(result_items.values(), key=lambda item: item.name):
             text_lines.append(
                 f"| {item.name} | {item.status} | {'yes' if item.required else 'no'} |"
@@ -366,9 +399,7 @@ class ProjectionEvaluator:
         previous_status = sentinel_row.get("status") if sentinel_row else None
         existing_id = sentinel_row.get("check_run_id") if sentinel_row else None
         check_run_id = (
-            existing_id
-            if isinstance(existing_id, int) and existing_id > 0
-            else None
+            existing_id if isinstance(existing_id, int) and existing_id > 0 else None
         )
 
         if new_status == "in_progress" and previous_status != "in_progress":
@@ -396,7 +427,9 @@ class ProjectionEvaluator:
         now_iso = utcnow_iso()
         started_at = self._min_started_at(check_by_name.values())
         completed_at = (
-            self._max_completed_at(check_by_name.values()) if new_status == "completed" else None
+            self._max_completed_at(check_by_name.values())
+            if new_status == "completed"
+            else None
         )
 
         if unchanged:
@@ -425,13 +458,17 @@ class ProjectionEvaluator:
                 output_summary_hash=summary_hash,
                 output_text_hash=text_hash,
                 last_eval_at=now_iso,
-                last_publish_at=sentinel_row.get("last_publish_at") if sentinel_row else None,
+                last_publish_at=sentinel_row.get("last_publish_at")
+                if sentinel_row
+                else None,
                 last_publish_result="unchanged",
                 last_publish_error=None,
                 last_delivery_id=trigger.delivery_id,
             )
             sentinel_projection_eval_total.labels(result="unchanged").inc()
-            return EvaluationResult(result="unchanged", check_run_id=check_run_id, changed=False)
+            return EvaluationResult(
+                result="unchanged", check_run_id=check_run_id, changed=False
+            )
 
         published_id: int | None = None
         publish_result = "dry_run"
@@ -477,7 +514,9 @@ class ProjectionEvaluator:
                     app_id=self.app_id,
                 )
                 if existing is not None and existing.id is not None:
-                    sentinel_projection_lookup_total.labels(result="gh_lookup_hit").inc()
+                    sentinel_projection_lookup_total.labels(
+                        result="gh_lookup_hit"
+                    ).inc()
                     check_run.id = int(existing.id)
                     logger.info(
                         "Projection lookup github hit repo=%s sha=%s found_id=%s",
@@ -486,7 +525,9 @@ class ProjectionEvaluator:
                         check_run.id,
                     )
                 else:
-                    sentinel_projection_lookup_total.labels(result="gh_lookup_miss").inc()
+                    sentinel_projection_lookup_total.labels(
+                        result="gh_lookup_miss"
+                    ).inc()
                     logger.info(
                         "Projection lookup github miss repo=%s sha=%s",
                         trigger.repo_full_name,
@@ -502,7 +543,9 @@ class ProjectionEvaluator:
                 )
 
             try:
-                posted_id = await api.post_check_run(self._repo_url(trigger.repo_full_name), check_run)
+                posted_id = await api.post_check_run(
+                    self._repo_url(trigger.repo_full_name), check_run
+                )
                 published_id = posted_id or check_run.id
                 publish_result = "published"
                 publish_at = now_iso
@@ -580,7 +623,9 @@ class ProjectionEvaluator:
         now = time.monotonic()
         cached = self._config_cache.get(trigger.repo_id)
         if cached and cached[0] > now:
-            sentinel_projection_fallback_total.labels(kind="config", result="cache_hit").inc()
+            sentinel_projection_fallback_total.labels(
+                kind="config", result="cache_hit"
+            ).inc()
             logger.debug(
                 "Projection config cache hit repo=%s repo_id=%s",
                 trigger.repo_full_name,
@@ -588,7 +633,9 @@ class ProjectionEvaluator:
             )
             return cached[1]
 
-        sentinel_projection_fallback_total.labels(kind="config", result="cache_miss").inc()
+        sentinel_projection_fallback_total.labels(
+            kind="config", result="cache_miss"
+        ).inc()
         logger.debug(
             "Projection config cache miss repo=%s repo_id=%s",
             trigger.repo_full_name,
@@ -635,7 +682,9 @@ class ProjectionEvaluator:
         now = time.monotonic()
         cached = self._pr_files_cache.get(key)
         if cached and cached[0] > now:
-            sentinel_projection_fallback_total.labels(kind="pr_files", result="cache_hit").inc()
+            sentinel_projection_fallback_total.labels(
+                kind="pr_files", result="cache_hit"
+            ).inc()
             logger.debug(
                 "Projection pr_files cache hit repo=%s sha=%s pr=%s count=%d",
                 trigger.repo_full_name,
@@ -645,7 +694,9 @@ class ProjectionEvaluator:
             )
             return list(cached[1])
 
-        sentinel_projection_fallback_total.labels(kind="pr_files", result="cache_miss").inc()
+        sentinel_projection_fallback_total.labels(
+            kind="pr_files", result="cache_miss"
+        ).inc()
         logger.debug(
             "Projection pr_files cache miss repo=%s sha=%s pr=%s",
             trigger.repo_full_name,
@@ -682,11 +733,14 @@ class ProjectionEvaluator:
     ) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]], list[Dict[str, Any]]]:
         repo = await api.get_repository(self._repo_url(trigger.repo_full_name))
         check_runs = [
-            check_run async for check_run in api.get_check_runs_for_ref(repo, trigger.head_sha)
+            check_run
+            async for check_run in api.get_check_runs_for_ref(repo, trigger.head_sha)
         ]
         workflow_runs = [
             workflow_run
-            async for workflow_run in api.get_workflow_runs_for_ref(repo, trigger.head_sha)
+            async for workflow_run in api.get_workflow_runs_for_ref(
+                repo, trigger.head_sha
+            )
         ]
         statuses = [
             status async for status in api.get_status_for_ref(repo, trigger.head_sha)
@@ -794,7 +848,7 @@ class ProjectionEvaluator:
         return dt
 
     @classmethod
-    def _min_started_at(cls, rows: Sequence[Dict[str, Any]]) -> str | None:
+    def _min_started_at(cls, rows: Iterable[Dict[str, Any]]) -> str | None:
         vals = [cls._parse_dt(r.get("started_at")) for r in rows if r.get("started_at")]
         vals = [v for v in vals if v is not None]
         if not vals:
@@ -802,8 +856,10 @@ class ProjectionEvaluator:
         return min(vals).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     @classmethod
-    def _max_completed_at(cls, rows: Sequence[Dict[str, Any]]) -> str | None:
-        vals = [cls._parse_dt(r.get("completed_at")) for r in rows if r.get("completed_at")]
+    def _max_completed_at(cls, rows: Iterable[Dict[str, Any]]) -> str | None:
+        vals = [
+            cls._parse_dt(r.get("completed_at")) for r in rows if r.get("completed_at")
+        ]
         vals = [v for v in vals if v is not None]
         if not vals:
             return None

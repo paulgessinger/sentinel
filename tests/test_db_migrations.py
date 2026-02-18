@@ -16,9 +16,7 @@ def test_migrate_webhook_db_runs_from_packaged_scripts(tmp_path, monkeypatch):
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        revision = conn.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()[0]
+        revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()[0]
 
     assert "webhook_events" in tables
     assert "pr_heads_current" in tables

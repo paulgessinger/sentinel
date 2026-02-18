@@ -196,12 +196,22 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("idx_sentinel_check_run_state_repo_head", table_name="sentinel_check_run_state")
+    op.drop_index(
+        "idx_sentinel_check_run_state_repo_head", table_name="sentinel_check_run_state"
+    )
     op.drop_index("idx_pr_heads_current_repo_head_sha", table_name="pr_heads_current")
-    op.drop_index("idx_commit_status_current_repo_sha_context", table_name="commit_status_current")
-    op.drop_index("idx_workflow_runs_current_repo_head_name", table_name="workflow_runs_current")
-    op.drop_index("idx_check_suites_current_repo_head_sha", table_name="check_suites_current")
-    op.drop_index("idx_check_runs_current_repo_head_name", table_name="check_runs_current")
+    op.drop_index(
+        "idx_commit_status_current_repo_sha_context", table_name="commit_status_current"
+    )
+    op.drop_index(
+        "idx_workflow_runs_current_repo_head_name", table_name="workflow_runs_current"
+    )
+    op.drop_index(
+        "idx_check_suites_current_repo_head_sha", table_name="check_suites_current"
+    )
+    op.drop_index(
+        "idx_check_runs_current_repo_head_name", table_name="check_runs_current"
+    )
     op.drop_index("idx_webhook_events_event_received_at", table_name="webhook_events")
 
     op.drop_table("sentinel_check_run_state")

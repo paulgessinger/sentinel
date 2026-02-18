@@ -6,9 +6,9 @@ from pathlib import Path
 dotenv.load_dotenv()
 
 # GitHub App credentials and webhook verification.
-GITHUB_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET")
-GITHUB_PRIVATE_KEY = os.environ.get("GITHUB_PRIVATE_KEY")
-GITHUB_APP_ID = int(os.environ.get("GITHUB_APP_ID"))
+GITHUB_WEBHOOK_SECRET = os.environ["GITHUB_WEBHOOK_SECRET"]
+GITHUB_PRIVATE_KEY = os.environ["GITHUB_PRIVATE_KEY"]
+GITHUB_APP_ID = int(os.environ["GITHUB_APP_ID"])
 
 # Global log level override for the service.
 OVERRIDE_LOGGING = getattr(

@@ -11,6 +11,7 @@ from sentinel.github.model import (
     ActionsRun,
     App,
     CheckRun,
+    CommitSha,
     CommitStatus,
     PartialCheckSuite,
     Repository,
@@ -63,7 +64,9 @@ class _FakeAPI:
         yield  # noqa: B018
 
     async def get_workflow_runs_for_ref(self, _repo, _ref):  # pragma: no cover
-        raise AssertionError("get_workflow_runs_for_ref should not be called in this test")
+        raise AssertionError(
+            "get_workflow_runs_for_ref should not be called in this test"
+        )
         yield  # noqa: B018
 
     async def get_status_for_ref(self, _repo, _ref):  # pragma: no cover
@@ -101,7 +104,7 @@ class _FakeAPIRefresh(_FakeAPI):
         yield CheckRun(
             id=7001,
             name="tests",
-            head_sha="a" * 40,
+            head_sha=CommitSha("a" * 40),
             status="completed",
             conclusion="success",
             started_at=datetime(2026, 2, 17, 10, 0, tzinfo=timezone.utc),
@@ -398,7 +401,9 @@ async def test_projection_publish_persists_real_id(tmp_path):
     assert api.lookup_calls == 1
     assert len(api.post_calls) == 1
     posted_check_run = api.post_calls[0][1]
-    assert [action.identifier for action in posted_check_run.actions] == ["refresh_from_api"]
+    assert [action.identifier for action in posted_check_run.actions] == [
+        "refresh_from_api"
+    ]
 
     with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
         rows = conn.execute(

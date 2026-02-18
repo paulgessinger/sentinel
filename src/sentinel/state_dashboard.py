@@ -83,7 +83,7 @@ def _parse_int(value: str | None, default: int) -> int:
         return default
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -107,7 +107,9 @@ def _state_query_params(request: Request) -> tuple[int, int, str | None, bool]:
         repo = repo.strip() or None
     include_closed_values = _arg_values(request, "include_closed")
     if include_closed_values:
-        include_closed = any(_parse_bool(value, False) for value in include_closed_values)
+        include_closed = any(
+            _parse_bool(value, False) for value in include_closed_values
+        )
     else:
         include_closed = True
     return page, page_size, repo, include_closed
@@ -316,7 +318,9 @@ def _state_pr_detail_context(
         limit=250,
     )
     for event in events:
-        event["payload_pretty"] = json.dumps(event.get("payload") or {}, indent=2, sort_keys=True)
+        event["payload_pretty"] = json.dumps(
+            event.get("payload") or {}, indent=2, sort_keys=True
+        )
 
     pr_state_display = _pr_state_display(
         row.get("pr_state"),
@@ -414,7 +418,9 @@ def register_state_routes(app: Sanic) -> None:
                         await stream_response.write(": keepalive\n\n")
                         continue
                     body = json.dumps(payload, separators=(",", ":"))
-                    await stream_response.write(f"event: state_update\ndata: {body}\n\n")
+                    await stream_response.write(
+                        f"event: state_update\ndata: {body}\n\n"
+                    )
             except asyncio.CancelledError:
                 raise
             finally:

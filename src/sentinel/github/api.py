@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import AsyncIterator, List
+from typing import AsyncIterator
 from gidgethub.abc import GitHubAPI
 import copy
 
@@ -43,7 +43,9 @@ class API:
             payload["output"] = check_run.output.model_dump(exclude_none=True)
 
         if check_run.actions:
-            payload["actions"] = [action.model_dump(exclude_none=True) for action in check_run.actions]
+            payload["actions"] = [
+                action.model_dump(exclude_none=True) for action in check_run.actions
+            ]
 
         payload_pre = copy.deepcopy(payload)
 
@@ -63,7 +65,6 @@ class API:
                 logger.debug("Converting datetime: %s -> %s", v, payload[k])
 
         try:
-
             if check_run.id is not None:
                 url = f"{repo_url}/check-runs/{check_run.id}"
                 logger.debug("Updating check run %d, %s", check_run.id, url)
@@ -119,7 +120,7 @@ class API:
 
     async def get_status_for_ref(
         self, repo: Repository, ref: str
-    ) -> List[CommitStatus]:
+    ) -> AsyncIterator[CommitStatus]:
         self.call_count += 1
         url = f"{repo.url}/commits/{ref}/status"
         logger.debug("Get commit status for ref %s", url)

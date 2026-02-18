@@ -44,3 +44,9 @@ smee:
 
 smee-remote:
     smee -u https://smee.io/k8smrd9B27JqKRBg -t https://merge-sentinel.app.cern.ch/webhook
+
+
+lint:
+    uv run ruff check --fix .
+    uv run ruff format .
+    uv run ty check .
