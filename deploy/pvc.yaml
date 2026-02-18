@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sentinel-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: cephfs-ssd-no-backup
+  resources:
+    requests:
+      storage: 5Gi

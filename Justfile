@@ -19,15 +19,16 @@ image: image_build
     docker push {{image_url}}:latest
 
 
-helm_namespace := "sentinel"
-helm_values := "my-values.yaml"
+oc_namespace := "sentinel"
 
-deploy: image
-    helm upgrade --install sentinel ./helm \
-        --namespace {{helm_namespace}} \
-        -f {{helm_values}} \
-        --set image.tag={{sha}} \
-        --wait
+# Apply all manifests (idempotent; run after changing files in deploy/)
+apply:
+    oc apply -f deploy/ -n {{oc_namespace}}
+
+# Build image, apply manifests, roll out new version
+deploy: image apply
+    oc set image deployment/sentinel-web web={{image_url}}:{{sha}} -n {{oc_namespace}}
+    oc rollout status deployment/sentinel-web -n {{oc_namespace}}
 
 docker: image_build
     docker run --rm -it --env-file .env.dev -e DISKCACHE_DIR=/cache -v$PWD/cache:/cache -p8080:8080 {{image_url}}:{{sha}}
