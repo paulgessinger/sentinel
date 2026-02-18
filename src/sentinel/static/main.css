@@ -61,3 +61,124 @@ h1 {
 a {
     color: #5858a7;
 }
+
+.state-dashboard {
+    margin: 24px;
+}
+
+.state-header h1 {
+    margin-bottom: 0;
+}
+
+.state-header p {
+    margin-top: 8px;
+    color: #b8b8b8;
+}
+
+.state-filters {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 20px 0;
+    flex-wrap: wrap;
+}
+
+.state-filters input,
+.state-filters select,
+.state-filters button {
+    border: 1px solid #444;
+    background: #1c1c1c;
+    color: #eee;
+    border-radius: 4px;
+    padding: 6px 8px;
+}
+
+.state-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+}
+
+.state-table th,
+.state-table td {
+    border-bottom: 1px solid #2f2f2f;
+    padding: 10px 8px;
+    vertical-align: top;
+    text-align: left;
+}
+
+.state-table th {
+    color: #bbb;
+    font-weight: 600;
+}
+
+.state-meta {
+    display: flex;
+    gap: 16px;
+    color: #b8b8b8;
+    font-size: 0.9rem;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.state-pagination {
+    margin-top: 14px;
+    display: flex;
+    gap: 12px;
+}
+
+.state-pagination .disabled {
+    color: #666;
+}
+
+.chip {
+    display: inline-block;
+    border: 1px solid #454545;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 0.78rem;
+    margin-right: 4px;
+    margin-bottom: 4px;
+}
+
+.chip-pr {
+    border-color: #5675b8;
+}
+
+.chip-status {
+    border-color: #6d6dbd;
+}
+
+.chip-conclusion {
+    border-color: #6d966d;
+}
+
+.muted {
+    color: #9a9a9a;
+    font-size: 0.82rem;
+}
+
+.error-text {
+    color: #d38787;
+    max-width: 360px;
+    overflow-wrap: anywhere;
+    margin-top: 6px;
+}
+
+.output-block {
+    margin-top: 8px;
+}
+
+.output-block h4 {
+    margin: 8px 0 4px 0;
+}
+
+.output-block pre {
+    background: #191919;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 10px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-width: 560px;
+}

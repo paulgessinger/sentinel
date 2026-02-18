@@ -77,7 +77,7 @@ def make_workflow_run_payload(status: str = "in_progress") -> dict:
     }
 
 
-def make_pull_request_payload(head_sha: str) -> dict:
+def make_pull_request_payload(head_sha: str, title: str = "Update branch") -> dict:
     return {
         "action": "synchronize",
         "installation": {"id": 13},
@@ -85,6 +85,7 @@ def make_pull_request_payload(head_sha: str) -> dict:
         "pull_request": {
             "id": 5001,
             "number": 42,
+            "title": title,
             "state": "open",
             "updated_at": "2026-02-16T09:30:00Z",
             "head": {"sha": head_sha},
@@ -280,27 +281,27 @@ def test_pull_request_projection_updates_head_sha(tmp_path):
     store.persist_event(
         delivery_id="pr-1",
         event="pull_request",
-        payload=make_pull_request_payload(head_sha="c" * 40),
+        payload=make_pull_request_payload(head_sha="c" * 40, title="Initial title"),
         payload_json="{}",
     )
     store.persist_event(
         delivery_id="pr-2",
         event="pull_request",
-        payload=make_pull_request_payload(head_sha="d" * 40),
+        payload=make_pull_request_payload(head_sha="d" * 40, title="Updated title"),
         payload_json="{}",
     )
 
     with sqlite3.connect(str(db_path)) as conn:
         row = conn.execute(
             """
-            SELECT repo_full_name, head_sha, last_delivery_id
+            SELECT repo_full_name, pr_title, head_sha, last_delivery_id
             FROM pr_heads_current
             WHERE repo_id = ? AND pr_number = ?
             """,
             (103, 42),
         ).fetchone()
 
-    assert row == ("org/repo", "d" * 40, "pr-2")
+    assert row == ("org/repo", "Updated title", "d" * 40, "pr-2")
 
 
 def test_check_suite_projection_upserts(tmp_path):
@@ -606,3 +607,106 @@ def test_prune_old_projections_uses_completed_and_active_windows(tmp_path):
     assert run_count == 1
     assert status_count == 1
     assert pr_count == 1
+
+
+def test_dashboard_rows_join_pagination_and_filter(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    store.persist_event(
+        delivery_id="pr-a",
+        event="pull_request",
+        payload={
+            "action": "synchronize",
+            "installation": {"id": 1},
+            "repository": {"id": 1, "full_name": "org/repo-a"},
+            "pull_request": {
+                "id": 10,
+                "number": 1,
+                "title": "Repo A PR",
+                "state": "open",
+                "updated_at": "2026-02-18T10:00:00Z",
+                "head": {"sha": "a" * 40},
+                "base": {"ref": "main"},
+            },
+        },
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="pr-b",
+        event="pull_request",
+        payload={
+            "action": "opened",
+            "installation": {"id": 1},
+            "repository": {"id": 2, "full_name": "org/repo-b"},
+            "pull_request": {
+                "id": 20,
+                "number": 2,
+                "title": "Repo B PR",
+                "state": "open",
+                "updated_at": "2026-02-18T11:00:00Z",
+                "head": {"sha": "b" * 40},
+                "base": {"ref": "main"},
+            },
+        },
+        payload_json="{}",
+    )
+
+    store.upsert_sentinel_check_run(
+        repo_id=2,
+        repo_full_name="org/repo-b",
+        check_run_id=12345,
+        head_sha="b" * 40,
+        name="merge-sentinel",
+        status="completed",
+        conclusion="success",
+        app_id=999,
+        started_at="2026-02-18T10:58:00Z",
+        completed_at="2026-02-18T11:00:00Z",
+        output_title="All checks green",
+        output_summary=":white_check_mark: successful required checks: Build / test",
+        output_text="# Checks\n\n| Check | Status | Required? |",
+        output_summary_hash="h1",
+        output_text_hash="h2",
+        last_eval_at="2026-02-18T11:00:01Z",
+        last_publish_at="2026-02-18T11:00:02Z",
+        last_publish_result="published",
+        last_publish_error=None,
+        last_delivery_id="eval-1",
+    )
+
+    assert store.count_pr_dashboard_rows() == 2
+    assert store.count_pr_dashboard_rows(repo_full_name="org/repo-b") == 1
+
+    page1 = store.list_pr_dashboard_rows(
+        app_id=999,
+        check_name="merge-sentinel",
+        page=1,
+        page_size=1,
+    )
+    assert len(page1) == 1
+    assert page1[0]["repo_full_name"] == "org/repo-b"
+    assert page1[0]["pr_title"] == "Repo B PR"
+    assert page1[0]["output_summary"] is not None
+
+    page2 = store.list_pr_dashboard_rows(
+        app_id=999,
+        check_name="merge-sentinel",
+        page=2,
+        page_size=1,
+    )
+    assert len(page2) == 1
+    assert page2[0]["repo_full_name"] == "org/repo-a"
+    assert page2[0]["pr_title"] == "Repo A PR"
+    assert page2[0]["sentinel_status"] is None
+
+    filtered = store.list_pr_dashboard_rows(
+        app_id=999,
+        check_name="merge-sentinel",
+        page=1,
+        page_size=10,
+        repo_full_name="org/repo-a",
+    )
+    assert len(filtered) == 1
+    assert filtered[0]["repo_full_name"] == "org/repo-a"

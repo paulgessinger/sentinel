@@ -33,6 +33,7 @@ from sentinel.projection import (
     ProjectionStatusScheduler,
     ProjectionTrigger,
 )
+from sentinel.state_dashboard import StateUpdateBroadcaster, register_state_routes
 from sentinel.db_migrations import migrate_webhook_db as run_webhook_db_migrations
 from sentinel.storage import WebhookStore
 
@@ -40,7 +41,6 @@ from sentinel.storage import WebhookStore
 logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s - %(message)s", level=logging.INFO
 )
-
 
 async def client_for_installation(app, installation_id):
     gh_pre = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
@@ -219,6 +219,21 @@ async def process_github_event(
                 event.event,
                 exc_info=True,
             )
+    if (
+        persist_result is not None
+        and persist_result.inserted
+        and persist_result.projection_error is None
+    ):
+        try:
+            await app.ctx.state_broadcaster.publish(
+                {
+                    "source": "webhook",
+                    "event": event.event,
+                    "delivery_id": delivery_id,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to publish state update for webhook event", exc_info=True)
 
     if (
         projection_eval_enabled(app)
@@ -296,6 +311,7 @@ def create_app():
 
     app.ctx.github_router = create_router()
     app.ctx.projection_scheduler = None
+    app.ctx.state_broadcaster = StateUpdateBroadcaster()
     app.ctx.webhook_store = WebhookStore(
         db_path=app.config.WEBHOOK_DB_PATH,
         retention_seconds=app.config.WEBHOOK_DB_RETENTION_SECONDS,
@@ -360,9 +376,29 @@ def create_app():
                 pr_files_cache_seconds=app.config.PROJECTION_PR_FILES_CACHE_SECONDS,
                 api_factory=projection_api_factory,
             )
+
+            async def projection_handler(trigger: ProjectionTrigger) -> None:
+                result = await evaluator.evaluate_and_publish(trigger)
+                try:
+                    await app.ctx.state_broadcaster.publish(
+                        {
+                            "source": "projection",
+                            "event": trigger.event,
+                            "delivery_id": trigger.delivery_id,
+                            "repo_id": trigger.repo_id,
+                            "head_sha": trigger.head_sha,
+                            "result": result.result,
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "Failed to publish state update for projection evaluation",
+                        exc_info=True,
+                    )
+
             app.ctx.projection_scheduler = ProjectionStatusScheduler(
                 debounce_seconds=app.config.PROJECTION_DEBOUNCE_SECONDS,
-                handler=evaluator.evaluate_and_publish,
+                handler=projection_handler,
             )
 
     @app.listener("after_server_stop")
@@ -405,6 +441,8 @@ def create_app():
         )
 
         return response.empty(200)
+
+    register_state_routes(app)
 
     @app.route("/queue")
     @app.ext.template("queue.html.j2")

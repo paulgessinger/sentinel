@@ -8,6 +8,14 @@ from sentinel.storage import WebhookStore
 from sentinel.web import process_github_event
 
 
+class _RecordingBroadcaster:
+    def __init__(self):
+        self.events = []
+
+    async def publish(self, payload):
+        self.events.append(payload)
+
+
 def make_request(delivery_id: str = "delivery-1", body: str = "{}"):
     return SimpleNamespace(
         headers={"X-GitHub-Delivery": delivery_id},
@@ -57,10 +65,12 @@ async def test_supported_event_persists_without_dispatch(tmp_path):
     store = WebhookStore(str(db_path))
     store.initialize()
 
+    broadcaster = _RecordingBroadcaster()
     app = SimpleNamespace(
         config=make_config(),
         ctx=SimpleNamespace(
             webhook_store=store,
+            state_broadcaster=broadcaster,
         )
     )
 
@@ -81,6 +91,8 @@ async def test_supported_event_persists_without_dispatch(tmp_path):
         payload_json=request.body.decode(),
     )
     assert result.duplicate
+    assert len(broadcaster.events) == 1
+    assert broadcaster.events[0]["source"] == "webhook"
 
 
 @pytest.mark.asyncio
@@ -95,11 +107,13 @@ async def test_supported_event_enqueues_projection_eval_when_enabled(tmp_path):
         async def enqueue(self, trigger):
             enqueued.append(trigger)
 
+    broadcaster = _RecordingBroadcaster()
     app = SimpleNamespace(
         config=make_config(PROJECTION_EVAL_ENABLED=True),
         ctx=SimpleNamespace(
             webhook_store=store,
             projection_scheduler=_Scheduler(),
+            state_broadcaster=broadcaster,
         )
     )
 
@@ -127,6 +141,7 @@ async def test_persistence_exception_is_tolerated(tmp_path, monkeypatch):
         config=make_config(),
         ctx=SimpleNamespace(
             webhook_store=store,
+            state_broadcaster=_RecordingBroadcaster(),
         )
     )
 
@@ -160,6 +175,7 @@ async def test_unsupported_event_does_not_project(tmp_path):
         config=make_config(),
         ctx=SimpleNamespace(
             webhook_store=store,
+            state_broadcaster=_RecordingBroadcaster(),
         )
     )
 
@@ -193,6 +209,7 @@ async def test_dispatch_runs_when_enabled(tmp_path, monkeypatch):
         ctx=SimpleNamespace(
             webhook_store=store,
             github_router=SimpleNamespace(dispatch=fake_dispatch),
+            state_broadcaster=_RecordingBroadcaster(),
         )
     )
 
@@ -224,6 +241,7 @@ async def test_check_run_name_filter_skips_persistence(tmp_path):
         config=make_config(CHECK_RUN_NAME_FILTER=r"^tests$"),
         ctx=SimpleNamespace(
             webhook_store=store,
+            state_broadcaster=_RecordingBroadcaster(),
         ),
     )
 
@@ -262,6 +280,7 @@ async def test_check_run_name_filter_skips_dispatch_when_enabled(tmp_path, monke
         ctx=SimpleNamespace(
             webhook_store=store,
             github_router=SimpleNamespace(dispatch=fake_dispatch),
+            state_broadcaster=_RecordingBroadcaster(),
         ),
     )
 
@@ -297,6 +316,7 @@ async def test_self_app_id_filter_skips_persistence(tmp_path):
         ),
         ctx=SimpleNamespace(
             webhook_store=store,
+            state_broadcaster=_RecordingBroadcaster(),
         ),
     )
 
@@ -328,6 +348,7 @@ async def test_configured_app_id_filter_skips_persistence(tmp_path):
         ),
         ctx=SimpleNamespace(
             webhook_store=store,
+            state_broadcaster=_RecordingBroadcaster(),
         ),
     )
 

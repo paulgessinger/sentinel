@@ -1,0 +1,99 @@
+<div class="state-meta">
+    <span>Total PRs: {{ total }}</span>
+    <span>Page {{ page }} / {{ total_pages }}</span>
+    {% if repo_filter %}
+    <span>Filter: {{ repo_filter }}</span>
+    {% endif %}
+</div>
+
+<table class="state-table">
+    <thead>
+    <tr>
+        <th>Repository</th>
+        <th>PR</th>
+        <th>Head</th>
+        <th>PR State</th>
+        <th>Sentinel Status</th>
+        <th>Publish</th>
+        <th>Check Output</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% for row in rows %}
+    <tr>
+        <td>{{ row.repo_full_name or "unknown" }}</td>
+        <td>
+            {% if row.pr_url %}
+            <a href="{{ row.pr_url }}" target="_blank" rel="noreferrer">#{{ row.pr_number }}</a>
+            {% else %}
+            #{{ row.pr_number }}
+            {% endif %}
+            {% if row.pr_title %}
+            <div>{{ row.pr_title }}</div>
+            {% endif %}
+            <div class="muted">{{ row.pr_updated_at or "" }}</div>
+        </td>
+        <td>
+            {% if row.commit_url %}
+            <a href="{{ row.commit_url }}" target="_blank" rel="noreferrer">{{ row.short_sha }}</a>
+            {% else %}
+            {{ row.short_sha }}
+            {% endif %}
+        </td>
+        <td><span class="chip chip-pr">{{ row.pr_state or "unknown" }}</span></td>
+        <td>
+            <div>
+                <span class="chip chip-status">{{ row.sentinel_status or "not_evaluated" }}</span>
+                {% if row.sentinel_conclusion %}
+                <span class="chip chip-conclusion">{{ row.sentinel_conclusion }}</span>
+                {% endif %}
+            </div>
+            <div class="muted">eval: {{ row.last_eval_at or "-" }}</div>
+        </td>
+        <td>
+            <div class="muted">result: {{ row.last_publish_result or "-" }}</div>
+            <div class="muted">at: {{ row.last_publish_at or "-" }}</div>
+            {% if row.check_run_url %}
+            <a href="{{ row.check_run_url }}" target="_blank" rel="noreferrer">run {{ row.sentinel_check_run_id }}</a>
+            {% elif row.sentinel_check_run_id %}
+            run {{ row.sentinel_check_run_id }}
+            {% endif %}
+            {% if row.last_publish_error %}
+            <div class="error-text">{{ row.last_publish_error }}</div>
+            {% endif %}
+        </td>
+        <td>
+            <details>
+                <summary>{{ row.output_title or "No output title" }}</summary>
+                <div class="output-block">
+                    <h4>Summary</h4>
+                    <pre>{{ row.output_summary or "Not available yet" }}</pre>
+                    <h4>Text</h4>
+                    <pre>{{ row.output_text or "Not available yet" }}</pre>
+                </div>
+            </details>
+        </td>
+    </tr>
+    {% endfor %}
+    {% if rows|length == 0 %}
+    <tr>
+        <td colspan="7">No PR rows available.</td>
+    </tr>
+    {% endif %}
+    </tbody>
+</table>
+
+<nav class="state-pagination">
+    {% set prev_page = page - 1 %}
+    {% set next_page = page + 1 %}
+    {% if page > 1 %}
+    <a href="/state?page={{ prev_page }}&page_size={{ page_size }}{% if repo_filter %}&repo={{ repo_filter }}{% endif %}">Previous</a>
+    {% else %}
+    <span class="disabled">Previous</span>
+    {% endif %}
+    {% if page < total_pages %}
+    <a href="/state?page={{ next_page }}&page_size={{ page_size }}{% if repo_filter %}&repo={{ repo_filter }}{% endif %}">Next</a>
+    {% else %}
+    <span class="disabled">Next</span>
+    {% endif %}
+</nav>

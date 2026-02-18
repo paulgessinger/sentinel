@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import sqlite3
 from typing import Optional
 
@@ -172,7 +173,8 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
     with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
         row = conn.execute(
             """
-            SELECT status, conclusion, output_title, last_publish_result, app_id, check_run_id
+            SELECT status, conclusion, output_title, output_summary, output_text,
+                   output_summary_hash, output_text_hash, last_publish_result, app_id, check_run_id
             FROM sentinel_check_run_state
             WHERE repo_id = ? AND head_sha = ? AND check_name = ?
             LIMIT 1
@@ -184,6 +186,18 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
         "completed",
         "success",
         "All 1 required jobs successful",
+        ":white_check_mark: successful required checks: Builds / tests",
+        "# Checks\n\n| Check | Status | Required? |\n| --- | --- | --- |\n| Builds / tests | success | yes |",
+        hashlib.sha256(
+            ":white_check_mark: successful required checks: Builds / tests".encode(
+                "utf-8"
+            )
+        ).hexdigest(),
+        hashlib.sha256(
+            "# Checks\n\n| Check | Status | Required? |\n| --- | --- | --- |\n| Builds / tests | success | yes |".encode(
+                "utf-8"
+            )
+        ).hexdigest(),
         "dry_run",
         2877723,
         None,
@@ -225,6 +239,21 @@ async def test_projection_second_identical_eval_is_unchanged(tmp_path):
 
     assert first.result == "dry_run"
     assert second.result == "unchanged"
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        row = conn.execute(
+            """
+            SELECT output_summary, output_text, output_summary_hash, output_text_hash
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ?
+            """,
+            (11, "a" * 40, "merge-sentinel"),
+        ).fetchone()
+    assert row is not None
+    assert row[0] is not None
+    assert row[1] is not None
+    assert row[2] == hashlib.sha256(row[0].encode("utf-8")).hexdigest()
+    assert row[3] == hashlib.sha256(row[1].encode("utf-8")).hexdigest()
 
 
 @pytest.mark.asyncio

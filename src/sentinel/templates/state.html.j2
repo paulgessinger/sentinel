@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Sentinel State Dashboard</title>
+    <link rel="stylesheet" href="{{ app.url_for('static', filename='main.css') }}">
+</head>
+<body>
+<main id="state-dashboard" class="state-dashboard">
+    <header class="state-header">
+        <h1>Sentinel State Dashboard</h1>
+        <p>Live view from webhook projections and sentinel evaluation state.</p>
+    </header>
+
+    <form method="get" action="/state" class="state-filters">
+        <label for="repo">Repository</label>
+        <input id="repo" name="repo" type="text" placeholder="owner/name" value="{{ repo_filter }}">
+
+        <label for="page_size">Page Size</label>
+        <select id="page_size" name="page_size">
+            {% for option in [25, 50, 100, 200] %}
+            <option value="{{ option }}" {% if page_size == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+        </select>
+
+        <input type="hidden" name="page" value="1">
+        <button type="submit">Apply</button>
+    </form>
+
+    <section id="state-table-container">
+        {% include "state_table.html.j2" %}
+    </section>
+</main>
+
+<script>
+(() => {
+    const tableContainer = document.getElementById("state-table-container");
+    const query = window.location.search || "";
+    const stream = new EventSource(`/state/stream${query}`);
+    let refreshScheduled = false;
+
+    const refreshTable = async () => {
+        try {
+            const response = await fetch(`/state/table${query}`, { credentials: "same-origin" });
+            if (!response.ok) {
+                return;
+            }
+            tableContainer.innerHTML = await response.text();
+        } finally {
+            refreshScheduled = false;
+        }
+    };
+
+    const scheduleRefresh = () => {
+        if (refreshScheduled) {
+            return;
+        }
+        refreshScheduled = true;
+        window.setTimeout(refreshTable, 500);
+    };
+
+    stream.addEventListener("state_update", scheduleRefresh);
+    stream.addEventListener("ready", () => {});
+    stream.onerror = () => {};
+})();
+</script>
+</body>
+</html>

@@ -25,6 +25,7 @@ from sqlalchemy import (
     event as sa_event,
     or_,
     select,
+    func,
     update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -89,6 +90,8 @@ sentinel_check_run_state = Table(
     Column("started_at", String),
     Column("completed_at", String),
     Column("output_title", String),
+    Column("output_summary", String),
+    Column("output_text", String),
     Column("output_summary_hash", String),
     Column("output_text_hash", String),
     Column("last_eval_at", String, nullable=False),
@@ -164,6 +167,7 @@ pr_heads_current = Table(
     Column("repo_full_name", String),
     Column("pr_id", Integer, nullable=False),
     Column("pr_number", Integer, primary_key=True),
+    Column("pr_title", String),
     Column("state", String, nullable=False),
     Column("head_sha", String, nullable=False),
     Column("base_ref", String, nullable=False),
@@ -694,6 +698,75 @@ class WebhookStore:
             row = conn.execute(stmt).mappings().first()
         return None if row is None else dict(row)
 
+    def count_pr_dashboard_rows(self, repo_full_name: Optional[str] = None) -> int:
+        stmt = select(func.count()).select_from(pr_heads_current)
+        if repo_full_name:
+            stmt = stmt.where(pr_heads_current.c.repo_full_name == repo_full_name)
+        with self.engine.begin() as conn:
+            count = conn.execute(stmt).scalar_one()
+        return int(count)
+
+    def list_pr_dashboard_rows(
+        self,
+        *,
+        app_id: int,
+        check_name: str,
+        page: int,
+        page_size: int,
+        repo_full_name: Optional[str] = None,
+    ) -> list[Dict[str, Any]]:
+        page = max(1, int(page))
+        page_size = min(200, max(1, int(page_size)))
+        offset = (page - 1) * page_size
+
+        join_condition = and_(
+            sentinel_check_run_state.c.repo_id == pr_heads_current.c.repo_id,
+            sentinel_check_run_state.c.head_sha == pr_heads_current.c.head_sha,
+            sentinel_check_run_state.c.check_name == check_name,
+            sentinel_check_run_state.c.app_id == app_id,
+        )
+        stmt = (
+            select(
+                pr_heads_current.c.repo_id.label("repo_id"),
+                pr_heads_current.c.repo_full_name.label("repo_full_name"),
+                pr_heads_current.c.pr_number.label("pr_number"),
+                pr_heads_current.c.pr_id.label("pr_id"),
+                pr_heads_current.c.pr_title.label("pr_title"),
+                pr_heads_current.c.state.label("pr_state"),
+                pr_heads_current.c.head_sha.label("head_sha"),
+                pr_heads_current.c.base_ref.label("base_ref"),
+                pr_heads_current.c.action.label("action"),
+                pr_heads_current.c.updated_at.label("pr_updated_at"),
+                sentinel_check_run_state.c.status.label("sentinel_status"),
+                sentinel_check_run_state.c.conclusion.label("sentinel_conclusion"),
+                sentinel_check_run_state.c.check_run_id.label("sentinel_check_run_id"),
+                sentinel_check_run_state.c.output_title.label("output_title"),
+                sentinel_check_run_state.c.output_summary.label("output_summary"),
+                sentinel_check_run_state.c.output_text.label("output_text"),
+                sentinel_check_run_state.c.output_summary_hash.label(
+                    "output_summary_hash"
+                ),
+                sentinel_check_run_state.c.output_text_hash.label("output_text_hash"),
+                sentinel_check_run_state.c.last_eval_at.label("last_eval_at"),
+                sentinel_check_run_state.c.last_publish_at.label("last_publish_at"),
+                sentinel_check_run_state.c.last_publish_result.label(
+                    "last_publish_result"
+                ),
+                sentinel_check_run_state.c.last_publish_error.label("last_publish_error"),
+                sentinel_check_run_state.c.last_delivery_id.label("last_delivery_id"),
+            )
+            .select_from(pr_heads_current.outerjoin(sentinel_check_run_state, join_condition))
+            .order_by(pr_heads_current.c.updated_at.desc(), pr_heads_current.c.pr_number.desc())
+            .limit(page_size)
+            .offset(offset)
+        )
+        if repo_full_name:
+            stmt = stmt.where(pr_heads_current.c.repo_full_name == repo_full_name)
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [dict(row) for row in rows]
+
     def upsert_sentinel_check_run(
         self,
         *,
@@ -708,6 +781,8 @@ class WebhookStore:
         started_at: Optional[str],
         completed_at: Optional[str],
         output_title: Optional[str],
+        output_summary: Optional[str],
+        output_text: Optional[str],
         output_summary_hash: Optional[str],
         output_text_hash: Optional[str],
         last_eval_at: str,
@@ -728,6 +803,8 @@ class WebhookStore:
             "started_at": started_at,
             "completed_at": completed_at,
             "output_title": output_title,
+            "output_summary": output_summary,
+            "output_text": output_text,
             "output_summary_hash": output_summary_hash,
             "output_text_hash": output_text_hash,
             "last_eval_at": last_eval_at,
@@ -752,6 +829,8 @@ class WebhookStore:
                 "started_at": stmt.excluded.started_at,
                 "completed_at": stmt.excluded.completed_at,
                 "output_title": stmt.excluded.output_title,
+                "output_summary": stmt.excluded.output_summary,
+                "output_text": stmt.excluded.output_text,
                 "output_summary_hash": stmt.excluded.output_summary_hash,
                 "output_text_hash": stmt.excluded.output_text_hash,
                 "last_eval_at": stmt.excluded.last_eval_at,
@@ -940,6 +1019,7 @@ class WebhookStore:
             "repo_full_name": repo.get("full_name"),
             "pr_id": pr["id"],
             "pr_number": pr["number"],
+            "pr_title": pr.get("title"),
             "state": pr["state"],
             "head_sha": pr["head"]["sha"],
             "base_ref": pr["base"]["ref"],
@@ -955,6 +1035,7 @@ class WebhookStore:
             update_columns=[
                 "repo_full_name",
                 "pr_id",
+                "pr_title",
                 "state",
                 "head_sha",
                 "base_ref",
