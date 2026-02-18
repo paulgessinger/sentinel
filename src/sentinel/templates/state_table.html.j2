@@ -31,6 +31,9 @@
             {% if row.pr_title %}
             <div>{{ row.pr_title }}</div>
             {% endif %}
+            {% if row.details_url %}
+            <div><a href="{{ row.details_url }}">details</a></div>
+            {% endif %}
             <div class="muted">{{ row.pr_updated_at or "" }}</div>
         </td>
         <td>

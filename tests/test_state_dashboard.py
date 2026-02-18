@@ -6,6 +6,7 @@ from sentinel.storage import WebhookStore
 from sentinel.state_dashboard import (
     StateUpdateBroadcaster,
     _state_dashboard_context,
+    _state_pr_detail_context,
     _state_query_params,
 )
 from sentinel.web import create_app
@@ -103,3 +104,106 @@ def test_state_routes_registered():
     assert "state" in paths
     assert "state/table" in paths
     assert "state/stream" in paths
+    assert any("state/pr" in path for path in paths)
+
+
+def test_state_pr_detail_context_renders_output_and_events(tmp_path):
+    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store.initialize()
+
+    pr_payload = {
+        "action": "synchronize",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "pull_request": {
+            "id": 1001,
+            "number": 42,
+            "title": "Add dashboard",
+            "state": "open",
+            "updated_at": "2026-02-18T12:00:00Z",
+            "head": {"sha": "a" * 40},
+            "base": {"ref": "main"},
+        },
+    }
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=pr_payload,
+        payload_json=store.payload_to_json(pr_payload),
+    )
+    check_run_payload = {
+        "action": "completed",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "check_run": {
+            "id": 333,
+            "head_sha": "a" * 40,
+            "name": "Builds / tests",
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"id": 99, "slug": "ci"},
+            "check_suite": {"id": 77},
+        },
+    }
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=check_run_payload,
+        payload_json=store.payload_to_json(check_run_payload),
+    )
+    status_payload = {
+        "id": 9001,
+        "sha": "a" * 40,
+        "context": "lint",
+        "state": "success",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+    }
+    store.persist_event(
+        delivery_id="status-1",
+        event="status",
+        payload=status_payload,
+        payload_json=store.payload_to_json(status_payload),
+    )
+
+    store.upsert_sentinel_check_run(
+        repo_id=10,
+        repo_full_name="org/repo",
+        check_run_id=321,
+        head_sha="a" * 40,
+        name="merge-sentinel",
+        status="completed",
+        conclusion="success",
+        app_id=2877723,
+        started_at="2026-02-18T11:59:00Z",
+        completed_at="2026-02-18T12:00:00Z",
+        output_title="All good",
+        output_summary=":white_check_mark: ready",
+        output_text=(
+            "# Checks\n\n| Check | Status | Required? |\n| --- | --- | --- |\n"
+            "| Builds / tests | success | yes |"
+        ),
+        output_summary_hash="h1",
+        output_text_hash="h2",
+        last_eval_at="2026-02-18T12:00:01Z",
+        last_publish_at="2026-02-18T12:00:02Z",
+        last_publish_result="published",
+        last_publish_error=None,
+        last_delivery_id="d1",
+    )
+
+    app = SimpleNamespace(
+        config=SimpleNamespace(
+            GITHUB_APP_ID=2877723,
+            PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+        ),
+        ctx=SimpleNamespace(webhook_store=store),
+    )
+
+    context = _state_pr_detail_context(app, repo_id=10, pr_number=42)
+    assert context is not None
+    assert context["row"]["pr_url"] == "https://github.com/org/repo/pull/42"
+    assert "\u2705" in context["row"]["rendered_output_summary"]
+    assert "rendered-check-table" in context["row"]["rendered_output_text"]
+    assert len(context["events"]) >= 3
+    assert context["events"][0]["delivery_id"] == "status-1"

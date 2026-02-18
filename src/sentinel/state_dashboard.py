@@ -3,11 +3,15 @@ import json
 from math import ceil
 from typing import Any, Dict, Optional
 
+import emoji
+from markdown_it import MarkdownIt
 from sanic import Request, Sanic, response
+from sanic.exceptions import NotFound
 
 
 DEFAULT_STATE_PAGE_SIZE = 100
 MAX_STATE_PAGE_SIZE = 200
+MARKDOWN_RENDERER = MarkdownIt("default", {"html": False})
 
 
 class StateUpdateBroadcaster:
@@ -119,6 +123,11 @@ def _state_dashboard_context(
                 "pr_url": _github_pr_url(repo_full_name, pr_number),
                 "commit_url": _github_commit_url(repo_full_name, head_sha),
                 "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
+                "details_url": (
+                    f"/state/pr/{row.get('repo_id')}/{pr_number}"
+                    if row.get("repo_id") is not None and pr_number is not None
+                    else None
+                ),
             }
         )
 
@@ -129,6 +138,58 @@ def _state_dashboard_context(
         "page_size": page_size,
         "total_pages": total_pages,
         "repo_filter": repo_filter or "",
+    }
+
+
+def _render_markdown(markdown_text: Optional[str]) -> str:
+    if markdown_text is None or markdown_text.strip() == "":
+        return '<p class="muted">Not available yet</p>'
+    emojized = emoji.emojize(markdown_text, language="alias")
+    rendered = MARKDOWN_RENDERER.render(emojized)
+    return rendered.replace("<table>", '<table class="rendered-check-table">')
+
+
+def _state_pr_detail_context(
+    app: Sanic,
+    *,
+    repo_id: int,
+    pr_number: int,
+) -> Optional[Dict[str, Any]]:
+    row = app.ctx.webhook_store.get_pr_dashboard_row(
+        app_id=app.config.GITHUB_APP_ID,
+        check_name=app.config.PROJECTION_CHECK_RUN_NAME,
+        repo_id=repo_id,
+        pr_number=pr_number,
+    )
+    if row is None:
+        return None
+
+    repo_full_name = row.get("repo_full_name")
+    head_sha = row.get("head_sha")
+    check_run_id = row.get("sentinel_check_run_id")
+    output_summary = row.get("output_summary")
+    output_text = row.get("output_text")
+
+    events = app.ctx.webhook_store.list_pr_related_events(
+        repo_id=repo_id,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        limit=250,
+    )
+    for event in events:
+        event["payload_pretty"] = json.dumps(event.get("payload") or {}, indent=2, sort_keys=True)
+
+    return {
+        "row": {
+            **row,
+            "short_sha": head_sha[:12] if head_sha else "",
+            "pr_url": _github_pr_url(repo_full_name, pr_number),
+            "commit_url": _github_commit_url(repo_full_name, head_sha),
+            "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
+            "rendered_output_summary": _render_markdown(output_summary),
+            "rendered_output_text": _render_markdown(output_text),
+        },
+        "events": events,
     }
 
 
@@ -159,6 +220,17 @@ def register_state_routes(app: Sanic) -> None:
                 page_size=page_size,
                 repo_filter=repo_filter,
             ),
+        }
+
+    @app.get("/state/pr/<repo_id:int>/<pr_number:int>")
+    @app.ext.template("state_pr_detail.html.j2")
+    async def state_pr_detail(_request, repo_id: int, pr_number: int):
+        context = _state_pr_detail_context(app, repo_id=repo_id, pr_number=pr_number)
+        if context is None:
+            raise NotFound(f"PR not found: repo_id={repo_id} pr_number={pr_number}")
+        return {
+            "app": app,
+            **context,
         }
 
     @app.get("/state/stream")

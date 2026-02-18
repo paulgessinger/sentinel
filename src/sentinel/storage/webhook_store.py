@@ -698,6 +698,95 @@ class WebhookStore:
             row = conn.execute(stmt).mappings().first()
         return None if row is None else dict(row)
 
+    def get_pr_dashboard_row(
+        self,
+        *,
+        app_id: int,
+        check_name: str,
+        repo_id: int,
+        pr_number: int,
+    ) -> Optional[Dict[str, Any]]:
+        stmt = (
+            self._pr_dashboard_select(app_id=app_id, check_name=check_name)
+            .where(
+                and_(
+                    pr_heads_current.c.repo_id == repo_id,
+                    pr_heads_current.c.pr_number == pr_number,
+                )
+            )
+            .limit(1)
+        )
+        with self.engine.begin() as conn:
+            row = conn.execute(stmt).mappings().first()
+        return None if row is None else dict(row)
+
+    def list_pr_related_events(
+        self,
+        *,
+        repo_id: int,
+        pr_number: int,
+        head_sha: Optional[str],
+        limit: int = 200,
+    ) -> list[Dict[str, Any]]:
+        target_limit = min(1000, max(1, int(limit)))
+        scan_limit = min(5000, max(200, target_limit * 20))
+
+        stmt = (
+            select(
+                webhook_events.c.delivery_id,
+                webhook_events.c.received_at,
+                webhook_events.c.event,
+                webhook_events.c.action,
+                webhook_events.c.payload_json,
+                webhook_events.c.projection_error,
+            )
+            .where(
+                and_(
+                    webhook_events.c.repo_id == repo_id,
+                    webhook_events.c.event.in_(
+                        ("pull_request", "check_run", "check_suite", "workflow_run", "status")
+                    ),
+                )
+            )
+            .order_by(webhook_events.c.received_at.desc())
+            .limit(scan_limit)
+        )
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        events: list[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(self.decode_payload_json(row.get("payload_json")))
+            except ValueError:
+                payload = {}
+
+            if not self._event_matches_pr(
+                event_name=str(row.get("event") or ""),
+                payload=payload,
+                pr_number=pr_number,
+                head_sha=head_sha,
+            ):
+                continue
+
+            event_name = str(row.get("event") or "")
+            events.append(
+                {
+                    "delivery_id": row.get("delivery_id"),
+                    "received_at": row.get("received_at"),
+                    "event": event_name,
+                    "action": row.get("action"),
+                    "projection_error": row.get("projection_error"),
+                    "detail": self._event_detail(event_name=event_name, payload=payload),
+                    "payload": payload,
+                }
+            )
+            if len(events) >= target_limit:
+                break
+
+        return events
+
     def count_pr_dashboard_rows(self, repo_full_name: Optional[str] = None) -> int:
         stmt = select(func.count()).select_from(pr_heads_current)
         if repo_full_name:
@@ -719,43 +808,8 @@ class WebhookStore:
         page_size = min(200, max(1, int(page_size)))
         offset = (page - 1) * page_size
 
-        join_condition = and_(
-            sentinel_check_run_state.c.repo_id == pr_heads_current.c.repo_id,
-            sentinel_check_run_state.c.head_sha == pr_heads_current.c.head_sha,
-            sentinel_check_run_state.c.check_name == check_name,
-            sentinel_check_run_state.c.app_id == app_id,
-        )
         stmt = (
-            select(
-                pr_heads_current.c.repo_id.label("repo_id"),
-                pr_heads_current.c.repo_full_name.label("repo_full_name"),
-                pr_heads_current.c.pr_number.label("pr_number"),
-                pr_heads_current.c.pr_id.label("pr_id"),
-                pr_heads_current.c.pr_title.label("pr_title"),
-                pr_heads_current.c.state.label("pr_state"),
-                pr_heads_current.c.head_sha.label("head_sha"),
-                pr_heads_current.c.base_ref.label("base_ref"),
-                pr_heads_current.c.action.label("action"),
-                pr_heads_current.c.updated_at.label("pr_updated_at"),
-                sentinel_check_run_state.c.status.label("sentinel_status"),
-                sentinel_check_run_state.c.conclusion.label("sentinel_conclusion"),
-                sentinel_check_run_state.c.check_run_id.label("sentinel_check_run_id"),
-                sentinel_check_run_state.c.output_title.label("output_title"),
-                sentinel_check_run_state.c.output_summary.label("output_summary"),
-                sentinel_check_run_state.c.output_text.label("output_text"),
-                sentinel_check_run_state.c.output_summary_hash.label(
-                    "output_summary_hash"
-                ),
-                sentinel_check_run_state.c.output_text_hash.label("output_text_hash"),
-                sentinel_check_run_state.c.last_eval_at.label("last_eval_at"),
-                sentinel_check_run_state.c.last_publish_at.label("last_publish_at"),
-                sentinel_check_run_state.c.last_publish_result.label(
-                    "last_publish_result"
-                ),
-                sentinel_check_run_state.c.last_publish_error.label("last_publish_error"),
-                sentinel_check_run_state.c.last_delivery_id.label("last_delivery_id"),
-            )
-            .select_from(pr_heads_current.outerjoin(sentinel_check_run_state, join_condition))
+            self._pr_dashboard_select(app_id=app_id, check_name=check_name)
             .order_by(pr_heads_current.c.updated_at.desc(), pr_heads_current.c.pr_number.desc())
             .limit(page_size)
             .offset(offset)
@@ -766,6 +820,108 @@ class WebhookStore:
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
         return [dict(row) for row in rows]
+
+    def _pr_dashboard_select(self, *, app_id: int, check_name: str):
+        join_condition = and_(
+            sentinel_check_run_state.c.repo_id == pr_heads_current.c.repo_id,
+            sentinel_check_run_state.c.head_sha == pr_heads_current.c.head_sha,
+            sentinel_check_run_state.c.check_name == check_name,
+            sentinel_check_run_state.c.app_id == app_id,
+        )
+        return select(
+            pr_heads_current.c.repo_id.label("repo_id"),
+            pr_heads_current.c.repo_full_name.label("repo_full_name"),
+            pr_heads_current.c.pr_number.label("pr_number"),
+            pr_heads_current.c.pr_id.label("pr_id"),
+            pr_heads_current.c.pr_title.label("pr_title"),
+            pr_heads_current.c.state.label("pr_state"),
+            pr_heads_current.c.head_sha.label("head_sha"),
+            pr_heads_current.c.base_ref.label("base_ref"),
+            pr_heads_current.c.action.label("action"),
+            pr_heads_current.c.updated_at.label("pr_updated_at"),
+            sentinel_check_run_state.c.status.label("sentinel_status"),
+            sentinel_check_run_state.c.conclusion.label("sentinel_conclusion"),
+            sentinel_check_run_state.c.check_run_id.label("sentinel_check_run_id"),
+            sentinel_check_run_state.c.output_title.label("output_title"),
+            sentinel_check_run_state.c.output_summary.label("output_summary"),
+            sentinel_check_run_state.c.output_text.label("output_text"),
+            sentinel_check_run_state.c.output_summary_hash.label("output_summary_hash"),
+            sentinel_check_run_state.c.output_text_hash.label("output_text_hash"),
+            sentinel_check_run_state.c.last_eval_at.label("last_eval_at"),
+            sentinel_check_run_state.c.last_publish_at.label("last_publish_at"),
+            sentinel_check_run_state.c.last_publish_result.label("last_publish_result"),
+            sentinel_check_run_state.c.last_publish_error.label("last_publish_error"),
+            sentinel_check_run_state.c.last_delivery_id.label("last_delivery_id"),
+        ).select_from(pr_heads_current.outerjoin(sentinel_check_run_state, join_condition))
+
+    @staticmethod
+    def _event_matches_pr(
+        *,
+        event_name: str,
+        payload: Mapping[str, Any],
+        pr_number: int,
+        head_sha: Optional[str],
+    ) -> bool:
+        if event_name == "pull_request":
+            pull_request = payload.get("pull_request") or {}
+            return pull_request.get("number") == pr_number
+
+        if not head_sha:
+            return False
+
+        if event_name == "status":
+            return payload.get("sha") == head_sha
+        if event_name == "check_run":
+            check_run = payload.get("check_run") or {}
+            return check_run.get("head_sha") == head_sha
+        if event_name == "check_suite":
+            check_suite = payload.get("check_suite") or {}
+            return check_suite.get("head_sha") == head_sha
+        if event_name == "workflow_run":
+            workflow_run = payload.get("workflow_run") or {}
+            return workflow_run.get("head_sha") == head_sha
+        return False
+
+    @staticmethod
+    def _event_detail(*, event_name: str, payload: Mapping[str, Any]) -> str:
+        if event_name == "pull_request":
+            pull_request = payload.get("pull_request") or {}
+            head = (pull_request.get("head") or {}).get("sha")
+            return f"PR #{pull_request.get('number')} head={head}" if head else "pull_request"
+        if event_name == "check_run":
+            check_run = payload.get("check_run") or {}
+            name = check_run.get("name") or "check_run"
+            status = check_run.get("status")
+            conclusion = check_run.get("conclusion")
+            if status and conclusion:
+                return f"{name}: {status}/{conclusion}"
+            if status:
+                return f"{name}: {status}"
+            return str(name)
+        if event_name == "check_suite":
+            check_suite = payload.get("check_suite") or {}
+            status = check_suite.get("status")
+            conclusion = check_suite.get("conclusion")
+            if status and conclusion:
+                return f"check_suite: {status}/{conclusion}"
+            if status:
+                return f"check_suite: {status}"
+            return "check_suite"
+        if event_name == "workflow_run":
+            workflow_run = payload.get("workflow_run") or {}
+            name = workflow_run.get("name") or "workflow_run"
+            status = workflow_run.get("status")
+            conclusion = workflow_run.get("conclusion")
+            if status and conclusion:
+                return f"{name}: {status}/{conclusion}"
+            if status:
+                return f"{name}: {status}"
+            return str(name)
+        if event_name == "status":
+            context = payload.get("context") or "status"
+            state = payload.get("state")
+            return f"{context}: {state}" if state else str(context)
+        return event_name
 
     def upsert_sentinel_check_run(
         self,

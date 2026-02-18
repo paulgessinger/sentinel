@@ -710,3 +710,89 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
     )
     assert len(filtered) == 1
     assert filtered[0]["repo_full_name"] == "org/repo-a"
+
+
+def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    head_sha = "c" * 40
+    tracked_pr_payload = make_pull_request_payload(head_sha=head_sha, title="Tracked PR")
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=tracked_pr_payload,
+        payload_json=store.payload_to_json(tracked_pr_payload),
+    )
+    check_run_payload = {
+        "action": "completed",
+        "installation": {"id": 11},
+        "repository": {"id": 103, "full_name": "org/repo"},
+        "check_run": {
+            "id": 3001,
+            "head_sha": head_sha,
+            "name": "Builds / tests",
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"id": 1, "slug": "ci"},
+            "check_suite": {"id": 77},
+        },
+    }
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=check_run_payload,
+        payload_json=store.payload_to_json(check_run_payload),
+    )
+    status_payload = {
+        "id": 901,
+        "sha": head_sha,
+        "context": "lint",
+        "state": "success",
+        "installation": {"id": 11},
+        "repository": {"id": 103, "full_name": "org/repo"},
+    }
+    store.persist_event(
+        delivery_id="status-1",
+        event="status",
+        payload=status_payload,
+        payload_json=store.payload_to_json(status_payload),
+    )
+    other_pr_payload = {
+        "action": "opened",
+        "installation": {"id": 11},
+        "repository": {"id": 103, "full_name": "org/repo"},
+        "pull_request": {
+            "id": 5002,
+            "number": 99,
+            "title": "Other PR",
+            "state": "open",
+            "updated_at": "2026-02-16T10:30:00Z",
+            "head": {"sha": "d" * 40},
+            "base": {"ref": "main"},
+        },
+    }
+    store.persist_event(
+        delivery_id="pr-other",
+        event="pull_request",
+        payload=other_pr_payload,
+        payload_json=store.payload_to_json(other_pr_payload),
+    )
+
+    row = store.get_pr_dashboard_row(
+        app_id=999,
+        check_name="merge-sentinel",
+        repo_id=103,
+        pr_number=42,
+    )
+    assert row is not None
+    assert row["pr_title"] == "Tracked PR"
+
+    events = store.list_pr_related_events(
+        repo_id=103,
+        pr_number=42,
+        head_sha=head_sha,
+        limit=10,
+    )
+    assert [event["delivery_id"] for event in events] == ["status-1", "cr-1", "pr-1"]
