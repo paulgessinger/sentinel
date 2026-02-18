@@ -109,6 +109,7 @@ def test_state_routes_registered():
     assert "state/table" in paths
     assert "state/stream" in paths
     assert any("state/pr" in path for path in paths)
+    assert any("state/pr" in path and "content" in path for path in paths)
 
 
 def test_publish_result_display_for_dry_run_includes_would_post():

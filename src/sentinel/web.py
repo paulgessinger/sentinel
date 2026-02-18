@@ -173,6 +173,7 @@ def projection_trigger_from_event(
         installation_id=int(installation_id),
         delivery_id=delivery_id or None,
         event=event.event,
+        action=payload.get("action"),
     )
 
 
@@ -398,6 +399,9 @@ def create_app():
 
             app.ctx.projection_scheduler = ProjectionStatusScheduler(
                 debounce_seconds=app.config.PROJECTION_DEBOUNCE_SECONDS,
+                pull_request_synchronize_delay_seconds=(
+                    app.config.PROJECTION_PULL_REQUEST_SYNCHRONIZE_DELAY_SECONDS
+                ),
                 handler=projection_handler,
             )
 

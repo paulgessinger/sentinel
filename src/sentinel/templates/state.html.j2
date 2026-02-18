@@ -37,8 +37,9 @@
 (() => {
     const tableContainer = document.getElementById("state-table-container");
     const query = window.location.search || "";
-    const stream = new EventSource(`/state/stream${query}`);
+    const streamUrl = `/state/stream${query}`;
     let refreshScheduled = false;
+    let stream = null;
 
     const refreshTable = async () => {
         try {
@@ -60,9 +61,44 @@
         window.setTimeout(refreshTable, 500);
     };
 
-    stream.addEventListener("state_update", scheduleRefresh);
-    stream.addEventListener("ready", () => {});
-    stream.onerror = () => {};
+    const connectStream = () => {
+        if (stream) {
+            stream.close();
+        }
+        stream = new EventSource(streamUrl);
+        stream.addEventListener("state_update", scheduleRefresh);
+        stream.addEventListener("ready", () => {});
+        stream.onerror = () => {
+            if (!stream) {
+                return;
+            }
+            if (stream.readyState === EventSource.CLOSED && !document.hidden) {
+                window.setTimeout(connectStream, 1000);
+            }
+        };
+    };
+
+    window.addEventListener("pageshow", (event) => {
+        if (event.persisted) {
+            connectStream();
+            scheduleRefresh();
+        }
+    });
+
+    window.addEventListener("pagehide", () => {
+        if (stream) {
+            stream.close();
+            stream = null;
+        }
+    });
+
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden && (!stream || stream.readyState === EventSource.CLOSED)) {
+            connectStream();
+        }
+    });
+
+    connectStream();
 })();
 </script>
 </body>

@@ -130,6 +130,7 @@ async def test_supported_event_enqueues_projection_eval_when_enabled(tmp_path):
     assert len(enqueued) == 1
     assert enqueued[0].repo_id == 500
     assert enqueued[0].head_sha == "a" * 40
+    assert enqueued[0].action == "completed"
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,69 @@
+<header class="state-header">
+    <h1>PR #{{ row.pr_number }}{% if row.pr_title %}: {{ row.pr_title }}{% endif %}</h1>
+    <p>{{ row.repo_full_name }}</p>
+</header>
+
+<nav class="state-pagination">
+    <a href="/state">Back to Dashboard</a>
+    {% if row.pr_url %}<a href="{{ row.pr_url }}" target="_blank" rel="noreferrer">GitHub PR</a>{% endif %}
+    {% if row.commit_url %}<a href="{{ row.commit_url }}" target="_blank" rel="noreferrer">Head Commit</a>{% endif %}
+    {% if row.check_run_url %}<a href="{{ row.check_run_url }}" target="_blank" rel="noreferrer">Check Run</a>{% endif %}
+</nav>
+
+<section class="pr-summary-grid">
+    <div><strong>PR State:</strong> <span class="chip chip-pr">{{ row.pr_state or "unknown" }}</span></div>
+    <div>
+        <strong>Sentinel:</strong>
+        <span class="chip chip-status {{ row.sentinel_status_class }}">{{ row.sentinel_status or "not_evaluated" }}</span>
+        {% if row.sentinel_conclusion %}
+        <span class="chip chip-conclusion {{ row.sentinel_conclusion_class }}">{{ row.sentinel_conclusion }}</span>
+        {% endif %}
+    </div>
+    <div><strong>Head SHA:</strong> {{ row.head_sha or "-" }}</div>
+    <div><strong>Last Eval:</strong> {{ row.last_eval_at or "-" }}</div>
+    <div><strong>Last Publish:</strong> {{ row.publish_result_display }} at {{ row.last_publish_at or "-" }}</div>
+</section>
+
+<section class="detail-section">
+    <h2>Rendered Check Output</h2>
+    <h3>{{ row.output_title or "No output title" }}</h3>
+    <div class="rendered-markdown">{{ row.rendered_output_summary | safe }}</div>
+    <div class="rendered-markdown">{{ row.rendered_output_text | safe }}</div>
+</section>
+
+<section class="detail-section">
+    <h2>Related Events (Most Recent First)</h2>
+    {% if events|length == 0 %}
+    <p class="muted">No matching events found.</p>
+    {% else %}
+    <table class="state-table">
+        <thead>
+        <tr>
+            <th>Received</th>
+            <th>Event</th>
+            <th>Action</th>
+            <th>Detail</th>
+            <th>Delivery</th>
+            <th>Payload</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for event in events %}
+        <tr>
+            <td class="muted">{{ event.received_at }}</td>
+            <td>{{ event.event }}</td>
+            <td>{{ event.action or "-" }}</td>
+            <td>{{ event.detail or "-" }}</td>
+            <td><code>{{ event.delivery_id }}</code></td>
+            <td>
+                <details>
+                    <summary>show</summary>
+                    <pre>{{ event.payload_pretty }}</pre>
+                </details>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>

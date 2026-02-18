@@ -281,6 +281,17 @@ def register_state_routes(app: Sanic) -> None:
             **context,
         }
 
+    @app.get("/state/pr/<repo_id:int>/<pr_number:int>/content")
+    @app.ext.template("state_pr_detail_content.html.j2")
+    async def state_pr_detail_content(_request, repo_id: int, pr_number: int):
+        context = _state_pr_detail_context(app, repo_id=repo_id, pr_number=pr_number)
+        if context is None:
+            raise NotFound(f"PR not found: repo_id={repo_id} pr_number={pr_number}")
+        return {
+            "app": app,
+            **context,
+        }
+
     @app.get("/state/stream")
     async def state_stream(_request):
         queue = await app.ctx.state_broadcaster.subscribe()

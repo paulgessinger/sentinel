@@ -117,6 +117,11 @@ PROJECTION_PUBLISH_ENABLED = (
 )
 # Debounce window for per-(repo_id, head_sha) evaluation scheduling.
 PROJECTION_DEBOUNCE_SECONDS = float(os.environ.get("PROJECTION_DEBOUNCE_SECONDS", 2))
+# Additional wait window after pull_request:synchronize before evaluating, to allow
+# late-arriving check runs from other systems.
+PROJECTION_PULL_REQUEST_SYNCHRONIZE_DELAY_SECONDS = float(
+    os.environ.get("PROJECTION_PULL_REQUEST_SYNCHRONIZE_DELAY_SECONDS", 15)
+)
 # Name used for Sentinel's own check run.
 PROJECTION_CHECK_RUN_NAME = os.environ.get(
     "PROJECTION_CHECK_RUN_NAME", "merge-sentinel"

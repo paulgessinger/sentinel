@@ -12,6 +12,7 @@ class ProjectionTrigger:
     installation_id: int
     delivery_id: Optional[str] = None
     event: Optional[str] = None
+    action: Optional[str] = None
 
     @property
     def key(self) -> str:

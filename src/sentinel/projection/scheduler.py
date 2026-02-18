@@ -19,9 +19,13 @@ class ProjectionStatusScheduler:
         self,
         *,
         debounce_seconds: float,
+        pull_request_synchronize_delay_seconds: float = 0.0,
         handler: Callable[[ProjectionTrigger], Awaitable[None]],
     ):
         self.debounce_seconds = max(0.0, float(debounce_seconds))
+        self.pull_request_synchronize_delay_seconds = max(
+            0.0, float(pull_request_synchronize_delay_seconds)
+        )
         self.handler = handler
         self._tasks: Dict[str, asyncio.Task] = {}
         self._states: Dict[str, _KeyState] = {}
@@ -63,6 +67,16 @@ class ProjectionStatusScheduler:
                     if state is None:
                         return
                     trigger = state.trigger
+
+                extra_delay = self._extra_delay_seconds(trigger)
+                if extra_delay > 0:
+                    await asyncio.sleep(extra_delay)
+
+                async with self._lock:
+                    state = self._states.get(key)
+                    if state is None:
+                        return
+                    trigger = state.trigger
                     state.dirty = False
 
                 sentinel_projection_debounce_total.labels(result="executed").inc()
@@ -83,3 +97,12 @@ class ProjectionStatusScheduler:
             async with self._lock:
                 self._states.pop(key, None)
                 self._tasks.pop(key, None)
+
+    def _extra_delay_seconds(self, trigger: ProjectionTrigger) -> float:
+        if (
+            trigger.event == "pull_request"
+            and trigger.action == "synchronize"
+            and self.pull_request_synchronize_delay_seconds > 0
+        ):
+            return self.pull_request_synchronize_delay_seconds
+        return 0.0
