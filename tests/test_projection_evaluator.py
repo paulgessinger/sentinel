@@ -518,6 +518,18 @@ async def test_projection_publish_skips_for_draft_pr(tmp_path):
     assert api.lookup_calls == 0
     assert api.post_calls == []
 
+    second_result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-draft-2",
+            event="check_run",
+        )
+    )
+    assert second_result.result == "unchanged"
+
     with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
         rows = conn.execute(
             """
@@ -528,19 +540,28 @@ async def test_projection_publish_skips_for_draft_pr(tmp_path):
             (11, "a" * 40, "merge-sentinel", 2877723),
         ).fetchall()
 
-    assert rows == [(None, "skipped_draft")]
+    assert rows == [(None, "unchanged")]
 
     with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
         activity_rows = conn.execute(
             """
-            SELECT activity_type, result
+            SELECT activity_type, result, detail
             FROM sentinel_activity_events
             WHERE repo_id = ? AND pr_number = ? AND head_sha = ?
             ORDER BY activity_id
             """,
             (11, 42, "a" * 40),
         ).fetchall()
-    assert ("publish", "skipped_draft") in activity_rows
+    assert (
+        "publish",
+        "skipped_draft",
+        "Draft PR, would publish completed/success",
+    ) in activity_rows
+    assert (
+        "publish",
+        "unchanged",
+        "Draft PR, publish suppressed (completed/success)",
+    ) in activity_rows
 
 
 @pytest.mark.asyncio

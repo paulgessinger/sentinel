@@ -444,12 +444,15 @@ class ProjectionEvaluator:
                 check_run_id,
             )
             sentinel_projection_publish_total.labels(result="unchanged").inc()
+            unchanged_detail = f"{new_status}/{new_conclusion or '-'}"
+            if self.config.PROJECTION_PUBLISH_ENABLED and bool(pr_row.pr_draft):
+                unchanged_detail = f"Draft PR, publish suppressed ({new_status}/{new_conclusion or '-'})"
             self._record_activity(
                 trigger=trigger,
                 pr_number=pr_number,
                 activity_type="publish",
                 result="unchanged",
-                detail=f"{new_status}/{new_conclusion or '-'}",
+                detail=unchanged_detail,
             )
             self.store.upsert_sentinel_check_run(
                 repo_id=repo_id,
