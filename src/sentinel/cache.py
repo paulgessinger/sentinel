@@ -5,7 +5,7 @@ from typing import Set
 import diskcache
 import logging
 
-from sentinel import config
+from sentinel.config import SETTINGS
 from sentinel.github.model import PullRequest
 
 logger = logging.getLogger("sentinel")
@@ -61,7 +61,7 @@ class Cache(diskcache.Cache):
                 logger.debug("Empty queue")
                 return None
 
-            cooldown = timedelta(seconds=config.PR_TIMEOUT)
+            cooldown = timedelta(seconds=SETTINGS.PR_TIMEOUT)
 
             # find first element that is not in cooldown
             for _ in range(len(self.deque)):
@@ -90,5 +90,5 @@ class Cache(diskcache.Cache):
 
 
 def get_cache():
-    # logger.info("Opening cache dir: %s", config.DISKCACHE_DIR)
-    return Cache(config.DISKCACHE_DIR)
+    # logger.info("Opening cache dir: %s", SETTINGS.DISKCACHE_DIR)
+    return Cache(SETTINGS.DISKCACHE_DIR)

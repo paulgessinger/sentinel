@@ -14,9 +14,9 @@ import aiohttp
 import cachetools
 
 from sentinel.db_migrations import migrate_webhook_db as run_webhook_db_migrations
+from sentinel.config import SETTINGS
 from sentinel.github import get_access_token, process_pull_request, API
 from sentinel.logger import get_log_handlers
-from sentinel import config
 from sentinel.cache import QueueItem, get_cache
 from sentinel.github.model import PullRequest
 from sentinel.metric import worker_error_count, record_api_call
@@ -30,14 +30,24 @@ logger = logging.getLogger("sentinel")
 
 # cache = get_cache()
 
+DEFAULT_WEBHOOK_DB_PATH = SETTINGS.WEBHOOK_DB_PATH
+if DEFAULT_WEBHOOK_DB_PATH is None:
+    raise RuntimeError("WEBHOOK_DB_PATH should never be None after settings load")
+
+DEFAULT_WEBHOOK_DB_RETENTION_SECONDS = SETTINGS.WEBHOOK_DB_RETENTION_SECONDS
+if DEFAULT_WEBHOOK_DB_RETENTION_SECONDS is None:
+    raise RuntimeError(
+        "WEBHOOK_DB_RETENTION_SECONDS should never be None after settings load"
+    )
+
 
 async def job_loop():
     logger.info("Entering job loop")
     i = 0
     while True:
         try:
-            logger.debug("Sleeping for %d", config.WORKER_SLEEP)
-            await asyncio.sleep(config.WORKER_SLEEP)
+            logger.debug("Sleeping for %d", SETTINGS.WORKER_SLEEP)
+            await asyncio.sleep(SETTINGS.WORKER_SLEEP)
 
             with get_cache() as cache:
                 if i == 60 or i == 0:
@@ -52,7 +62,7 @@ async def job_loop():
 
                 logger.info("Processing %s", item.pr)
 
-                if not config.DRY_RUN:
+                if not SETTINGS.DRY_RUN:
                     async with installation_client(item.installation_id) as gh:
                         api = API(gh, item.installation_id)
                         await process_pull_request(item.pr, api)
@@ -70,8 +80,8 @@ httpcache = cachetools.LRUCache(maxsize=500)
 
 @app.callback()
 def init():
-    logging.getLogger().setLevel(config.OVERRIDE_LOGGING)
-    logger.setLevel(config.OVERRIDE_LOGGING)
+    logging.getLogger().setLevel(SETTINGS.OVERRIDE_LOGGING)
+    logger.setLevel(SETTINGS.OVERRIDE_LOGGING)
     get_log_handlers(logger)
 
 
@@ -90,8 +100,8 @@ async def installation_client(installation: int):
         gh = gh_aiohttp.GitHubAPI(session, __name__)
 
         jwt = get_jwt(
-            app_id=str(config.GITHUB_APP_ID),
-            private_key=config.GITHUB_PRIVATE_KEY,
+            app_id=str(SETTINGS.GITHUB_APP_ID),
+            private_key=SETTINGS.GITHUB_PRIVATE_KEY,
         )
 
         await gh.getitem("/app", jwt=jwt)
@@ -152,7 +162,7 @@ def vacuum_webhook_db(
     path: Annotated[
         str,
         typer.Option("--path", help="Path to webhook SQLite database file"),
-    ] = config.WEBHOOK_DB_PATH,
+    ] = DEFAULT_WEBHOOK_DB_PATH,
 ):
     db_path = Path(path)
     if not db_path.exists():
@@ -175,7 +185,7 @@ def migrate_webhook_db(
     path: Annotated[
         str,
         typer.Option("--path", help="Path to webhook SQLite database file"),
-    ] = config.WEBHOOK_DB_PATH,
+    ] = DEFAULT_WEBHOOK_DB_PATH,
     revision: Annotated[
         str,
         typer.Option("--revision", help="Alembic revision target (default: head)"),
@@ -195,14 +205,14 @@ def prune_webhook_db(
     path: Annotated[
         str,
         typer.Option("--path", help="Path to webhook SQLite database file"),
-    ] = config.WEBHOOK_DB_PATH,
+    ] = DEFAULT_WEBHOOK_DB_PATH,
     retention_seconds: Annotated[
         int,
         typer.Option(
             "--retention-seconds",
             help="Delete webhook_events older than this many seconds",
         ),
-    ] = config.WEBHOOK_DB_RETENTION_SECONDS,
+    ] = DEFAULT_WEBHOOK_DB_RETENTION_SECONDS,
 ):
     db_path = Path(path)
     if not db_path.exists():
@@ -234,21 +244,21 @@ def prune_webhook_projections(
     path: Annotated[
         str,
         typer.Option("--path", help="Path to webhook SQLite database file"),
-    ] = config.WEBHOOK_DB_PATH,
+    ] = DEFAULT_WEBHOOK_DB_PATH,
     completed_retention_seconds: Annotated[
         int,
         typer.Option(
             "--completed-retention-seconds",
             help="Delete terminal projection rows older than this many seconds",
         ),
-    ] = config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS,
+    ] = SETTINGS.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS,
     active_retention_seconds: Annotated[
         int,
         typer.Option(
             "--active-retention-seconds",
             help="Delete active projection rows older than this many seconds",
         ),
-    ] = config.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS,
+    ] = SETTINGS.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS,
 ):
     db_path = Path(path)
     if not db_path.exists():
@@ -288,7 +298,7 @@ def migrate_webhook_db_zstd(
     path: Annotated[
         str,
         typer.Option("--path", help="Path to webhook SQLite database file"),
-    ] = config.WEBHOOK_DB_PATH,
+    ] = DEFAULT_WEBHOOK_DB_PATH,
     batch_size: Annotated[
         int,
         typer.Option(

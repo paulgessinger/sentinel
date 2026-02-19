@@ -16,7 +16,7 @@ import sanic.log
 from prometheus_client import core
 from prometheus_client.exposition import generate_latest
 
-from sentinel import config
+from sentinel.config import SETTINGS
 from sentinel.github import create_router, get_access_token
 from sentinel.github.api import API
 from sentinel.github.model import Repository
@@ -377,12 +377,12 @@ async def process_github_event_background(
 def create_app():
 
     app = Sanic("sentinel")
-    app.update_config(config)
+    app.update_config(SETTINGS.model_dump())
     app.config.TEMPLATING_PATH_TO_TEMPLATES = Path(__file__).parent / "templates"
     app.static("/static", Path(__file__).parent / "static")
 
-    # print(config.OVERRIDE_LOGGING, logging.DEBUG)
-    logging.getLogger().setLevel(config.OVERRIDE_LOGGING)
+    # print(SETTINGS.OVERRIDE_LOGGING, logging.DEBUG)
+    logging.getLogger().setLevel(SETTINGS.OVERRIDE_LOGGING)
     # sanic.log.logger.setLevel(logging.INFO)
 
     sanic.log.logger.handlers = []
@@ -532,8 +532,8 @@ def create_app():
 
     @app.get("/")
     async def index(request):
-        if config.INDEX_REDIRECT_URL:
-            return response.redirect(config.INDEX_REDIRECT_URL)
+        if SETTINGS.INDEX_REDIRECT_URL:
+            return response.redirect(SETTINGS.INDEX_REDIRECT_URL)
         return response.html(
             await request.app.ext.template("index.html.j2", {"app": app}).render()
         )
@@ -565,7 +565,7 @@ def create_app():
     @app.ext.template("queue.html.j2")
     async def queue(request):
         with get_cache() as dcache:
-            cooldown = timedelta(seconds=config.PR_TIMEOUT)
+            cooldown = timedelta(seconds=SETTINGS.PR_TIMEOUT)
             data = []
             for item in dcache.deque:
                 delta = None

@@ -21,8 +21,8 @@ from sanic.log import logger
 from tabulate import tabulate
 import yaml
 
-from sentinel import config as app_config
 from sentinel.cache import QueueItem, get_cache
+from sentinel.config import SETTINGS
 from sentinel.github.api import API
 from sentinel.github.model import (
     ActionsJob,
@@ -140,14 +140,14 @@ class _PullRequestLike(Protocol):
     def base(self) -> _BaseRefLike: ...
 
 
-@aiocache.cached(ttl=app_config.ACCESS_TOKEN_TTL, key_builder=lambda fn, gh, id: id)
+@aiocache.cached(ttl=SETTINGS.ACCESS_TOKEN_TTL, key_builder=lambda fn, gh, id: id)
 async def get_access_token(gh: gh_aiohttp.GitHubAPI, installation_id: int) -> str:
     logger.debug("Getting NEW installation access token for %d", installation_id)
     access_token_response = await get_installation_access_token(
         gh,
         installation_id=str(installation_id),
-        app_id=str(app_config.GITHUB_APP_ID),
-        private_key=app_config.GITHUB_PRIVATE_KEY,
+        app_id=str(SETTINGS.GITHUB_APP_ID),
+        private_key=SETTINGS.GITHUB_PRIVATE_KEY,
     )
     record_api_call(endpoint="installation_token")
 
@@ -164,8 +164,8 @@ async def get_config_from_repo(api: API, repo: Repository) -> Config | None:
 
         decoded_content = content.decoded_content()
 
-        if app_config.OVERRIDE_CONFIG is not None:
-            with open(app_config.OVERRIDE_CONFIG) as fh:
+        if SETTINGS.OVERRIDE_CONFIG is not None:
+            with open(SETTINGS.OVERRIDE_CONFIG) as fh:
                 decoded_content = fh.read()
 
         buf = io.StringIO(decoded_content)
@@ -611,9 +611,7 @@ async def process_pull_request(pr: PullRequest, api: API):
     # logger.debug("Have %d check runs after PR filter", len(check_runs))
 
     check_runs = {
-        cr
-        for cr in check_runs
-        if cr.app is None or cr.app.id != app_config.GITHUB_APP_ID
+        cr for cr in check_runs if cr.app is None or cr.app.id != SETTINGS.GITHUB_APP_ID
     }
     logger.debug("Have %d check runs after app id filter", len(check_runs))
 
@@ -627,7 +625,7 @@ async def process_pull_request(pr: PullRequest, api: API):
     check_run = None
 
     for cr in all_check_runs:
-        if cr.app is not None and cr.app.id == app_config.GITHUB_APP_ID:
+        if cr.app is not None and cr.app.id == SETTINGS.GITHUB_APP_ID:
             check_run = cr
             break
 
@@ -707,8 +705,8 @@ async def process_pull_request(pr: PullRequest, api: API):
 
 async def validate_source_repo(api: API, repo: Repository, pr: PullRequest) -> bool:
     if repo.private:
-        if app_config.REPO_ALLOWLIST is not None:
-            if repo.full_name in app_config.REPO_ALLOWLIST:
+        if SETTINGS.REPO_ALLOWLIST is not None:
+            if repo.full_name in SETTINGS.REPO_ALLOWLIST:
                 return True
         logger.warning("Webhook triggered on private repository: %s", repo.html_url)
         await api.post_check_run(
@@ -758,17 +756,17 @@ def create_router():
     async def on_check_run(event: Event, api: API, app: Sanic):
         check_run = CheckRun.model_validate(event.data["check_run"])
 
-        if check_run.app is not None and check_run.app.id == app_config.GITHUB_APP_ID:
+        if check_run.app is not None and check_run.app.id == SETTINGS.GITHUB_APP_ID:
             logger.debug("Check run from us, skip handling")
             webhook_skipped_counter.labels(name=check_run.name, event="check_run").inc()
             return
 
-        if app_config.CHECK_RUN_NAME_FILTER is not None:
-            if re.match(app_config.CHECK_RUN_NAME_FILTER, check_run.name):
+        if SETTINGS.CHECK_RUN_NAME_FILTER is not None:
+            if re.match(SETTINGS.CHECK_RUN_NAME_FILTER, check_run.name):
                 logger.debug(
                     "Skipping check run '%s' due to filter '%s'",
                     check_run.name,
-                    app_config.CHECK_RUN_NAME_FILTER,
+                    SETTINGS.CHECK_RUN_NAME_FILTER,
                 )
                 webhook_skipped_counter.labels(
                     name=check_run.name, event="check_run"
@@ -807,7 +805,9 @@ def create_router():
                     logger.info("Getting all PRs for repo %s", repo.url)
                     prs = [pr async for pr in api.get_pulls(repo.url)]
                     dcache.set(
-                        f"cached_prs_repo_{repo.id}", prs, expire=app_config.PRS_TTL
+                        f"cached_prs_repo_{repo.id}",
+                        prs,
+                        expire=SETTINGS.PRS_TTL,
                     )
 
             for pr in prs:
@@ -823,7 +823,7 @@ def create_router():
                         dcache.set(
                             cr_key,
                             check_run,
-                            expire=app_config.CHECK_RUN_DEBOUNCE_WINDOW,
+                            expire=SETTINGS.CHECK_RUN_DEBOUNCE_WINDOW,
                         )
                     if await dcache.push_pr(QueueItem(pr, api.installation)):
                         pr_update_accept_counter.labels(
@@ -833,12 +833,12 @@ def create_router():
     @router.register("status")
     async def on_status(event: Event, api: API, app: Sanic):
         status = CommitStatus.model_validate(event.data)
-        if app_config.CHECK_RUN_NAME_FILTER is not None:
-            if re.match(app_config.CHECK_RUN_NAME_FILTER, status.context):
+        if SETTINGS.CHECK_RUN_NAME_FILTER is not None:
+            if re.match(SETTINGS.CHECK_RUN_NAME_FILTER, status.context):
                 logger.debug(
                     "Skipping status '%s' due to filter '%s'",
                     status.context,
-                    app_config.CHECK_RUN_NAME_FILTER,
+                    SETTINGS.CHECK_RUN_NAME_FILTER,
                 )
                 webhook_skipped_counter.labels(
                     name=status.context, event="status"
@@ -868,7 +868,9 @@ def create_router():
                     logger.info("Getting all PRs for repo %s", repo.url)
                     prs = [pr async for pr in api.get_pulls(repo.url)]
                     dcache.set(
-                        f"cached_prs_repo_{repo.id}", prs, expire=app_config.PRS_TTL
+                        f"cached_prs_repo_{repo.id}",
+                        prs,
+                        expire=SETTINGS.PRS_TTL,
                     )
 
             for pr in prs:
@@ -882,7 +884,7 @@ def create_router():
                         dcache.set(
                             status_key,
                             status,
-                            expire=app_config.CHECK_RUN_DEBOUNCE_WINDOW,
+                            expire=SETTINGS.CHECK_RUN_DEBOUNCE_WINDOW,
                         )
                     if await dcache.push_pr(QueueItem(pr, api.installation)):
                         pr_update_accept_counter.labels(
