@@ -489,7 +489,25 @@ class ProjectionEvaluator:
         publish_error: str | None = None
         publish_at: str | None = None
 
-        if self.publish_enabled:
+        if self.publish_enabled and bool(pr_row.pr_draft):
+            logger.info(
+                "Projection publish skipped (draft_pr) repo=%s sha=%s pr=%s status=%s conclusion=%s",
+                trigger.repo_full_name,
+                head_sha,
+                pr_number,
+                new_status,
+                new_conclusion,
+            )
+            publish_result = "skipped_draft"
+            sentinel_projection_publish_total.labels(result="skipped_draft").inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="publish",
+                result="skipped_draft",
+                detail=f"Draft PR, would publish {new_status}/{new_conclusion or '-'}",
+            )
+        elif self.publish_enabled:
             logger.info(
                 "Projection publish attempt repo=%s sha=%s pr=%s current_id=%s status=%s conclusion=%s",
                 trigger.repo_full_name,

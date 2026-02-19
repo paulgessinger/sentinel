@@ -174,19 +174,24 @@ def _pull_request_payload(
     action: str = "synchronize",
     state: str = "open",
     head_sha: str = "a" * 40,
+    draft: bool | None = None,
 ) -> dict:
+    pull_request_payload = {
+        "id": 5001,
+        "number": 42,
+        "state": state,
+        "updated_at": "2026-02-17T10:02:00Z",
+        "head": {"sha": head_sha},
+        "base": {"ref": "main"},
+    }
+    if draft is not None:
+        pull_request_payload["draft"] = draft
+
     return {
         "action": action,
         "installation": {"id": 321},
         "repository": {"id": 11, "full_name": "org/repo"},
-        "pull_request": {
-            "id": 5001,
-            "number": 42,
-            "state": state,
-            "updated_at": "2026-02-17T10:02:00Z",
-            "head": {"sha": head_sha},
-            "base": {"ref": "main"},
-        },
+        "pull_request": pull_request_payload,
     }
 
 
@@ -450,6 +455,95 @@ async def test_projection_publish_persists_real_id(tmp_path):
         ).fetchall()
 
     assert rows == [(91234, "published")]
+
+
+@pytest.mark.asyncio
+async def test_projection_publish_skips_for_draft_pr(tmp_path):
+    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store.initialize()
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=_pull_request_payload(draft=True),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=_check_run_payload(),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="wf-1",
+        event="workflow_run",
+        payload=_workflow_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPI(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n",
+        post_id=91234,
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = ProjectionEvaluator(
+        store=store,
+        app_id=2877723,
+        check_run_name="merge-sentinel",
+        publish_enabled=True,
+        manual_refresh_action_enabled=True,
+        manual_refresh_action_identifier="refresh_from_api",
+        manual_refresh_action_label="Re-evaluate now",
+        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
+        path_rule_fallback_enabled=True,
+        auto_refresh_on_missing_enabled=True,
+        auto_refresh_on_missing_stale_seconds=1800,
+        auto_refresh_on_missing_cooldown_seconds=300,
+        config_cache_seconds=300,
+        pr_files_cache_seconds=86400,
+        api_factory=api_factory,
+    )
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-draft-1",
+            event="check_run",
+        )
+    )
+
+    assert result.result == "skipped_draft"
+    assert api.lookup_calls == 0
+    assert api.post_calls == []
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        rows = conn.execute(
+            """
+            SELECT check_run_id, last_publish_result
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ? AND app_id = ?
+            """,
+            (11, "a" * 40, "merge-sentinel", 2877723),
+        ).fetchall()
+
+    assert rows == [(None, "skipped_draft")]
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        activity_rows = conn.execute(
+            """
+            SELECT activity_type, result
+            FROM sentinel_activity_events
+            WHERE repo_id = ? AND pr_number = ? AND head_sha = ?
+            ORDER BY activity_id
+            """,
+            (11, 42, "a" * 40),
+        ).fetchall()
+    assert ("publish", "skipped_draft") in activity_rows
 
 
 @pytest.mark.asyncio
