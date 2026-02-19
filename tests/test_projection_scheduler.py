@@ -127,3 +127,48 @@ async def test_scheduler_adds_extra_delay_for_pull_request_opened_and_reopened(
     await scheduler.shutdown()
 
     assert seen == [delivery_id]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_preserves_pr_delay_when_non_pr_events_coalesce_after_opened():
+    seen = []
+
+    async def handler(trigger: ProjectionTrigger):
+        seen.append(trigger.delivery_id)
+
+    scheduler = ProjectionStatusScheduler(
+        debounce_seconds=0.0,
+        pull_request_synchronize_delay_seconds=0.06,
+        handler=handler,
+    )
+
+    await scheduler.enqueue(
+        ProjectionTrigger(
+            repo_id=10,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=111,
+            delivery_id="d-opened",
+            event="pull_request",
+            action="opened",
+        )
+    )
+    await asyncio.sleep(0.005)
+    await scheduler.enqueue(
+        ProjectionTrigger(
+            repo_id=10,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=111,
+            delivery_id="d-check",
+            event="check_run",
+        )
+    )
+
+    await asyncio.sleep(0.03)
+    assert seen == []
+
+    await asyncio.sleep(0.05)
+    await scheduler.shutdown()
+
+    assert seen == ["d-check"]

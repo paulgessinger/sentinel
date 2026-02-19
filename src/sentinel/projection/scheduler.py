@@ -12,6 +12,8 @@ from sentinel.projection.types import ProjectionTrigger
 class _KeyState:
     trigger: ProjectionTrigger
     dirty: bool = False
+    debounce_until: float = 0.0
+    pull_request_delay_until: float = 0.0
 
 
 class ProjectionStatusScheduler:
@@ -35,15 +37,30 @@ class ProjectionStatusScheduler:
 
     async def enqueue(self, trigger: ProjectionTrigger) -> None:
         key = trigger.key
+        now = asyncio.get_running_loop().time()
+        debounce_until = now + self.debounce_seconds
+        pull_request_delay_until = 0.0
+        if self._should_apply_pull_request_delay(trigger):
+            pull_request_delay_until = now + self.pull_request_synchronize_delay_seconds
         async with self._lock:
             if key in self._tasks:
                 state = self._states[key]
                 state.trigger = trigger
                 state.dirty = True
+                state.debounce_until = max(state.debounce_until, debounce_until)
+                state.pull_request_delay_until = max(
+                    state.pull_request_delay_until,
+                    pull_request_delay_until,
+                )
                 sentinel_projection_debounce_total.labels(result="coalesced").inc()
                 return
 
-            self._states[key] = _KeyState(trigger=trigger, dirty=False)
+            self._states[key] = _KeyState(
+                trigger=trigger,
+                dirty=False,
+                debounce_until=debounce_until,
+                pull_request_delay_until=pull_request_delay_until,
+            )
             sentinel_projection_debounce_total.labels(result="scheduled").inc()
             self._tasks[key] = asyncio.create_task(self._run_key(key))
 
@@ -59,20 +76,21 @@ class ProjectionStatusScheduler:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run_key(self, key: str) -> None:
+        loop = asyncio.get_running_loop()
         try:
             while True:
-                if self.debounce_seconds > 0:
-                    await asyncio.sleep(self.debounce_seconds)
-
                 async with self._lock:
                     state = self._states.get(key)
                     if state is None:
                         return
-                    trigger = state.trigger
-
-                extra_delay = self._extra_delay_seconds(trigger)
-                if extra_delay > 0:
-                    await asyncio.sleep(extra_delay)
+                    execute_after = max(
+                        state.debounce_until,
+                        state.pull_request_delay_until,
+                    )
+                sleep_for = execute_after - loop.time()
+                if sleep_for > 0:
+                    await asyncio.sleep(sleep_for)
+                    continue
 
                 async with self._lock:
                     state = self._states.get(key)
@@ -100,11 +118,11 @@ class ProjectionStatusScheduler:
                 self._states.pop(key, None)
                 self._tasks.pop(key, None)
 
-    def _extra_delay_seconds(self, trigger: ProjectionTrigger) -> float:
+    def _should_apply_pull_request_delay(self, trigger: ProjectionTrigger) -> bool:
         if (
             trigger.event == "pull_request"
             and trigger.action in self._PULL_REQUEST_DELAY_ACTIONS
             and self.pull_request_synchronize_delay_seconds > 0
         ):
-            return self.pull_request_synchronize_delay_seconds
-        return 0.0
+            return True
+        return False
