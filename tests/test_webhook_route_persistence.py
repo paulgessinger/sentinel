@@ -71,10 +71,12 @@ def make_requested_action_event(
     app_id: int = 1234,
     check_run_name: str = "merge-sentinel",
     identifier: str = "refresh_from_api",
+    pr_number: int = 42,
 ):
     payload = make_check_run_event(app_id=app_id).data
     payload["action"] = "requested_action"
     payload["check_run"]["name"] = check_run_name
+    payload["check_run"]["pull_requests"] = [{"number": pr_number}]
     payload["requested_action"] = {"identifier": identifier}
     return SimpleNamespace(event="check_run", data=payload)
 
@@ -410,4 +412,18 @@ async def test_requested_action_from_self_app_enqueues_force_api_refresh(tmp_pat
 
     with sqlite3.connect(str(db_path)) as conn:
         count = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
+        activity_rows = conn.execute(
+            """
+            SELECT activity_type, result, detail
+            FROM sentinel_activity_events
+            WHERE repo_id = ? AND pr_number = ? AND head_sha = ?
+            ORDER BY activity_id
+            """,
+            (500, 42, "a" * 40),
+        ).fetchall()
     assert count == 1
+    assert (
+        "manual_refresh",
+        "enqueued",
+        "Force API refresh scheduled",
+    ) in activity_rows

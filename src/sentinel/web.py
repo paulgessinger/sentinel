@@ -4,6 +4,7 @@ import logging.config
 from pathlib import Path
 import re
 import time
+from typing import Any
 
 import aiohttp
 from sanic import Sanic, response, Request
@@ -97,6 +98,100 @@ def event_source_app_id(event: sansio.Event) -> int | None:
         return app.get("id")
     app = event_data.get("app") or {}
     return app.get("id")
+
+
+def is_check_run_requested_action_event(event: sansio.Event) -> bool:
+    return event.event == "check_run" and (
+        event.data.get("action") == "requested_action"
+    )
+
+
+def _requested_action_pr_number(
+    app: Sanic,
+    *,
+    event: sansio.Event,
+    repo_id: int,
+    head_sha: str,
+) -> int | None:
+    check_run = event.data.get("check_run") or {}
+    pull_requests = check_run.get("pull_requests")
+    if isinstance(pull_requests, list):
+        for pull_request in pull_requests:
+            if not isinstance(pull_request, dict):
+                continue
+            pr_number = pull_request.get("number")
+            if pr_number is None:
+                continue
+            try:
+                return int(pr_number)
+            except TypeError, ValueError:
+                continue
+
+    candidates = app.ctx.webhook_store.get_open_pr_candidates(repo_id, head_sha)
+    if not candidates:
+        return None
+    candidate_number = candidates[0].pr_number
+    if candidate_number is None:
+        return None
+    return int(candidate_number)
+
+
+def record_manual_refresh_activity(
+    app: Sanic,
+    *,
+    event: sansio.Event,
+    delivery_id: str,
+    result: str,
+    detail: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    if not is_check_run_requested_action_event(event):
+        return
+    payload = event.data
+    repo = payload.get("repository") or {}
+    check_run = payload.get("check_run") or {}
+    repo_id = repo.get("id")
+    repo_full_name = repo.get("full_name")
+    head_sha = check_run.get("head_sha")
+    if repo_id is None or not isinstance(head_sha, str) or not head_sha:
+        logger.info(
+            "Cannot record manual refresh activity delivery=%s (missing repo/head)",
+            delivery_id,
+        )
+        return
+    pr_number = _requested_action_pr_number(
+        app,
+        event=event,
+        repo_id=int(repo_id),
+        head_sha=head_sha,
+    )
+    if pr_number is None:
+        logger.info(
+            "Cannot record manual refresh activity delivery=%s repo_id=%s sha=%s (no PR number)",
+            delivery_id,
+            repo_id,
+            head_sha,
+        )
+        return
+    try:
+        app.ctx.webhook_store.record_projection_activity_event(
+            repo_id=int(repo_id),
+            repo_full_name=repo_full_name if isinstance(repo_full_name, str) else None,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            delivery_id=delivery_id or None,
+            activity_type="manual_refresh",
+            result=result,
+            detail=detail,
+            metadata=metadata,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Failed recording manual refresh activity delivery=%s result=%s",
+            delivery_id,
+            result,
+            exc_info=True,
+        )
 
 
 def excluded_app_ids_for_event(app: Sanic) -> set[int]:
@@ -229,12 +324,47 @@ async def process_github_event(
     manual_refresh_requested = is_projection_manual_refresh_requested(app, event)
     source_app_id = event_source_app_id(event)
     excluded_app_ids = excluded_app_ids_for_event(app)
+    if is_check_run_requested_action_event(event):
+        payload = event.data
+        check_run = payload.get("check_run") or {}
+        requested_action = payload.get("requested_action") or {}
+        settings = app.ctx.settings
+        logger.info(
+            "Received check_run requested_action delivery=%s repo=%s sha=%s check_name=%s action_identifier=%s source_app_id=%s matches_manual_refresh=%s expected_identifier=%s expected_check_name=%s expected_app_id=%s",
+            delivery_id,
+            (payload.get("repository") or {}).get("full_name"),
+            check_run.get("head_sha"),
+            check_run.get("name"),
+            requested_action.get("identifier"),
+            source_app_id,
+            manual_refresh_requested,
+            settings.PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER,
+            settings.PROJECTION_CHECK_RUN_NAME,
+            settings.GITHUB_APP_ID,
+        )
 
     if (
         not manual_refresh_requested
         and source_app_id is not None
         and source_app_id in excluded_app_ids
     ):
+        if is_check_run_requested_action_event(event):
+            logger.info(
+                "Skipping check_run requested_action delivery=%s because source app id=%s is excluded and event did not match manual refresh criteria",
+                delivery_id,
+                source_app_id,
+            )
+            record_manual_refresh_activity(
+                app,
+                event=event,
+                delivery_id=delivery_id,
+                result="skipped_app_filter",
+                detail=(
+                    "Requested action did not match manual refresh criteria and "
+                    "source app id is excluded"
+                ),
+                metadata={"source_app_id": source_app_id},
+            )
         webhook_skipped_counter.labels(event=event.event, name=name).inc()
         logger.debug(
             "Skipping webhook event %s name=%s due to source app id=%s",
@@ -309,14 +439,52 @@ async def process_github_event(
         if trigger is not None:
             try:
                 await app.ctx.projection_scheduler.enqueue(trigger)
+                if trigger.force_api_refresh:
+                    logger.info(
+                        "Enqueued projection force_api_refresh delivery=%s repo=%s sha=%s",
+                        delivery_id,
+                        trigger.repo_full_name,
+                        trigger.head_sha,
+                    )
+                    record_manual_refresh_activity(
+                        app,
+                        event=event,
+                        delivery_id=delivery_id,
+                        result="enqueued",
+                        detail="Force API refresh scheduled",
+                    )
+                elif is_check_run_requested_action_event(event):
+                    record_manual_refresh_activity(
+                        app,
+                        event=event,
+                        delivery_id=delivery_id,
+                        result="not_matched",
+                        detail="Requested action received but did not match manual refresh criteria",
+                    )
             except Exception:  # noqa: BLE001
                 error_counter.labels(context="projection_schedule").inc()
+                if is_check_run_requested_action_event(event):
+                    record_manual_refresh_activity(
+                        app,
+                        event=event,
+                        delivery_id=delivery_id,
+                        result="enqueue_error",
+                        detail="Failed to enqueue force API refresh",
+                    )
                 logger.error(
                     "Failed scheduling projection evaluation for repo_id=%s sha=%s",
                     trigger.repo_id,
                     trigger.head_sha,
                     exc_info=True,
                 )
+        elif is_check_run_requested_action_event(event):
+            record_manual_refresh_activity(
+                app,
+                event=event,
+                delivery_id=delivery_id,
+                result="no_trigger",
+                detail="Requested action could not be converted into projection trigger",
+            )
 
     if not webhook_dispatch_enabled(app):
         return
