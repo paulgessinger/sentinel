@@ -28,6 +28,12 @@ from sentinel.metric import (
 from sentinel.model import Config
 from sentinel.projection.types import EvaluationResult, ProjectionTrigger
 from sentinel.storage import WebhookStore
+from sentinel.storage.types import (
+    CheckRunRow,
+    CommitStatusRow,
+    PullRequestHeadRow,
+    WorkflowRunRow,
+)
 from sentinel.storage.webhook_store import utcnow_iso
 
 
@@ -50,9 +56,9 @@ class _RulePullRequestLike:
 
 @dataclass(frozen=True)
 class _ComputedEvaluation:
-    check_by_name: Dict[str, Dict[str, Any]]
+    check_by_name: Dict[str, CheckRunRow]
     result_items: Dict[str, _ResultItem]
-    status_by_name: Dict[str, Dict[str, Any]]
+    status_by_name: Dict[str, CommitStatusRow]
     failures: list[_ResultItem]
     explicit_failures: list[_ResultItem]
     in_progress: list[_ResultItem]
@@ -842,43 +848,37 @@ class ProjectionEvaluator:
     def _evaluate_rows(
         self,
         *,
-        check_rows: list[Dict[str, Any]],
-        workflow_rows: list[Dict[str, Any]],
-        status_rows: list[Dict[str, Any]],
+        check_rows: list[CheckRunRow],
+        workflow_rows: list[WorkflowRunRow],
+        status_rows: list[CommitStatusRow],
         rules: list[Any],
     ) -> _ComputedEvaluation:
         filtered_check_rows = [
             row
             for row in check_rows
-            if not (
-                row.get("app_id") == self.app_id
-                and row.get("name") == self.check_run_name
-            )
+            if not (row.app_id == self.app_id and row.name == self.check_run_name)
         ]
         workflow_name_by_suite = {
-            row.get("check_suite_id"): row.get("name")
+            row.check_suite_id: row.name
             for row in workflow_rows
-            if row.get("check_suite_id") is not None and row.get("name")
+            if row.check_suite_id is not None and row.name
         }
 
-        normalized_checks = []
+        check_by_name: Dict[str, CheckRunRow] = {}
         for row in filtered_check_rows:
-            name = row["name"]
-            check_suite_id = row.get("check_suite_id")
+            name = row.name
+            if not name:
+                continue
+            check_suite_id = row.check_suite_id
             workflow_name = workflow_name_by_suite.get(check_suite_id)
             if workflow_name:
                 name = f"{workflow_name} / {name}"
-            normalized_checks.append({**row, "normalized_name": name})
-
-        check_by_name: Dict[str, Dict[str, Any]] = {}
-        for row in normalized_checks:
-            name = row["normalized_name"]
             existing = check_by_name.get(name)
             if existing is None:
                 check_by_name[name] = row
                 continue
-            row_completed = row.get("completed_at")
-            existing_completed = existing.get("completed_at")
+            row_completed = row.completed_at
+            existing_completed = existing.completed_at
             if row_completed is None or existing_completed is None:
                 check_by_name[name] = row
                 continue
@@ -886,19 +886,23 @@ class ProjectionEvaluator:
                 check_by_name[name] = row
 
         result_items: Dict[str, _ResultItem] = {}
-        for row in check_by_name.values():
+        for normalized_name, row in check_by_name.items():
             item = _ResultItem(
-                name=row["normalized_name"],
+                name=normalized_name,
                 status=self._status_from_check_run(row),
                 required=False,
             )
             result_items[item.name] = item
 
         for row in status_rows:
-            context = row["context"]
+            context = row.context
             if context == self.check_run_name:
                 continue
-            state = row["state"]
+            if context is None:
+                continue
+            state = row.state
+            if state is None:
+                continue
             status = "failure" if state in ("failure", "error") else state
             if status not in ("success", "pending", "failure"):
                 continue
@@ -907,9 +911,7 @@ class ProjectionEvaluator:
             )
 
         status_by_name = {
-            str(row.get("context")): row
-            for row in status_rows
-            if row.get("context") is not None
+            str(row.context): row for row in status_rows if row.context is not None
         }
 
         observed_names = set(result_items.keys())
@@ -996,7 +998,7 @@ class ProjectionEvaluator:
         self,
         *,
         trigger: ProjectionTrigger,
-        pr_row: Dict[str, Any],
+        pr_row: PullRequestHeadRow,
         pr_number: int,
         missing_pattern_failures: list[str],
         explicit_failures: list[_ResultItem],
@@ -1047,7 +1049,7 @@ class ProjectionEvaluator:
             )
             return False
 
-        pr_updated_at = self._parse_dt(pr_row.get("updated_at"))
+        pr_updated_at = self._parse_dt(pr_row.updated_at)
         if pr_updated_at is None:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_no_pr_updated_at"
@@ -1101,7 +1103,7 @@ class ProjectionEvaluator:
 
     async def _load_head_rows_from_api(
         self, *, api: API, trigger: ProjectionTrigger, pr_number: int
-    ) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]], list[Dict[str, Any]]]:
+    ) -> tuple[list[CheckRunRow], list[WorkflowRunRow], list[CommitStatusRow]]:
         self._record_activity(
             trigger=trigger,
             pr_number=pr_number,
@@ -1160,48 +1162,16 @@ class ProjectionEvaluator:
         return check_rows, workflow_rows, status_rows
 
     @staticmethod
-    def _check_run_to_row(check_run: CheckRun) -> Dict[str, Any]:
-        app = check_run.app
-        check_suite = check_run.check_suite
-        return {
-            "check_run_id": check_run.id,
-            "name": check_run.name,
-            "status": check_run.status,
-            "conclusion": check_run.conclusion,
-            "app_id": app.id if app is not None else None,
-            "app_slug": app.slug if app is not None else None,
-            "check_suite_id": check_suite.id if check_suite is not None else None,
-            "html_url": check_run.html_url,
-            "started_at": ProjectionEvaluator._dt_to_iso(check_run.started_at),
-            "completed_at": ProjectionEvaluator._dt_to_iso(check_run.completed_at),
-        }
+    def _check_run_to_row(check_run: CheckRun) -> CheckRunRow:
+        return CheckRunRow.from_github_check_run(check_run)
 
     @staticmethod
-    def _workflow_run_to_row(workflow_run: Any) -> Dict[str, Any]:
-        return {
-            "workflow_run_id": workflow_run.id,
-            "name": workflow_run.name,
-            "event": workflow_run.event,
-            "status": workflow_run.status,
-            "conclusion": workflow_run.conclusion,
-            "run_number": workflow_run.run_number,
-            "workflow_id": workflow_run.workflow_id,
-            "check_suite_id": workflow_run.check_suite_id,
-            "created_at": ProjectionEvaluator._dt_to_iso(workflow_run.created_at),
-            "updated_at": ProjectionEvaluator._dt_to_iso(workflow_run.updated_at),
-        }
+    def _workflow_run_to_row(workflow_run: Any) -> WorkflowRunRow:
+        return WorkflowRunRow.from_github_actions_run(workflow_run)
 
     @staticmethod
-    def _status_to_row(status: Any) -> Dict[str, Any]:
-        return {
-            "status_id": status.id,
-            "url": status.url,
-            "sha": status.sha,
-            "context": status.context,
-            "state": status.state,
-            "created_at": ProjectionEvaluator._dt_to_iso(status.created_at),
-            "updated_at": ProjectionEvaluator._dt_to_iso(status.updated_at),
-        }
+    def _status_to_row(status: Any) -> CommitStatusRow:
+        return CommitStatusRow.from_github_commit_status(status)
 
     @staticmethod
     def _dt_to_iso(value: datetime | None) -> str | None:
@@ -1210,9 +1180,9 @@ class ProjectionEvaluator:
         return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     @staticmethod
-    def _status_from_check_run(row: Dict[str, Any]) -> str:
-        status = row.get("status")
-        conclusion = row.get("conclusion")
+    def _status_from_check_run(row: CheckRunRow) -> str:
+        status = row.status
+        conclusion = row.conclusion
         if status == "completed" and conclusion in ("cancelled", "failure"):
             return "failure"
         if status in ("queued", "in_progress", "pending"):
@@ -1238,18 +1208,16 @@ class ProjectionEvaluator:
         return dt
 
     @classmethod
-    def _min_started_at(cls, rows: Iterable[Dict[str, Any]]) -> str | None:
-        vals = [cls._parse_dt(r.get("started_at")) for r in rows if r.get("started_at")]
+    def _min_started_at(cls, rows: Iterable[CheckRunRow]) -> str | None:
+        vals = [cls._parse_dt(r.started_at) for r in rows if r.started_at]
         vals = [v for v in vals if v is not None]
         if not vals:
             return None
         return min(vals).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     @classmethod
-    def _max_completed_at(cls, rows: Iterable[Dict[str, Any]]) -> str | None:
-        vals = [
-            cls._parse_dt(r.get("completed_at")) for r in rows if r.get("completed_at")
-        ]
+    def _max_completed_at(cls, rows: Iterable[CheckRunRow]) -> str | None:
+        vals = [cls._parse_dt(r.completed_at) for r in rows if r.completed_at]
         vals = [v for v in vals if v is not None]
         if not vals:
             return None

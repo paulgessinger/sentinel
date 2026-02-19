@@ -161,7 +161,7 @@ def _pr_draft_chip_class(is_draft: bool) -> str:
     return ""
 
 
-def _row_update_signature(row: Dict[str, Any]) -> str:
+def _row_update_signature(row: Any) -> str:
     values = (
         row.get("pr_updated_at"),
         row.get("pr_state"),
@@ -206,6 +206,7 @@ def _state_dashboard_context(
     )
     enriched_rows = []
     for row in rows:
+        row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
         repo_full_name = row.get("repo_full_name")
         pr_number = row.get("pr_number")
         head_sha = row.get("head_sha")
@@ -226,7 +227,7 @@ def _state_dashboard_context(
         )
         enriched_rows.append(
             {
-                **row,
+                **row_dict,
                 "short_sha": head_sha[:8] if head_sha else "",
                 "row_key": row_key,
                 "row_update_signature": _row_update_signature(row),
@@ -443,9 +444,10 @@ def _state_pr_detail_context(
         row.get("pr_merged"),
     )
     pr_is_draft = bool(row.get("pr_is_draft"))
+    row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
     return {
         "row": {
-            **row,
+            **row_dict,
             "short_sha": head_sha[:8] if head_sha else "",
             "pr_url": _github_pr_url(repo_full_name, pr_number),
             "commit_url": _github_commit_url(repo_full_name, head_sha),

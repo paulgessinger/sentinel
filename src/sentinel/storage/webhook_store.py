@@ -38,6 +38,16 @@ from sentinel.metric import (
     webhook_project_total,
     webhook_projection_pruned_total,
 )
+from sentinel.storage.types import (
+    CheckRunRow,
+    CommitStatusRow,
+    PRDashboardRow,
+    PullRequestHeadRow,
+    RelatedEventRow,
+    SentinelCheckRunStateRow,
+    WebhookEventRow,
+    WorkflowRunRow,
+)
 
 
 metadata = MetaData()
@@ -699,7 +709,7 @@ class WebhookStore:
 
     def get_open_pr_candidates(
         self, repo_id: int, head_sha: str
-    ) -> list[Dict[str, Any]]:
+    ) -> list[PullRequestHeadRow]:
         stmt = (
             select(pr_heads_current)
             .where(
@@ -713,11 +723,9 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
-        return [dict(row) for row in rows]
+        return [PullRequestHeadRow.from_mapping(dict(row)) for row in rows]
 
-    def get_check_runs_for_head(
-        self, repo_id: int, head_sha: str
-    ) -> list[Dict[str, Any]]:
+    def get_check_runs_for_head(self, repo_id: int, head_sha: str) -> list[CheckRunRow]:
         stmt = select(check_runs_current).where(
             and_(
                 check_runs_current.c.repo_id == repo_id,
@@ -726,11 +734,11 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
-        return [dict(row) for row in rows]
+        return [CheckRunRow.from_mapping(dict(row)) for row in rows]
 
     def get_workflow_runs_for_head(
         self, repo_id: int, head_sha: str
-    ) -> list[Dict[str, Any]]:
+    ) -> list[WorkflowRunRow]:
         stmt = select(workflow_runs_current).where(
             and_(
                 workflow_runs_current.c.repo_id == repo_id,
@@ -739,11 +747,11 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
-        return [dict(row) for row in rows]
+        return [WorkflowRunRow.from_mapping(dict(row)) for row in rows]
 
     def get_commit_statuses_for_sha(
         self, repo_id: int, sha: str
-    ) -> list[Dict[str, Any]]:
+    ) -> list[CommitStatusRow]:
         stmt = select(commit_status_current).where(
             and_(
                 commit_status_current.c.repo_id == repo_id,
@@ -752,7 +760,7 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
-        return [dict(row) for row in rows]
+        return [CommitStatusRow.from_mapping(dict(row)) for row in rows]
 
     def upsert_head_snapshot_from_api(
         self,
@@ -761,9 +769,9 @@ class WebhookStore:
         repo_full_name: str | None,
         head_sha: str,
         delivery_id: str | None,
-        check_rows: Sequence[Mapping[str, Any]],
-        workflow_rows: Sequence[Mapping[str, Any]],
-        status_rows: Sequence[Mapping[str, Any]],
+        check_rows: Sequence[CheckRunRow],
+        workflow_rows: Sequence[WorkflowRunRow],
+        status_rows: Sequence[CommitStatusRow],
     ) -> Dict[str, int]:
         now = utcnow_iso()
         resolved_delivery_id = delivery_id or "api-refresh"
@@ -771,29 +779,36 @@ class WebhookStore:
 
         with self.engine.begin() as conn:
             for row in check_rows:
-                check_run_id = row.get("check_run_id")
-                name = row.get("name")
-                status = row.get("status")
+                check_run_id = row.check_run_id
+                name = row.name
+                status = row.status
                 if check_run_id is None or not name or not status:
                     continue
-                values = {
-                    "repo_id": repo_id,
-                    "repo_full_name": repo_full_name,
-                    "check_run_id": int(check_run_id),
-                    "head_sha": head_sha,
-                    "name": str(name),
-                    "status": str(status),
-                    "conclusion": row.get("conclusion"),
-                    "app_id": row.get("app_id"),
-                    "app_slug": row.get("app_slug"),
-                    "check_suite_id": row.get("check_suite_id"),
-                    "html_url": row.get("html_url"),
-                    "started_at": row.get("started_at"),
-                    "completed_at": row.get("completed_at"),
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "last_delivery_id": resolved_delivery_id,
-                }
+                values = row.model_dump(
+                    mode="python",
+                    include={
+                        "check_run_id",
+                        "name",
+                        "status",
+                        "conclusion",
+                        "app_id",
+                        "app_slug",
+                        "check_suite_id",
+                        "html_url",
+                        "started_at",
+                        "completed_at",
+                    },
+                )
+                values.update(
+                    {
+                        "repo_id": repo_id,
+                        "repo_full_name": repo_full_name,
+                        "head_sha": head_sha,
+                        "first_seen_at": now,
+                        "last_seen_at": now,
+                        "last_delivery_id": resolved_delivery_id,
+                    }
+                )
                 self._upsert(
                     conn=conn,
                     table=check_runs_current,
@@ -818,30 +833,37 @@ class WebhookStore:
                 counts["check_runs"] += 1
 
             for row in workflow_rows:
-                workflow_run_id = row.get("workflow_run_id")
-                name = row.get("name")
+                workflow_run_id = row.workflow_run_id
+                name = row.name
                 if workflow_run_id is None or not name:
                     continue
-                values = {
-                    "repo_id": repo_id,
-                    "repo_full_name": repo_full_name,
-                    "workflow_run_id": int(workflow_run_id),
-                    "name": str(name),
-                    "event": row.get("event"),
-                    "status": row.get("status"),
-                    "conclusion": row.get("conclusion"),
-                    "head_sha": head_sha,
-                    "run_number": row.get("run_number"),
-                    "workflow_id": row.get("workflow_id"),
-                    "check_suite_id": row.get("check_suite_id"),
-                    "app_id": row.get("app_id"),
-                    "app_slug": row.get("app_slug"),
-                    "created_at": row.get("created_at"),
-                    "updated_at": row.get("updated_at"),
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "last_delivery_id": resolved_delivery_id,
-                }
+                values = row.model_dump(
+                    mode="python",
+                    include={
+                        "workflow_run_id",
+                        "name",
+                        "event",
+                        "status",
+                        "conclusion",
+                        "run_number",
+                        "workflow_id",
+                        "check_suite_id",
+                        "app_id",
+                        "app_slug",
+                        "created_at",
+                        "updated_at",
+                    },
+                )
+                values.update(
+                    {
+                        "repo_id": repo_id,
+                        "repo_full_name": repo_full_name,
+                        "head_sha": head_sha,
+                        "first_seen_at": now,
+                        "last_seen_at": now,
+                        "last_delivery_id": resolved_delivery_id,
+                    }
+                )
                 self._upsert(
                     conn=conn,
                     table=workflow_runs_current,
@@ -868,25 +890,32 @@ class WebhookStore:
                 counts["workflow_runs"] += 1
 
             for row in status_rows:
-                context = row.get("context")
-                state = row.get("state")
-                status_id = row.get("status_id")
+                context = row.context
+                state = row.state
+                status_id = row.status_id
                 if status_id is None or not context or not state:
                     continue
-                values = {
-                    "repo_id": repo_id,
-                    "repo_full_name": repo_full_name,
-                    "sha": row.get("sha") or head_sha,
-                    "context": str(context),
-                    "status_id": int(status_id),
-                    "state": str(state),
-                    "created_at": row.get("created_at"),
-                    "updated_at": row.get("updated_at"),
-                    "url": row.get("url"),
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "last_delivery_id": resolved_delivery_id,
-                }
+                values = row.model_dump(
+                    mode="python",
+                    include={
+                        "context",
+                        "status_id",
+                        "state",
+                        "created_at",
+                        "updated_at",
+                        "url",
+                    },
+                )
+                values.update(
+                    {
+                        "repo_id": repo_id,
+                        "repo_full_name": repo_full_name,
+                        "sha": row.sha or head_sha,
+                        "first_seen_at": now,
+                        "last_seen_at": now,
+                        "last_delivery_id": resolved_delivery_id,
+                    }
+                )
                 self._upsert(
                     conn=conn,
                     table=commit_status_current,
@@ -914,7 +943,7 @@ class WebhookStore:
         head_sha: str,
         check_name: str,
         app_id: int,
-    ) -> Dict[str, Any] | None:
+    ) -> SentinelCheckRunStateRow | None:
         stmt = select(sentinel_check_run_state).where(
             and_(
                 sentinel_check_run_state.c.repo_id == repo_id,
@@ -925,7 +954,7 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             row = conn.execute(stmt).mappings().first()
-        return None if row is None else dict(row)
+        return None if row is None else SentinelCheckRunStateRow.from_mapping(dict(row))
 
     def get_pr_dashboard_row(
         self,
@@ -934,7 +963,7 @@ class WebhookStore:
         check_name: str,
         repo_id: int,
         pr_number: int,
-    ) -> Dict[str, Any] | None:
+    ) -> PRDashboardRow | None:
         stmt = (
             self._pr_dashboard_select(app_id=app_id, check_name=check_name)
             .where(
@@ -956,7 +985,7 @@ class WebhookStore:
         pr_number: int,
         head_sha: str | None,
         limit: int = 200,
-    ) -> list[Dict[str, Any]]:
+    ) -> list[RelatedEventRow]:
         target_limit = min(1000, max(1, int(limit)))
         scan_limit = min(5000, max(200, target_limit * 20))
 
@@ -990,7 +1019,7 @@ class WebhookStore:
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
 
-        events: list[Dict[str, Any]] = []
+        events: list[RelatedEventRow] = []
         for row in rows:
             try:
                 payload = json.loads(self.decode_payload_json(row.get("payload_json")))
@@ -1007,17 +1036,15 @@ class WebhookStore:
 
             event_name = str(row.get("event") or "")
             events.append(
-                {
-                    "delivery_id": row.get("delivery_id"),
-                    "received_at": row.get("received_at"),
-                    "event": event_name,
-                    "action": row.get("action"),
-                    "projection_error": row.get("projection_error"),
-                    "detail": self._event_detail(
-                        event_name=event_name, payload=payload
-                    ),
-                    "payload": payload,
-                }
+                RelatedEventRow(
+                    delivery_id=str(row.get("delivery_id") or "-"),
+                    received_at=row.get("received_at"),
+                    event=event_name,
+                    action=row.get("action"),
+                    projection_error=row.get("projection_error"),
+                    detail=self._event_detail(event_name=event_name, payload=payload),
+                    payload=payload,
+                )
             )
             if len(events) >= target_limit:
                 break
@@ -1066,21 +1093,24 @@ class WebhookStore:
             formatted_detail = ": ".join(detail_parts) if detail_parts else "activity"
             activity_id = row.get("activity_id")
             events.append(
-                {
-                    "delivery_id": row.get("delivery_id")
-                    or (f"activity-{activity_id}" if activity_id is not None else "-"),
-                    "received_at": row.get("recorded_at"),
-                    "event": "sentinel",
-                    "action": row.get("activity_type") or "activity",
-                    "projection_error": None,
-                    "detail": formatted_detail,
-                    "payload": metadata,
-                    "is_activity": True,
-                }
+                RelatedEventRow(
+                    delivery_id=str(row.get("delivery_id"))
+                    if row.get("delivery_id")
+                    else (
+                        f"activity-{activity_id}" if activity_id is not None else "-"
+                    ),
+                    received_at=row.get("recorded_at"),
+                    event="sentinel",
+                    action=row.get("activity_type") or "activity",
+                    projection_error=None,
+                    detail=formatted_detail,
+                    payload=metadata,
+                    is_activity=True,
+                )
             )
 
         events.sort(
-            key=lambda item: str(item.get("received_at") or ""),
+            key=lambda item: str(item.received_at or ""),
             reverse=True,
         )
         if len(events) > target_limit:
@@ -1125,7 +1155,7 @@ class WebhookStore:
         with self.engine.begin() as conn:
             conn.execute(stmt)
 
-    def get_webhook_event(self, delivery_id: str) -> Dict[str, Any] | None:
+    def get_webhook_event(self, delivery_id: str) -> WebhookEventRow | None:
         stmt = (
             select(
                 webhook_events.c.delivery_id,
@@ -1157,7 +1187,7 @@ class WebhookStore:
         event_name = str(event.get("event") or "")
         event["payload"] = payload
         event["detail"] = self._event_detail(event_name=event_name, payload=payload)
-        return event
+        return WebhookEventRow.from_mapping(event)
 
     def count_pr_dashboard_rows(
         self,
@@ -1182,7 +1212,7 @@ class WebhookStore:
         page_size: int,
         repo_full_name: str | None = None,
         include_closed: bool = True,
-    ) -> list[Dict[str, Any]]:
+    ) -> list[PRDashboardRow]:
         page = max(1, int(page))
         page_size = min(200, max(1, int(page_size)))
         offset = (page - 1) * page_size
@@ -1251,7 +1281,7 @@ class WebhookStore:
             )
         )
 
-    def _normalize_pr_dashboard_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_pr_dashboard_row(self, row: Dict[str, Any]) -> PRDashboardRow:
         payload_json = row.pop("pr_event_payload_json", None)
         pr_merged: bool | None = None
         pr_is_draft = row.get("pr_is_draft")
@@ -1272,7 +1302,7 @@ class WebhookStore:
 
         row["pr_merged"] = pr_merged
         row["pr_is_draft"] = bool(pr_is_draft) if pr_is_draft is not None else False
-        return row
+        return PRDashboardRow.from_mapping(row)
 
     @staticmethod
     def _event_matches_pr(
