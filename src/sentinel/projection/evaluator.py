@@ -445,7 +445,7 @@ class ProjectionEvaluator:
             )
             sentinel_projection_publish_total.labels(result="unchanged").inc()
             unchanged_detail = f"{new_status}/{new_conclusion or '-'}"
-            if self.config.PROJECTION_PUBLISH_ENABLED and bool(pr_row.pr_draft):
+            if bool(pr_row.pr_draft):
                 unchanged_detail = f"Draft PR, publish suppressed ({new_status}/{new_conclusion or '-'})"
             self._record_activity(
                 trigger=trigger,
@@ -646,21 +646,36 @@ class ProjectionEvaluator:
                     exc_info=True,
                 )
         else:
-            logger.info(
-                "Projection publish skipped (dry_run) repo=%s sha=%s pr=%s status=%s conclusion=%s",
-                trigger.repo_full_name,
-                head_sha,
-                pr_number,
-                new_status,
-                new_conclusion,
-            )
+            is_draft_pr = bool(pr_row.pr_draft)
+            if is_draft_pr:
+                logger.info(
+                    "Projection publish skipped (dry_run_draft) repo=%s sha=%s pr=%s status=%s conclusion=%s",
+                    trigger.repo_full_name,
+                    head_sha,
+                    pr_number,
+                    new_status,
+                    new_conclusion,
+                )
+            else:
+                logger.info(
+                    "Projection publish skipped (dry_run) repo=%s sha=%s pr=%s status=%s conclusion=%s",
+                    trigger.repo_full_name,
+                    head_sha,
+                    pr_number,
+                    new_status,
+                    new_conclusion,
+                )
             sentinel_projection_publish_total.labels(result="dry_run").inc()
             self._record_activity(
                 trigger=trigger,
                 pr_number=pr_number,
                 activity_type="publish",
                 result="dry_run",
-                detail=f"Would publish {new_status}/{new_conclusion or '-'}",
+                detail=(
+                    f"Draft PR, would not publish {new_status}/{new_conclusion or '-'} (dry-run)"
+                    if is_draft_pr
+                    else f"Would publish {new_status}/{new_conclusion or '-'}"
+                ),
             )
 
         final_id = int(published_id) if published_id is not None else check_run_id

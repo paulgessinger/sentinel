@@ -376,6 +376,72 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_projection_dry_run_marks_draft_pr_in_activity_detail(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=_pull_request_payload(draft=True),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=_check_run_payload(),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="wf-1",
+        event="workflow_run",
+        payload=_workflow_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPI(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n",
+        post_id=9001,
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-dry-draft-1",
+            event="check_run",
+        )
+    )
+
+    assert result.result == "dry_run"
+    assert api.post_calls == []
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        publish_rows = conn.execute(
+            """
+            SELECT activity_type, result, detail
+            FROM sentinel_activity_events
+            WHERE repo_id = ? AND pr_number = ? AND head_sha = ?
+              AND activity_type = 'publish'
+            ORDER BY activity_id
+            """,
+            (11, 42, "a" * 40),
+        ).fetchall()
+
+    assert (
+        "publish",
+        "dry_run",
+        "Draft PR, would not publish completed/success (dry-run)",
+    ) in publish_rows
+
+
+@pytest.mark.asyncio
 async def test_projection_second_identical_eval_is_unchanged(tmp_path):
     store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()

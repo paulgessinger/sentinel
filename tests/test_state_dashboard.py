@@ -282,6 +282,18 @@ def test_publish_result_display_for_dry_run_includes_would_post():
     )
 
 
+def test_publish_result_display_for_dry_run_draft_includes_draft_label():
+    assert (
+        _publish_result_display(
+            publish_result="dry_run",
+            status="completed",
+            conclusion="success",
+            is_draft=True,
+        )
+        == "completed/success (dry-run, draft PR)"
+    )
+
+
 def test_publish_result_display_for_unchanged_includes_latest_status():
     assert (
         _publish_result_display(
@@ -290,6 +302,18 @@ def test_publish_result_display_for_unchanged_includes_latest_status():
             conclusion="success",
         )
         == "completed/success (unchanged)"
+    )
+
+
+def test_publish_result_display_for_unchanged_draft_includes_draft_label():
+    assert (
+        _publish_result_display(
+            publish_result="unchanged",
+            status="completed",
+            conclusion="success",
+            is_draft=True,
+        )
+        == "completed/success (unchanged, draft PR)"
     )
 
 
@@ -411,7 +435,10 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
     assert context["row"]["pr_url"] == "https://github.com/org/repo/pull/42"
     assert context["row"]["pr_is_draft"] is True
     assert context["row"]["pr_draft_class"] == "chip-bg-amber"
-    assert context["row"]["publish_result_display"] == "completed/success (dry-run)"
+    assert (
+        context["row"]["publish_result_display"]
+        == "completed/success (dry-run, draft PR)"
+    )
     assert len(context["row"]["output_checks"]) == 1
     assert context["row"]["output_checks"][0]["name"] == "Builds / tests"
     assert context["row"]["output_checks"][0]["status"] == "success"

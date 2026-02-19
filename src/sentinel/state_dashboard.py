@@ -233,6 +233,7 @@ def _state_dashboard_context(
                     publish_result=row.last_publish_result,
                     status=row.sentinel_status,
                     conclusion=row.sentinel_conclusion,
+                    is_draft=pr_is_draft,
                 ),
                 "details_url": (
                     f"/state/pr/{row.repo_id}/{pr_number}"
@@ -255,19 +256,24 @@ def _state_dashboard_context(
 
 
 def _publish_result_display(
-    *, publish_result: str | None, status: str | None, conclusion: str | None
+    *,
+    publish_result: str | None,
+    status: str | None,
+    conclusion: str | None,
+    is_draft: bool = False,
 ) -> str:
     if not publish_result:
         return "-"
-    if publish_result != "dry_run":
-        if publish_result != "unchanged":
-            return publish_result
+    if publish_result not in {"dry_run", "unchanged"}:
+        return publish_result
     would_post = status or "unknown"
     if conclusion:
         would_post = f"{would_post}/{conclusion}"
     if publish_result == "dry_run":
-        return f"{would_post} (dry-run)"
-    return f"{would_post} (unchanged)"
+        suffix = "dry-run, draft PR" if is_draft else "dry-run"
+        return f"{would_post} ({suffix})"
+    suffix = "unchanged, draft PR" if is_draft else "unchanged"
+    return f"{would_post} ({suffix})"
 
 
 def _status_chip_class(status: str | None) -> str:
@@ -456,6 +462,7 @@ def _state_pr_detail_context(
                 publish_result=row.last_publish_result,
                 status=row.sentinel_status,
                 conclusion=row.sentinel_conclusion,
+                is_draft=pr_is_draft,
             ),
             "output_checks": _parse_output_checks(output_checks_json),
             "rendered_output_summary": _render_markdown(output_summary),
