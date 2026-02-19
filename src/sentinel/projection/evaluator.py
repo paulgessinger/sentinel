@@ -411,12 +411,25 @@ class ProjectionEvaluator:
             return EvaluationResult(result="no_pr")
 
         previous_status = sentinel_row.status if sentinel_row else None
+        previous_conclusion = sentinel_row.conclusion if sentinel_row else None
         existing_id = sentinel_row.check_run_id if sentinel_row else None
         check_run_id = (
             existing_id if isinstance(existing_id, int) and existing_id > 0 else None
         )
+        force_new_check_run = False
 
+        # Preserve lifecycle parity with legacy behavior:
+        # when moving back to in_progress from a completed state, create a new run.
         if new_status == "in_progress" and previous_status != "in_progress":
+            force_new_check_run = True
+            check_run_id = None
+        # Also create a new run when recovering from a failed completed run.
+        if (
+            previous_status == "completed"
+            and previous_conclusion == "failure"
+            and not (new_status == "completed" and new_conclusion == "failure")
+        ):
+            force_new_check_run = True
             check_run_id = None
 
         unchanged = bool(
@@ -548,59 +561,82 @@ class ProjectionEvaluator:
             )
 
             if check_run.id is None:
-                sentinel_projection_lookup_total.labels(result="local_id_miss").inc()
-                self._record_activity(
-                    trigger=trigger,
-                    pr_number=pr_number,
-                    activity_type="publish_lookup",
-                    result="local_id_miss",
-                    detail="No local check_run_id; lookup on GitHub",
-                )
-                logger.debug(
-                    "Projection lookup local miss repo=%s sha=%s",
-                    trigger.repo_full_name,
-                    head_sha,
-                )
-                existing = await api.find_existing_sentinel_check_run(
-                    repo_url=repo_url,
-                    head_sha=head_sha,
-                    check_name=self.config.PROJECTION_CHECK_RUN_NAME,
-                    app_id=self.config.GITHUB_APP_ID,
-                )
-                if existing is not None and existing.id is not None:
+                if force_new_check_run:
                     sentinel_projection_lookup_total.labels(
-                        result="gh_lookup_hit"
+                        result="skip_forced_new"
                     ).inc()
-                    check_run.id = int(existing.id)
                     self._record_activity(
                         trigger=trigger,
                         pr_number=pr_number,
                         activity_type="publish_lookup",
-                        result="gh_lookup_hit",
-                        detail=f"Found existing check_run_id={check_run.id}",
+                        result="skip_forced_new",
+                        detail="Lifecycle transition requires creating a new check run",
                     )
                     logger.info(
-                        "Projection lookup github hit repo=%s sha=%s found_id=%s",
+                        "Projection lookup skipped (forced new run) repo=%s sha=%s prev=%s/%s new=%s/%s",
                         trigger.repo_full_name,
                         head_sha,
-                        check_run.id,
+                        previous_status,
+                        previous_conclusion,
+                        new_status,
+                        new_conclusion,
                     )
                 else:
                     sentinel_projection_lookup_total.labels(
-                        result="gh_lookup_miss"
+                        result="local_id_miss"
                     ).inc()
                     self._record_activity(
                         trigger=trigger,
                         pr_number=pr_number,
                         activity_type="publish_lookup",
-                        result="gh_lookup_miss",
-                        detail="No existing check run found on GitHub",
+                        result="local_id_miss",
+                        detail="No local check_run_id; lookup on GitHub",
                     )
-                    logger.info(
-                        "Projection lookup github miss repo=%s sha=%s",
+                    logger.debug(
+                        "Projection lookup local miss repo=%s sha=%s",
                         trigger.repo_full_name,
                         head_sha,
                     )
+                    existing = await api.find_existing_sentinel_check_run(
+                        repo_url=repo_url,
+                        head_sha=head_sha,
+                        check_name=self.config.PROJECTION_CHECK_RUN_NAME,
+                        app_id=self.config.GITHUB_APP_ID,
+                    )
+                    if existing is not None and existing.id is not None:
+                        sentinel_projection_lookup_total.labels(
+                            result="gh_lookup_hit"
+                        ).inc()
+                        check_run.id = int(existing.id)
+                        self._record_activity(
+                            trigger=trigger,
+                            pr_number=pr_number,
+                            activity_type="publish_lookup",
+                            result="gh_lookup_hit",
+                            detail=f"Found existing check_run_id={check_run.id}",
+                        )
+                        logger.info(
+                            "Projection lookup github hit repo=%s sha=%s found_id=%s",
+                            trigger.repo_full_name,
+                            head_sha,
+                            check_run.id,
+                        )
+                    else:
+                        sentinel_projection_lookup_total.labels(
+                            result="gh_lookup_miss"
+                        ).inc()
+                        self._record_activity(
+                            trigger=trigger,
+                            pr_number=pr_number,
+                            activity_type="publish_lookup",
+                            result="gh_lookup_miss",
+                            detail="No existing check run found on GitHub",
+                        )
+                        logger.info(
+                            "Projection lookup github miss repo=%s sha=%s",
+                            trigger.repo_full_name,
+                            head_sha,
+                        )
             else:
                 sentinel_projection_lookup_total.labels(result="local_id_hit").inc()
                 self._record_activity(
@@ -628,7 +664,10 @@ class ProjectionEvaluator:
                     pr_number=pr_number,
                     activity_type="publish",
                     result="published",
-                    detail=f"Published check_run_id={published_id}",
+                    detail=(
+                        f"Published {new_status}/{new_conclusion or '-'} "
+                        f"check_run_id={published_id}"
+                    ),
                     metadata={
                         "status": new_status,
                         "conclusion": new_conclusion,
@@ -880,7 +919,7 @@ class ProjectionEvaluator:
                     pr_number=pr_number,
                     activity_type="publish_pre_delay",
                     result="published",
-                    detail=f"Published pending check_run_id={published_id}",
+                    detail=f"Published in_progress/- check_run_id={published_id}",
                 )
             except Exception as exc:  # noqa: BLE001
                 publish_result = "error"

@@ -607,6 +607,71 @@ async def test_projection_publish_persists_real_id(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_projection_publish_failure_to_success_forces_new_run(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    await _seed(store)
+    store.persist_event(
+        delivery_id="cr-fail-1",
+        event="check_run",
+        payload=_check_run_payload(conclusion="failure"),
+        payload_json="{}",
+    )
+
+    api = _FakeAPI(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n",
+        post_id=91234,
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
+    )
+
+    first = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-fail-1",
+            event="check_run",
+        )
+    )
+    assert first.result == "published"
+    assert len(api.post_calls) == 1
+    assert api.post_calls[0][1].id is None
+
+    store.persist_event(
+        delivery_id="cr-success-1",
+        event="check_run",
+        payload=_check_run_payload(conclusion="success"),
+        payload_json="{}",
+    )
+
+    second = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-success-1",
+            event="check_run",
+        )
+    )
+
+    assert second.result == "published"
+    assert len(api.post_calls) == 2
+    assert api.post_calls[1][1].id is None
+    assert api.post_calls[1][1].status == "completed"
+    assert api.post_calls[1][1].conclusion == "success"
+    # first publish needs a lookup miss; second should force create without lookup.
+    assert api.lookup_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_projection_publish_skips_for_draft_pr(tmp_path):
     store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
