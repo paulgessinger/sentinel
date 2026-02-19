@@ -136,7 +136,7 @@
         </thead>
         <tbody>
         {% for event in events %}
-        <tr{% if event.is_activity %} class="event-row-sentinel"{% endif %}>
+        <tr data-event-key="{{ event.delivery_id }}|{{ event.received_at }}|{{ event.event }}|{{ event.action or '' }}"{% if event.is_activity %} class="event-row-sentinel"{% endif %}>
             <td class="muted"><span data-utc="{{ event.received_at }}">{{ event.received_at }}</span></td>
             <td>{{ event.event }}</td>
             <td>{{ event.action or "-" }}</td>

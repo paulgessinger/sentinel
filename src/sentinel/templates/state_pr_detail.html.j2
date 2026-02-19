@@ -24,6 +24,20 @@
     let stream = null;
     let relativeTimesTimer = null;
 
+    const captureEventKeys = (root) => {
+        const keys = new Set();
+        if (!root) {
+            return keys;
+        }
+        root.querySelectorAll("tr[data-event-key]").forEach((row) => {
+            const key = row.getAttribute("data-event-key");
+            if (key) {
+                keys.add(key);
+            }
+        });
+        return keys;
+    };
+
     const formatLocalTimes = (root) => {
         if (!root) {
             return;
@@ -97,11 +111,22 @@
 
     const refreshDetail = async () => {
         try {
+            const previousEventKeys = captureEventKeys(detailContainer);
             const response = await fetch(contentUrl, { credentials: "same-origin" });
             if (!response.ok) {
                 return;
             }
-            detailContainer.innerHTML = await response.text();
+            const nextMarkup = await response.text();
+            const nextContainer = document.createElement("div");
+            nextContainer.innerHTML = nextMarkup;
+            nextContainer.querySelectorAll("tr[data-event-key]").forEach((row) => {
+                const key = row.getAttribute("data-event-key");
+                if (!key || previousEventKeys.has(key)) {
+                    return;
+                }
+                row.classList.add("event-row-fade-in");
+            });
+            detailContainer.innerHTML = nextContainer.innerHTML;
             formatLocalTimes(detailContainer);
             scheduleRelativeTimesRefresh();
         } finally {

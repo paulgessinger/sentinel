@@ -234,6 +234,21 @@ a {
     animation: row-flash-once 1.2s ease-out 1;
 }
 
+@keyframes event-row-fade-in-once {
+    0% {
+        opacity: 0;
+        background-color: var(--color-row-flash);
+    }
+    100% {
+        opacity: 1;
+        background-color: transparent;
+    }
+}
+
+.state-table tr.event-row-fade-in td {
+    animation: event-row-fade-in-once 0.8s ease-out 1;
+}
+
 .state-meta {
     display: flex;
     gap: 16px;
