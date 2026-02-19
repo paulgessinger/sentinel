@@ -200,6 +200,15 @@ a {
     font-weight: 600;
 }
 
+.state-pr-title-link {
+    color: var(--color-fg);
+    text-decoration: underline;
+}
+
+.state-commit-sha {
+    font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
+}
+
 @keyframes row-flash-once {
     0% {
         background-color: var(--color-row-flash);
@@ -313,6 +322,14 @@ a {
 
 .rendered-markdown {
     margin-top: 8px;
+}
+
+.rendered-markdown-inline code {
+    background: var(--color-code-bg);
+    border: 1px solid var(--color-code-border);
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-size: 0.9em;
 }
 
 .rendered-markdown h2,

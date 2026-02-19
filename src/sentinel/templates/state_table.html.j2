@@ -24,11 +24,10 @@
         <td>{{ row.repo_full_name or "unknown" }}</td>
         <td><span class="chip chip-pr {{ row.pr_state_class }}">{{ row.pr_state_display }}</span></td>
         <td>
-            {% set pr_title_text = row.pr_title or ("PR #" ~ row.pr_number) %}
             {% if row.details_url %}
-            <a href="{{ row.details_url }}">{{ pr_title_text }}</a>
+            <a href="{{ row.details_url }}" class="state-pr-title-link rendered-markdown-inline">{{ row.rendered_pr_title | safe }}</a>
             {% else %}
-            {{ pr_title_text }}
+            <span class="rendered-markdown-inline">{{ row.rendered_pr_title | safe }}</span>
             {% endif %}
             {% if row.pr_url %}
             (<a href="{{ row.pr_url }}" target="_blank" rel="noreferrer">#{{ row.pr_number }}</a>)
@@ -37,7 +36,7 @@
             <div class="muted">Updated: <span data-utc="{{ row.pr_updated_at }}">{{ row.pr_updated_at }}</span></div>
             {% endif %}
         </td>
-        <td>
+        <td class="state-commit-sha">
             {% if row.commit_url %}
             <a href="{{ row.commit_url }}" target="_blank" rel="noreferrer" title="{{ row.head_sha }}">{{ row.short_sha }}</a>
             {% else %}

@@ -31,9 +31,11 @@ rollout:
 restart:
     oc rollout restart deployment/merge-sentinel-web -n {{oc_namespace}}
 
-# Build image, apply manifests, roll out new version
-deploy: image apply
+update_image:
     oc set image deployment/merge-sentinel-web web={{image_url}}:{{sha}} -n {{oc_namespace}}
+
+# Build image, apply manifests, roll out new version
+deploy: image update_image
     oc rollout status deployment/merge-sentinel-web -n {{oc_namespace}}
 
 docker: image_build

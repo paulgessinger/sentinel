@@ -213,6 +213,9 @@ def _state_dashboard_context(
             row.get("pr_state"),
             row.get("pr_merged"),
         )
+        pr_title_raw = row.get("pr_title") or (
+            f"PR #{pr_number}" if pr_number is not None else "PR"
+        )
         enriched_rows.append(
             {
                 **row,
@@ -238,6 +241,7 @@ def _state_dashboard_context(
                     if row.get("repo_id") is not None and pr_number is not None
                     else None
                 ),
+                "rendered_pr_title": _render_markdown_inline(pr_title_raw),
             }
         )
 
@@ -288,6 +292,14 @@ def _render_markdown(markdown_text: str | None) -> str:
     emojized = emoji.emojize(markdown_text, language="alias")
     rendered = MARKDOWN_RENDERER.render(emojized)
     return rendered.replace("<table>", '<table class="rendered-check-table">')
+
+
+def _render_markdown_inline(text: str | None) -> str:
+    """Render short inline text (e.g. PR titles) as markdown without block wrappers."""
+    if text is None or not text.strip():
+        return ""
+    emojized = emoji.emojize(text, language="alias")
+    return MARKDOWN_RENDERER.renderInline(emojized)
 
 
 def _state_pr_detail_context(
