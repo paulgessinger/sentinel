@@ -41,6 +41,7 @@ from sentinel.metric import (
     pr_update_accept_counter,
     check_run_post,
     pr_update_duplicate,
+    api_call_count,
 )
 
 
@@ -148,6 +149,7 @@ async def get_access_token(gh: gh_aiohttp.GitHubAPI, installation_id: int) -> st
         app_id=str(app_config.GITHUB_APP_ID),
         private_key=app_config.GITHUB_PRIVATE_KEY,
     )
+    api_call_count.inc()
 
     token = access_token_response["token"]
     return token
@@ -217,7 +219,7 @@ async def populate_check_run(
             *(api.gh.getitem(url) for url in {j.run_url for j in actions_jobs.values()})
         )
     }
-    api.call_count += len(actions_jobs.values())
+    api.record_api_calls(len(actions_jobs.values()))
 
     active_actions_runs: Dict[int, ActionsRun] = {}
 
@@ -573,7 +575,7 @@ async def process_pull_request(pr: PullRequest, api: API):
             logger.debug("- %d", cs.id)
 
     async def load_check_runs(cs: CheckSuite) -> list[CheckRun]:
-        api.call_count += 1
+        api.record_api_calls()
         check_runs = [
             CheckRun.model_validate(raw)
             async for raw in api.gh.getiter(

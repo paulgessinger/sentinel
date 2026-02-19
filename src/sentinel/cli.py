@@ -52,14 +52,10 @@ async def job_loop():
 
                 logger.info("Processing %s", item.pr)
 
-                api_calls = 0
                 if not config.DRY_RUN:
                     async with installation_client(item.installation_id) as gh:
                         api = API(gh, item.installation_id)
                         await process_pull_request(item.pr, api)
-                        api_calls = api.call_count
-
-                api_call_count.inc(api_calls)
 
         except KeyboardInterrupt, asyncio.exceptions.CancelledError:
             raise
@@ -99,6 +95,7 @@ async def installation_client(installation: int):
         )
 
         await gh.getitem("/app", jwt=jwt)
+        api_call_count.inc()
 
         token = await get_access_token(gh, installation)
 
@@ -123,6 +120,7 @@ def queue_pr(
             pr = PullRequest.model_validate(
                 await gh.getitem(f"/repos/{repo}/pulls/{number}")
             )
+            api_call_count.inc()
 
             with get_cache() as cache:
                 # print("in_queue:", await cache.in_queue(pr))
@@ -142,6 +140,7 @@ def pr(
             pr = PullRequest.model_validate(
                 await gh.getitem(f"/repos/{repo}/pulls/{number}")
             )
+            api_call_count.inc()
             api = API(gh, installation)
             await process_pull_request(pr, api)
 

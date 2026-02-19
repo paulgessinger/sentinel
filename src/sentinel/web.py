@@ -27,6 +27,7 @@ from sentinel.metric import (
     webhook_skipped_counter,
     queue_size,
     error_counter,
+    api_call_count,
     configure_webhook_db_size_metric,
 )
 from sentinel.projection import (
@@ -414,6 +415,7 @@ def create_app():
                     private_key=app.config.GITHUB_PRIVATE_KEY,
                 )
                 app.ctx.app_info = await gh.getitem("/app", jwt=jwt)
+                api_call_count.inc()
 
         if app.ctx.webhook_store.enabled:
             logger.info(
