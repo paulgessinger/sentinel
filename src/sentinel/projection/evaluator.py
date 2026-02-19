@@ -418,6 +418,11 @@ class ProjectionEvaluator:
         )
         force_new_check_run = False
 
+        # Manual refresh requests should always produce a new GitHub check run.
+        if trigger.force_api_refresh:
+            force_new_check_run = True
+            check_run_id = None
+
         # Preserve lifecycle parity with legacy behavior:
         # when moving back to in_progress from a completed state, create a new run.
         if new_status == "in_progress" and previous_status != "in_progress":
@@ -440,8 +445,10 @@ class ProjectionEvaluator:
             and sentinel_row.output_summary_hash == summary_hash
             and sentinel_row.output_text_hash == text_hash
         )
+        if trigger.force_api_refresh:
+            unchanged = False
         logger.debug(
-            "Projection eval diff repo=%s sha=%s unchanged=%s prev_status=%s new_status=%s prev_conclusion=%s new_conclusion=%s",
+            "Projection eval diff repo=%s sha=%s unchanged=%s prev_status=%s new_status=%s prev_conclusion=%s new_conclusion=%s force_api_refresh=%s",
             trigger.repo_full_name,
             head_sha,
             unchanged,
@@ -449,6 +456,7 @@ class ProjectionEvaluator:
             new_status,
             sentinel_row.conclusion if sentinel_row else None,
             new_conclusion,
+            trigger.force_api_refresh,
         )
 
         now_iso = utcnow_iso()

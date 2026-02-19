@@ -270,7 +270,7 @@ class _EvaluatorConfig:
     PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER: str = "refresh_from_api"
     PROJECTION_MANUAL_REFRESH_ACTION_LABEL: str = "Re-evaluate now"
     PROJECTION_MANUAL_REFRESH_ACTION_DESCRIPTION: str = (
-        "Force refresh checks from GitHub and re-evaluate"
+        "Refresh checks from API and re-evaluate"
     )
     PROJECTION_PATH_RULE_FALLBACK_ENABLED: bool = True
     PROJECTION_AUTO_REFRESH_ON_MISSING_ENABLED: bool = True
@@ -869,6 +869,59 @@ async def test_force_api_refresh_persists_projection_rows(tmp_path):
     assert len(status_rows) == 1
     assert status_rows[0].context == "lint"
     assert status_rows[0].last_delivery_id == "d-api-1"
+
+
+@pytest.mark.asyncio
+async def test_force_api_refresh_always_creates_new_published_check_run(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    await _seed(store)
+
+    api = _FakeAPIRefresh(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n",
+        post_id=91234,
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
+    )
+
+    initial = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-force-initial",
+            event="check_run",
+        )
+    )
+    assert initial.result == "published"
+    assert len(api.post_calls) == 1
+    assert api.post_calls[0][1].id is None
+    assert api.lookup_calls == 1
+
+    forced = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-force-refresh",
+            event="check_run",
+            force_api_refresh=True,
+        )
+    )
+
+    assert forced.result == "published"
+    assert len(api.post_calls) == 2
+    # Forced refresh must always create a new run, never patch/reuse cached ID.
+    assert api.post_calls[1][1].id is None
+    # No additional lookup on forced refresh.
+    assert api.lookup_calls == 1
 
 
 @pytest.mark.asyncio
