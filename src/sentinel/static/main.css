@@ -24,14 +24,14 @@
     --color-chip-green-bg: #d6f0de;
     --color-chip-green-border: #4e9964;
     --color-chip-green-fg: #114522;
-    --color-chip-green-bg-muted: #e6f3ea;
-    --color-chip-green-border-muted: #7ea88a;
+    --color-chip-green-bg-muted: #e7f0e9;
+    --color-chip-green-border-muted: #a7c9b0;
     --color-chip-green-fg-muted: #2b5834;
     --color-chip-red-bg: #f8d9d9;
     --color-chip-red-border: #c35b5b;
     --color-chip-red-fg: #5d1616;
-    --color-chip-red-bg-muted: #f5e5e5;
-    --color-chip-red-border-muted: #c88a8a;
+    --color-chip-red-bg-muted: #f6eded;
+    --color-chip-red-border-muted: #d6acac;
     --color-chip-red-fg-muted: #6c2f2f;
     --color-chip-amber-bg: #fff1d4;
     --color-chip-amber-border: #b57f22;
@@ -237,6 +237,7 @@ a {
     0% {
         background-color: var(--color-row-flash);
     }
+
     100% {
         background-color: transparent;
     }
@@ -251,6 +252,7 @@ a {
         opacity: 0;
         background-color: var(--color-row-flash);
     }
+
     100% {
         opacity: 1;
         background-color: transparent;
@@ -486,6 +488,7 @@ a {
     from {
         transform: rotate(0deg);
     }
+
     to {
         transform: rotate(360deg);
     }
