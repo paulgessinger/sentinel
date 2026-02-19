@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import sqlite3
 
@@ -151,6 +151,14 @@ class _FakeAPIRefreshTracking(_FakeAPIRefresh):
 
 
 def _check_run_payload(conclusion: str = "success") -> dict:
+    return _check_run_payload_with_status(status="completed", conclusion=conclusion)
+
+
+def _check_run_payload_with_status(
+    *, status: str, conclusion: str | None = "success"
+) -> dict:
+    resolved_conclusion = conclusion if status == "completed" else None
+    completed_at = "2026-02-17T10:01:00Z" if status == "completed" else None
     return {
         "action": "completed",
         "installation": {"id": 321},
@@ -159,10 +167,10 @@ def _check_run_payload(conclusion: str = "success") -> dict:
             "id": 7001,
             "head_sha": "a" * 40,
             "name": "tests",
-            "status": "completed",
-            "conclusion": conclusion,
+            "status": status,
+            "conclusion": resolved_conclusion,
             "started_at": "2026-02-17T10:00:00Z",
-            "completed_at": "2026-02-17T10:01:00Z",
+            "completed_at": completed_at,
             "app": {"id": 1, "slug": "ci"},
             "check_suite": {"id": 9901},
         },
@@ -758,6 +766,96 @@ async def test_auto_refresh_on_missing_pattern_for_stale_pr(tmp_path):
             FROM sentinel_activity_events
             WHERE repo_id = ? AND pr_number = ? AND head_sha = ?
               AND activity_type = 'missing_refresh'
+            ORDER BY activity_id
+            """,
+            (11, 42, "a" * 40),
+        ).fetchall()
+    assert ("triggered",) in refresh_rows
+
+
+@pytest.mark.asyncio
+async def test_auto_refresh_on_stale_running_check(tmp_path):
+    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store.initialize()
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=_pull_request_payload(),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=_check_run_payload_with_status(status="in_progress"),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="wf-1",
+        event="workflow_run",
+        payload=_workflow_payload(),
+        payload_json="{}",
+    )
+
+    old_last_seen_at = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        conn.execute(
+            """
+            UPDATE check_runs_current
+            SET last_seen_at = ?
+            WHERE repo_id = ? AND check_run_id = ?
+            """,
+            (old_last_seen_at, 11, 7001),
+        )
+        conn.commit()
+
+    api = _FakeAPIRefreshTracking(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n"
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = ProjectionEvaluator(
+        store=store,
+        app_id=2877723,
+        check_run_name="merge-sentinel",
+        publish_enabled=False,
+        manual_refresh_action_enabled=True,
+        manual_refresh_action_identifier="refresh_from_api",
+        manual_refresh_action_label="Re-evaluate now",
+        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
+        path_rule_fallback_enabled=True,
+        auto_refresh_on_missing_enabled=True,
+        auto_refresh_on_missing_stale_seconds=60,
+        auto_refresh_on_missing_cooldown_seconds=300,
+        config_cache_seconds=300,
+        pr_files_cache_seconds=86400,
+        api_factory=api_factory,
+    )
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-stale-running-1",
+            event="check_run",
+        )
+    )
+
+    assert result.result == "dry_run"
+    assert api.refresh_calls == 1
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        refresh_rows = conn.execute(
+            """
+            SELECT result
+            FROM sentinel_activity_events
+            WHERE repo_id = ? AND pr_number = ? AND head_sha = ?
+              AND activity_type = 'stale_running_refresh'
             ORDER BY activity_id
             """,
             (11, 42, "a" * 40),

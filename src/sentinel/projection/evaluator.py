@@ -274,6 +274,7 @@ class ProjectionEvaluator:
             status_rows=status_rows,
             rules=rules,
         )
+        auto_refresh_kind: str | None = None
         if self._should_auto_refresh_on_missing(
             trigger=trigger,
             pr_row=pr_row,
@@ -281,14 +282,24 @@ class ProjectionEvaluator:
             missing_pattern_failures=computed.missing_pattern_failures,
             explicit_failures=computed.explicit_failures,
         ):
+            auto_refresh_kind = "missing_refresh"
+        elif self._should_auto_refresh_on_stale_running(
+            trigger=trigger,
+            pr_number=pr_number,
+            computed=computed,
+        ):
+            auto_refresh_kind = "stale_running_refresh"
+
+        if auto_refresh_kind is not None:
             logger.info(
-                "Projection eval auto-refreshing from API repo=%s sha=%s missing_patterns=%d",
+                "Projection eval auto-refreshing from API repo=%s sha=%s kind=%s missing_patterns=%d",
                 trigger.repo_full_name,
                 head_sha,
+                auto_refresh_kind,
                 len(computed.missing_pattern_failures),
             )
             sentinel_projection_fallback_total.labels(
-                kind="missing_refresh", result="triggered"
+                kind=auto_refresh_kind, result="triggered"
             ).inc()
             (
                 check_rows,
@@ -1121,6 +1132,91 @@ class ProjectionEvaluator:
             result="triggered",
             detail="Refreshing projections from GitHub API",
             metadata={"missing_patterns": missing_pattern_failures},
+        )
+        return True
+
+    def _should_auto_refresh_on_stale_running(
+        self,
+        *,
+        trigger: ProjectionTrigger,
+        pr_number: int,
+        computed: _ComputedEvaluation,
+    ) -> bool:
+        if trigger.force_api_refresh:
+            sentinel_projection_fallback_total.labels(
+                kind="stale_running_refresh", result="skip_force_api_refresh"
+            ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="stale_running_refresh",
+                result="skip_force_api_refresh",
+                detail="Manual force refresh already requested",
+            )
+            return False
+        if not self.auto_refresh_on_missing_enabled:
+            sentinel_projection_fallback_total.labels(
+                kind="stale_running_refresh", result="skip_disabled"
+            ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="stale_running_refresh",
+                result="skip_disabled",
+            )
+            return False
+
+        now_utc = datetime.now(timezone.utc)
+        stale_checks: list[dict[str, int | str]] = []
+        for item in computed.in_progress:
+            check_row = computed.check_by_name.get(item.name)
+            if check_row is None:
+                continue
+            if check_row.status not in ("queued", "in_progress", "pending"):
+                continue
+            if check_row.last_seen_at is None:
+                continue
+            age_seconds = int((now_utc - check_row.last_seen_at).total_seconds())
+            if age_seconds < self.auto_refresh_on_missing_stale_seconds:
+                continue
+            stale_checks.append({"name": item.name, "age_seconds": age_seconds})
+
+        if not stale_checks:
+            sentinel_projection_fallback_total.labels(
+                kind="stale_running_refresh", result="skip_no_stale_running"
+            ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="stale_running_refresh",
+                result="skip_no_stale_running",
+            )
+            return False
+
+        now = time.monotonic()
+        retry_after = self._auto_refresh_missing_cooldown.get(trigger.key, 0.0)
+        if retry_after > now:
+            sentinel_projection_fallback_total.labels(
+                kind="stale_running_refresh", result="skip_cooldown"
+            ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="stale_running_refresh",
+                result="skip_cooldown",
+            )
+            return False
+
+        self._auto_refresh_missing_cooldown[trigger.key] = (
+            now + self.auto_refresh_on_missing_cooldown_seconds
+        )
+        self._record_activity(
+            trigger=trigger,
+            pr_number=pr_number,
+            activity_type="stale_running_refresh",
+            result="triggered",
+            detail="Refreshing projections from GitHub API due to stale running checks",
+            metadata={"checks": stale_checks},
         )
         return True
 
