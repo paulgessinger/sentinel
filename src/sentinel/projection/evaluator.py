@@ -7,7 +7,7 @@ import hashlib
 import io
 import json
 import time
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Protocol
 
 from sanic.log import logger
 import yaml
@@ -66,44 +66,32 @@ class _ComputedEvaluation:
     missing_pattern_failures: list[str]
 
 
+class ProjectionEvaluatorConfig(Protocol):
+    GITHUB_APP_ID: int
+    PROJECTION_CHECK_RUN_NAME: str
+    PROJECTION_PUBLISH_ENABLED: bool
+    PROJECTION_MANUAL_REFRESH_ACTION_ENABLED: bool
+    PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER: str
+    PROJECTION_MANUAL_REFRESH_ACTION_LABEL: str
+    PROJECTION_MANUAL_REFRESH_ACTION_DESCRIPTION: str
+    PROJECTION_PATH_RULE_FALLBACK_ENABLED: bool
+    PROJECTION_AUTO_REFRESH_ON_MISSING_ENABLED: bool
+    PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS: int
+    PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS: int
+    PROJECTION_CONFIG_CACHE_SECONDS: int
+    PROJECTION_PR_FILES_CACHE_SECONDS: int
+
+
 class ProjectionEvaluator:
     def __init__(
         self,
         *,
         store: WebhookStore,
-        app_id: int,
-        check_run_name: str,
-        publish_enabled: bool,
-        manual_refresh_action_enabled: bool,
-        manual_refresh_action_identifier: str,
-        manual_refresh_action_label: str,
-        manual_refresh_action_description: str,
-        path_rule_fallback_enabled: bool,
-        auto_refresh_on_missing_enabled: bool,
-        auto_refresh_on_missing_stale_seconds: int,
-        auto_refresh_on_missing_cooldown_seconds: int,
-        config_cache_seconds: int,
-        pr_files_cache_seconds: int,
+        config: ProjectionEvaluatorConfig,
         api_factory: Callable[[int], Awaitable[API]],
     ):
         self.store = store
-        self.app_id = app_id
-        self.check_run_name = check_run_name
-        self.publish_enabled = publish_enabled
-        self.manual_refresh_action_enabled = manual_refresh_action_enabled
-        self.manual_refresh_action_identifier = manual_refresh_action_identifier
-        self.manual_refresh_action_label = manual_refresh_action_label
-        self.manual_refresh_action_description = manual_refresh_action_description
-        self.path_rule_fallback_enabled = path_rule_fallback_enabled
-        self.auto_refresh_on_missing_enabled = auto_refresh_on_missing_enabled
-        self.auto_refresh_on_missing_stale_seconds = max(
-            0, int(auto_refresh_on_missing_stale_seconds)
-        )
-        self.auto_refresh_on_missing_cooldown_seconds = max(
-            0, int(auto_refresh_on_missing_cooldown_seconds)
-        )
-        self.config_cache_seconds = config_cache_seconds
-        self.pr_files_cache_seconds = pr_files_cache_seconds
+        self.config = config
         self.api_factory = api_factory
         self._config_cache: Dict[int, tuple[float, Config | None]] = {}
         self._pr_files_cache: Dict[tuple[int, int, str], tuple[float, List[str]]] = {}
@@ -216,7 +204,7 @@ class ProjectionEvaluator:
             len(config.rules),
             has_path_rules,
         )
-        if has_path_rules and self.path_rule_fallback_enabled:
+        if has_path_rules and self.config.PROJECTION_PATH_RULE_FALLBACK_ENABLED:
             changed_files = await self._get_pr_files(
                 api=api,
                 trigger=trigger,
@@ -389,8 +377,8 @@ class ProjectionEvaluator:
         sentinel_row = self.store.get_sentinel_check_run(
             repo_id=repo_id,
             head_sha=head_sha,
-            check_name=self.check_run_name,
-            app_id=self.app_id,
+            check_name=self.config.PROJECTION_CHECK_RUN_NAME,
+            app_id=self.config.GITHUB_APP_ID,
         )
 
         if not self.store.get_open_pr_candidates(repo_id, head_sha):
@@ -468,10 +456,10 @@ class ProjectionEvaluator:
                 repo_full_name=trigger.repo_full_name,
                 check_run_id=check_run_id,
                 head_sha=head_sha,
-                name=self.check_run_name,
+                name=self.config.PROJECTION_CHECK_RUN_NAME,
                 status=new_status,
                 conclusion=new_conclusion,
-                app_id=self.app_id,
+                app_id=self.config.GITHUB_APP_ID,
                 started_at=started_at,
                 completed_at=completed_at,
                 output_title=title,
@@ -500,7 +488,7 @@ class ProjectionEvaluator:
         publish_error: str | None = None
         publish_at: str | None = None
 
-        if self.publish_enabled and bool(pr_row.pr_draft):
+        if self.config.PROJECTION_PUBLISH_ENABLED and bool(pr_row.pr_draft):
             logger.info(
                 "Projection publish skipped (draft_pr) repo=%s sha=%s pr=%s status=%s conclusion=%s",
                 trigger.repo_full_name,
@@ -518,7 +506,7 @@ class ProjectionEvaluator:
                 result="skipped_draft",
                 detail=f"Draft PR, would publish {new_status}/{new_conclusion or '-'}",
             )
-        elif self.publish_enabled:
+        elif self.config.PROJECTION_PUBLISH_ENABLED:
             logger.info(
                 "Projection publish attempt repo=%s sha=%s pr=%s current_id=%s status=%s conclusion=%s",
                 trigger.repo_full_name,
@@ -560,8 +548,8 @@ class ProjectionEvaluator:
                 existing = await api.find_existing_sentinel_check_run(
                     repo_url=repo_url,
                     head_sha=head_sha,
-                    check_name=self.check_run_name,
-                    app_id=self.app_id,
+                    check_name=self.config.PROJECTION_CHECK_RUN_NAME,
+                    app_id=self.config.GITHUB_APP_ID,
                 )
                 if existing is not None and existing.id is not None:
                     sentinel_projection_lookup_total.labels(
@@ -678,10 +666,10 @@ class ProjectionEvaluator:
             repo_full_name=trigger.repo_full_name,
             check_run_id=final_id,
             head_sha=head_sha,
-            name=self.check_run_name,
+            name=self.config.PROJECTION_CHECK_RUN_NAME,
             status=new_status,
             conclusion=new_conclusion,
-            app_id=self.app_id,
+            app_id=self.config.GITHUB_APP_ID,
             started_at=started_at,
             completed_at=completed_at,
             output_title=title,
@@ -796,7 +784,7 @@ class ProjectionEvaluator:
                 raise
 
         self._config_cache[trigger.repo_id] = (
-            now + self.config_cache_seconds,
+            now + self.config.PROJECTION_CONFIG_CACHE_SECONDS,
             loaded,
         )
         return loaded
@@ -849,7 +837,10 @@ class ProjectionEvaluator:
         )
         pull = await api.get_pull(f"/repos/{trigger.repo_full_name}", pr_number)
         files = [f.filename async for f in api.get_pull_request_files(pull)]
-        self._pr_files_cache[key] = (now + self.pr_files_cache_seconds, list(files))
+        self._pr_files_cache[key] = (
+            now + self.config.PROJECTION_PR_FILES_CACHE_SECONDS,
+            list(files),
+        )
         logger.debug(
             "Projection pr_files fetched repo=%s sha=%s pr=%s count=%d",
             trigger.repo_full_name,
@@ -867,15 +858,15 @@ class ProjectionEvaluator:
         return files
 
     def _build_manual_refresh_actions(self, status: str) -> List[CheckRunAction]:
-        if not self.manual_refresh_action_enabled:
+        if not self.config.PROJECTION_MANUAL_REFRESH_ACTION_ENABLED:
             return []
         if status != "completed":
             return []
         return [
             CheckRunAction(
-                label=self.manual_refresh_action_label,
-                description=self.manual_refresh_action_description,
-                identifier=self.manual_refresh_action_identifier,
+                label=self.config.PROJECTION_MANUAL_REFRESH_ACTION_LABEL,
+                description=self.config.PROJECTION_MANUAL_REFRESH_ACTION_DESCRIPTION,
+                identifier=self.config.PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER,
             )
         ]
 
@@ -890,7 +881,10 @@ class ProjectionEvaluator:
         filtered_check_rows = [
             row
             for row in check_rows
-            if not (row.app_id == self.app_id and row.name == self.check_run_name)
+            if not (
+                row.app_id == self.config.GITHUB_APP_ID
+                and row.name == self.config.PROJECTION_CHECK_RUN_NAME
+            )
         ]
         workflow_name_by_suite = {
             row.check_suite_id: row.name
@@ -930,7 +924,7 @@ class ProjectionEvaluator:
 
         for row in status_rows:
             context = row.context
-            if context == self.check_run_name:
+            if context == self.config.PROJECTION_CHECK_RUN_NAME:
                 continue
             if context is None:
                 continue
@@ -1049,7 +1043,7 @@ class ProjectionEvaluator:
                 detail="Manual force refresh already requested",
             )
             return False
-        if not self.auto_refresh_on_missing_enabled:
+        if not self.config.PROJECTION_AUTO_REFRESH_ON_MISSING_ENABLED:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_disabled"
             ).inc()
@@ -1096,7 +1090,10 @@ class ProjectionEvaluator:
             )
             return False
         pr_age_seconds = (datetime.now(timezone.utc) - pr_updated_at).total_seconds()
-        if pr_age_seconds < self.auto_refresh_on_missing_stale_seconds:
+        stale_seconds = max(
+            0, int(self.config.PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS)
+        )
+        if pr_age_seconds < stale_seconds:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_recent_pr"
             ).inc()
@@ -1122,8 +1119,9 @@ class ProjectionEvaluator:
                 result="skip_cooldown",
             )
             return False
-        self._auto_refresh_missing_cooldown[trigger.key] = (
-            now + self.auto_refresh_on_missing_cooldown_seconds
+        self._auto_refresh_missing_cooldown[trigger.key] = now + max(
+            0,
+            int(self.config.PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS),
         )
         self._record_activity(
             trigger=trigger,
@@ -1154,7 +1152,7 @@ class ProjectionEvaluator:
                 detail="Manual force refresh already requested",
             )
             return False
-        if not self.auto_refresh_on_missing_enabled:
+        if not self.config.PROJECTION_AUTO_REFRESH_ON_MISSING_ENABLED:
             sentinel_projection_fallback_total.labels(
                 kind="stale_running_refresh", result="skip_disabled"
             ).inc()
@@ -1166,6 +1164,9 @@ class ProjectionEvaluator:
             )
             return False
 
+        stale_seconds = max(
+            0, int(self.config.PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS)
+        )
         now_utc = datetime.now(timezone.utc)
         stale_checks: list[dict[str, int | str]] = []
         for item in computed.in_progress:
@@ -1177,7 +1178,7 @@ class ProjectionEvaluator:
             if check_row.last_seen_at is None:
                 continue
             age_seconds = int((now_utc - check_row.last_seen_at).total_seconds())
-            if age_seconds < self.auto_refresh_on_missing_stale_seconds:
+            if age_seconds < stale_seconds:
                 continue
             stale_checks.append({"name": item.name, "age_seconds": age_seconds})
 
@@ -1207,8 +1208,9 @@ class ProjectionEvaluator:
             )
             return False
 
-        self._auto_refresh_missing_cooldown[trigger.key] = (
-            now + self.auto_refresh_on_missing_cooldown_seconds
+        self._auto_refresh_missing_cooldown[trigger.key] = now + max(
+            0,
+            int(self.config.PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS),
         )
         self._record_activity(
             trigger=trigger,

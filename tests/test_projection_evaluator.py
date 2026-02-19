@@ -246,6 +246,42 @@ async def _seed(store: WebhookStore) -> None:
     )
 
 
+@dataclass
+class _EvaluatorConfig:
+    GITHUB_APP_ID: int = 2877723
+    PROJECTION_CHECK_RUN_NAME: str = "merge-sentinel"
+    PROJECTION_PUBLISH_ENABLED: bool = False
+    PROJECTION_MANUAL_REFRESH_ACTION_ENABLED: bool = True
+    PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER: str = "refresh_from_api"
+    PROJECTION_MANUAL_REFRESH_ACTION_LABEL: str = "Re-evaluate now"
+    PROJECTION_MANUAL_REFRESH_ACTION_DESCRIPTION: str = (
+        "Force refresh checks from GitHub and re-evaluate"
+    )
+    PROJECTION_PATH_RULE_FALLBACK_ENABLED: bool = True
+    PROJECTION_AUTO_REFRESH_ON_MISSING_ENABLED: bool = True
+    PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS: int = 1800
+    PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS: int = 300
+    PROJECTION_CONFIG_CACHE_SECONDS: int = 300
+    PROJECTION_PR_FILES_CACHE_SECONDS: int = 86400
+
+
+def _make_evaluator(
+    *,
+    store: WebhookStore,
+    api_factory,
+    publish_enabled: bool = False,
+    stale_seconds: int = 1800,
+) -> ProjectionEvaluator:
+    return ProjectionEvaluator(
+        store=store,
+        config=_EvaluatorConfig(
+            PROJECTION_PUBLISH_ENABLED=publish_enabled,
+            PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS=stale_seconds,
+        ),
+        api_factory=api_factory,
+    )
+
+
 @pytest.mark.asyncio
 async def test_projection_dry_run_persists_sentinel_row(tmp_path):
     store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
@@ -260,23 +296,7 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
     async def api_factory(_installation: int):
         return api
 
-    evaluator = ProjectionEvaluator(
-        store=store,
-        app_id=2877723,
-        check_run_name="merge-sentinel",
-        publish_enabled=False,
-        manual_refresh_action_enabled=True,
-        manual_refresh_action_identifier="refresh_from_api",
-        manual_refresh_action_label="Re-evaluate now",
-        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
-        path_rule_fallback_enabled=True,
-        auto_refresh_on_missing_enabled=True,
-        auto_refresh_on_missing_stale_seconds=1800,
-        auto_refresh_on_missing_cooldown_seconds=300,
-        config_cache_seconds=300,
-        pr_files_cache_seconds=86400,
-        api_factory=api_factory,
-    )
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
 
     result = await evaluator.evaluate_and_publish(
         ProjectionTrigger(
@@ -353,23 +373,7 @@ async def test_projection_second_identical_eval_is_unchanged(tmp_path):
     async def api_factory(_installation: int):
         return api
 
-    evaluator = ProjectionEvaluator(
-        store=store,
-        app_id=2877723,
-        check_run_name="merge-sentinel",
-        publish_enabled=False,
-        manual_refresh_action_enabled=True,
-        manual_refresh_action_identifier="refresh_from_api",
-        manual_refresh_action_label="Re-evaluate now",
-        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
-        path_rule_fallback_enabled=True,
-        auto_refresh_on_missing_enabled=True,
-        auto_refresh_on_missing_stale_seconds=1800,
-        auto_refresh_on_missing_cooldown_seconds=300,
-        config_cache_seconds=300,
-        pr_files_cache_seconds=86400,
-        api_factory=api_factory,
-    )
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
     trigger = ProjectionTrigger(
         repo_id=11,
         repo_full_name="org/repo",
@@ -415,22 +419,8 @@ async def test_projection_publish_persists_real_id(tmp_path):
     async def api_factory(_installation: int):
         return api
 
-    evaluator = ProjectionEvaluator(
-        store=store,
-        app_id=2877723,
-        check_run_name="merge-sentinel",
-        publish_enabled=True,
-        manual_refresh_action_enabled=True,
-        manual_refresh_action_identifier="refresh_from_api",
-        manual_refresh_action_label="Re-evaluate now",
-        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
-        path_rule_fallback_enabled=True,
-        auto_refresh_on_missing_enabled=True,
-        auto_refresh_on_missing_stale_seconds=1800,
-        auto_refresh_on_missing_cooldown_seconds=300,
-        config_cache_seconds=300,
-        pr_files_cache_seconds=86400,
-        api_factory=api_factory,
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
     )
 
     result = await evaluator.evaluate_and_publish(
@@ -496,22 +486,8 @@ async def test_projection_publish_skips_for_draft_pr(tmp_path):
     async def api_factory(_installation: int):
         return api
 
-    evaluator = ProjectionEvaluator(
-        store=store,
-        app_id=2877723,
-        check_run_name="merge-sentinel",
-        publish_enabled=True,
-        manual_refresh_action_enabled=True,
-        manual_refresh_action_identifier="refresh_from_api",
-        manual_refresh_action_label="Re-evaluate now",
-        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
-        path_rule_fallback_enabled=True,
-        auto_refresh_on_missing_enabled=True,
-        auto_refresh_on_missing_stale_seconds=1800,
-        auto_refresh_on_missing_cooldown_seconds=300,
-        config_cache_seconds=300,
-        pr_files_cache_seconds=86400,
-        api_factory=api_factory,
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
     )
 
     result = await evaluator.evaluate_and_publish(
@@ -577,22 +553,8 @@ async def test_projection_publish_skips_when_pr_closed_during_evaluation(tmp_pat
     async def api_factory(_installation: int):
         return api
 
-    evaluator = ProjectionEvaluator(
-        store=store,
-        app_id=2877723,
-        check_run_name="merge-sentinel",
-        publish_enabled=True,
-        manual_refresh_action_enabled=True,
-        manual_refresh_action_identifier="refresh_from_api",
-        manual_refresh_action_label="Re-evaluate now",
-        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
-        path_rule_fallback_enabled=True,
-        auto_refresh_on_missing_enabled=True,
-        auto_refresh_on_missing_stale_seconds=1800,
-        auto_refresh_on_missing_cooldown_seconds=300,
-        config_cache_seconds=300,
-        pr_files_cache_seconds=86400,
-        api_factory=api_factory,
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
     )
 
     result = await evaluator.evaluate_and_publish(
@@ -640,23 +602,7 @@ async def test_force_api_refresh_persists_projection_rows(tmp_path):
     async def api_factory(_installation: int):
         return api
 
-    evaluator = ProjectionEvaluator(
-        store=store,
-        app_id=2877723,
-        check_run_name="merge-sentinel",
-        publish_enabled=False,
-        manual_refresh_action_enabled=True,
-        manual_refresh_action_identifier="refresh_from_api",
-        manual_refresh_action_label="Re-evaluate now",
-        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
-        path_rule_fallback_enabled=True,
-        auto_refresh_on_missing_enabled=True,
-        auto_refresh_on_missing_stale_seconds=1800,
-        auto_refresh_on_missing_cooldown_seconds=300,
-        config_cache_seconds=300,
-        pr_files_cache_seconds=86400,
-        api_factory=api_factory,
-    )
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
 
     result = await evaluator.evaluate_and_publish(
         ProjectionTrigger(
@@ -712,22 +658,10 @@ async def test_auto_refresh_on_missing_pattern_for_stale_pr(tmp_path):
     async def api_factory(_installation: int):
         return api
 
-    evaluator = ProjectionEvaluator(
+    evaluator = _make_evaluator(
         store=store,
-        app_id=2877723,
-        check_run_name="merge-sentinel",
-        publish_enabled=False,
-        manual_refresh_action_enabled=True,
-        manual_refresh_action_identifier="refresh_from_api",
-        manual_refresh_action_label="Re-evaluate now",
-        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
-        path_rule_fallback_enabled=True,
-        auto_refresh_on_missing_enabled=True,
-        auto_refresh_on_missing_stale_seconds=60,
-        auto_refresh_on_missing_cooldown_seconds=300,
-        config_cache_seconds=300,
-        pr_files_cache_seconds=86400,
         api_factory=api_factory,
+        stale_seconds=60,
     )
 
     result = await evaluator.evaluate_and_publish(
@@ -817,22 +751,10 @@ async def test_auto_refresh_on_stale_running_check(tmp_path):
     async def api_factory(_installation: int):
         return api
 
-    evaluator = ProjectionEvaluator(
+    evaluator = _make_evaluator(
         store=store,
-        app_id=2877723,
-        check_run_name="merge-sentinel",
-        publish_enabled=False,
-        manual_refresh_action_enabled=True,
-        manual_refresh_action_identifier="refresh_from_api",
-        manual_refresh_action_label="Re-evaluate now",
-        manual_refresh_action_description="Force refresh checks from GitHub and re-evaluate",
-        path_rule_fallback_enabled=True,
-        auto_refresh_on_missing_enabled=True,
-        auto_refresh_on_missing_stale_seconds=60,
-        auto_refresh_on_missing_cooldown_seconds=300,
-        config_cache_seconds=300,
-        pr_files_cache_seconds=86400,
         api_factory=api_factory,
+        stale_seconds=60,
     )
 
     result = await evaluator.evaluate_and_publish(
