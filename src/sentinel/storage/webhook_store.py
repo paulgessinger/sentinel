@@ -1110,7 +1110,11 @@ class WebhookStore:
             )
 
         events.sort(
-            key=lambda item: str(item.received_at or ""),
+            key=lambda item: (
+                item.received_at
+                if item.received_at is not None
+                else datetime.min.replace(tzinfo=timezone.utc)
+            ),
             reverse=True,
         )
         if len(events) > target_limit:

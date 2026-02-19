@@ -424,12 +424,14 @@ class ProjectionEvaluator:
         )
 
         now_iso = utcnow_iso()
-        started_at = self._min_started_at(computed.check_by_name.values())
-        completed_at = (
+        started_at_dt = self._min_started_at(computed.check_by_name.values())
+        completed_at_dt = (
             self._max_completed_at(computed.check_by_name.values())
             if new_status == "completed"
             else None
         )
+        started_at = self._dt_to_iso(started_at_dt)
+        completed_at = self._dt_to_iso(completed_at_dt)
 
         if unchanged:
             logger.info(
@@ -465,9 +467,11 @@ class ProjectionEvaluator:
                 output_summary_hash=summary_hash,
                 output_text_hash=text_hash,
                 last_eval_at=now_iso,
-                last_publish_at=sentinel_row.get("last_publish_at")
-                if sentinel_row
-                else None,
+                last_publish_at=(
+                    self._dt_to_iso(sentinel_row.last_publish_at)
+                    if sentinel_row
+                    else None
+                ),
                 last_publish_result="unchanged",
                 last_publish_error=None,
                 last_delivery_id=trigger.delivery_id,
@@ -497,8 +501,8 @@ class ProjectionEvaluator:
                 head_sha=head_sha,
                 status=new_status,
                 conclusion=new_conclusion,
-                started_at=self._parse_dt(started_at) or datetime.now(timezone.utc),
-                completed_at=self._parse_dt(completed_at),
+                started_at=started_at_dt or datetime.now(timezone.utc),
+                completed_at=completed_at_dt,
                 output=CheckRunOutput(
                     title=title,
                     summary=output_summary,
@@ -1049,7 +1053,7 @@ class ProjectionEvaluator:
             )
             return False
 
-        pr_updated_at = self._parse_dt(pr_row.updated_at)
+        pr_updated_at = pr_row.updated_at
         if pr_updated_at is None:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_no_pr_updated_at"
@@ -1193,35 +1197,19 @@ class ProjectionEvaluator:
             return "neutral"
         return "pending"
 
-    @staticmethod
-    def _parse_dt(value: str | None) -> datetime | None:
-        if value is None:
-            return None
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(value)
-        except ValueError:
-            return None
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt
-
     @classmethod
-    def _min_started_at(cls, rows: Iterable[CheckRunRow]) -> str | None:
-        vals = [cls._parse_dt(r.started_at) for r in rows if r.started_at]
-        vals = [v for v in vals if v is not None]
+    def _min_started_at(cls, rows: Iterable[CheckRunRow]) -> datetime | None:
+        vals = [r.started_at for r in rows if r.started_at is not None]
         if not vals:
             return None
-        return min(vals).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        return min(vals)
 
     @classmethod
-    def _max_completed_at(cls, rows: Iterable[CheckRunRow]) -> str | None:
-        vals = [cls._parse_dt(r.completed_at) for r in rows if r.completed_at]
-        vals = [v for v in vals if v is not None]
+    def _max_completed_at(cls, rows: Iterable[CheckRunRow]) -> datetime | None:
+        vals = [r.completed_at for r in rows if r.completed_at is not None]
         if not vals:
             return None
-        return max(vals).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        return max(vals)
 
     @staticmethod
     def _repo_url(repo_full_name: str) -> str:

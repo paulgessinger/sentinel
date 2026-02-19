@@ -230,7 +230,7 @@ def _state_dashboard_context(
                 **row_dict,
                 "short_sha": head_sha[:8] if head_sha else "",
                 "row_key": row_key,
-                "row_update_signature": _row_update_signature(row),
+                "row_update_signature": _row_update_signature(row_dict),
                 "pr_state_display": pr_state_display,
                 "pr_state_class": _pr_state_chip_class(pr_state_display),
                 "pr_is_draft": pr_is_draft,
@@ -438,6 +438,10 @@ def _state_pr_detail_context(
             event["details_url"] = (
                 f"/state/event/{delivery_id}?repo_id={repo_id}&pr_number={pr_number}"
             )
+    event_rows = [
+        event.to_dict() if hasattr(event, "to_dict") else dict(event)
+        for event in events
+    ]
 
     pr_state_display = _pr_state_display(
         row.get("pr_state"),
@@ -471,7 +475,7 @@ def _state_pr_detail_context(
             "rendered_output_summary": _render_markdown(output_summary),
             "rendered_output_text": _render_markdown(output_text),
         },
-        "events": events,
+        "events": event_rows,
     }
 
 
@@ -494,8 +498,9 @@ def _state_event_detail_context(
     else:
         event["pr_detail_url"] = None
 
+    event_row = event.to_dict() if hasattr(event, "to_dict") else dict(event)
     return {
-        "event": event,
+        "event": event_row,
     }
 
 
