@@ -993,6 +993,47 @@ def test_pr_related_events_include_projection_activity(tmp_path):
     assert events[0].payload["status"] == "completed"
 
 
+def test_pr_related_events_do_not_require_payload_decode(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    head_sha = "a" * 40
+    pr_payload = make_pull_request_payload(head_sha=head_sha, title="Tracked PR")
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=pr_payload,
+        payload_json=store.payload_to_json(pr_payload),
+    )
+    check_run_payload = make_check_run_payload()
+    check_run_payload["check_run"]["head_sha"] = head_sha
+    check_run_payload["repository"] = {"id": 103, "full_name": "org/repo"}
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=check_run_payload,
+        payload_json=store.payload_to_json(check_run_payload),
+    )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE webhook_events SET payload_json = ? WHERE delivery_id = ?",
+            (b"not-json-and-not-zstd", "cr-1"),
+        )
+        conn.commit()
+
+    events = store.list_pr_related_events(
+        repo_id=103,
+        pr_number=42,
+        head_sha=head_sha,
+        limit=10,
+    )
+    assert [event.delivery_id for event in events] == ["cr-1", "pr-1"]
+    assert events[0].detail is not None
+    assert "tests" in events[0].detail
+
+
 def test_prune_old_activity_events(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
     store = _make_store(db_path, WEBHOOK_ACTIVITY_RETENTION_SECONDS=60)
