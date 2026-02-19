@@ -1,0 +1,5 @@
+<ol id="queue">
+{% for pr, delta in prs %}
+<li><a href="{{ pr.html_url }}">{{ pr.base.repo.full_name }}#{{ pr.number }}</a> [ready: {{ delta }}]</li>
+{% endfor %}
+</ol>

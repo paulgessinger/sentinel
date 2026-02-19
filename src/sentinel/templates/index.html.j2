@@ -1,18 +1,9 @@
-<!doctype html>
-<html lang="en">
-<head>
-    <!-- Required meta tags -->
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-    <title>Merge Sentinel - Flexible required checks for PRs</title>
-    <meta name="description"
-          content="Merge Sentinel - Flexible required checks for PRs"/>
-
-    <link rel="stylesheet" href="{{ app.url_for('static', filename='main.css') }}">
-</head>
-<body>
-
-
+{% extends "base.html.j2" %}
+{% block title %}Merge Sentinel - Flexible required checks for PRs{% endblock %}
+{% block meta %}
+    <meta name="description" content="Merge Sentinel - Flexible required checks for PRs">
+{% endblock %}
+{% block body %}
 <div id="main">
 
     <div id="logo" 
@@ -47,9 +38,7 @@
     If you're interested in using it on a public repo, <a href="mailto:hello@paulgessinger.com">let me know</a>!
     </p>
     
-    <section>
+    </section>
 
 </div>
-
-</body>
-</html>
+{% endblock %}

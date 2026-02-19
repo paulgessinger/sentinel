@@ -1,12 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-    <title>Sentinel State Dashboard</title>
-    <link rel="stylesheet" href="{{ app.url_for('static', filename='main.css') }}">
-</head>
-<body>
+{% extends "base.html.j2" %}
+{% block title %}Sentinel State Dashboard{% endblock %}
+{% block body %}
 <main id="state-dashboard" class="state-dashboard">
     {% if not projection_publish_enabled %}
     <section class="mode-indicator mode-indicator-dry-run">
@@ -44,7 +38,8 @@
         {% include "state_table.html.j2" %}
     </section>
 </main>
-
+{% endblock %}
+{% block scripts %}
 <script>
 (() => {
     const tableContainer = document.getElementById("state-table-container");
@@ -223,5 +218,4 @@
     scheduleRelativeTimesRefresh();
 })();
 </script>
-</body>
-</html>
+{% endblock %}

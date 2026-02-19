@@ -504,12 +504,11 @@ def create_app():
         )
 
     @app.get("/")
+    @app.ext.template("index.html.j2")
     async def index(request):
         if SETTINGS.INDEX_REDIRECT_URL:
             return response.redirect(SETTINGS.INDEX_REDIRECT_URL)
-        return response.html(
-            await request.app.ext.template("index.html.j2", {"app": app}).render()
-        )
+        return {"app": request.app}
 
     @app.get("/status")
     async def status(request):
@@ -535,9 +534,7 @@ def create_app():
 
     register_state_routes(app)
 
-    @app.route("/queue")
-    @app.ext.template("queue.html.j2")
-    async def queue(request):
+    def _queue_rows():
         with get_cache() as dcache:
             cooldown = timedelta(seconds=SETTINGS.PR_TIMEOUT)
             data = []
@@ -556,9 +553,17 @@ def create_app():
                         ),
                     )
                 )
+            return data
 
-            print(request.args.get("inner"))
-            return {"app": app, "prs": data, "inner": request.args.get("inner")}
+    @app.get("/queue")
+    @app.ext.template("queue.html.j2")
+    async def queue(request):
+        return {"app": request.app, "prs": _queue_rows()}
+
+    @app.get("/queue/inner")
+    @app.ext.template("queue_inner.html.j2")
+    async def queue_inner(request):
+        return {"app": request.app, "prs": _queue_rows()}
 
     @app.get("/metrics")
     async def metrics(request):

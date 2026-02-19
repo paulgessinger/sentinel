@@ -1,18 +1,13 @@
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-    <title>Sentinel PR Detail</title>
-    <link rel="stylesheet" href="{{ app.url_for('static', filename='main.css') }}">
-</head>
-<body>
+{% extends "base.html.j2" %}
+{% block title %}Sentinel PR Detail{% endblock %}
+{% block body %}
 <main class="state-dashboard pr-detail">
     <section id="state-pr-detail-container">
         {% include "state_pr_detail_content.html.j2" %}
     </section>
 </main>
-
+{% endblock %}
+{% block scripts %}
 <script>
 (() => {
     const detailContainer = document.getElementById("state-pr-detail-container");
@@ -188,5 +183,4 @@
     scheduleRelativeTimesRefresh();
 })();
 </script>
-</body>
-</html>
+{% endblock %}

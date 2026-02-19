@@ -1,33 +1,15 @@
-{% if not inner %}
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <!-- Required meta tags -->
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-    <title>Merge Sentinel - Flexible required checks for PRs</title>
-    <meta name="description"
-          content="Merge Sentinel - Flexible required checks for PRs"/>
-
-     <script src="{{ app.url_for('static', filename='htmx.js') }} "></script>
-
-</head>
-<body>
-
+{% extends "base.html.j2" %}
+{% block title %}Merge Sentinel Queue{% endblock %}
+{% block meta %}
+    <meta name="description" content="Merge Sentinel queue view">
+{% endblock %}
+{% block head_extra %}
+    <script src="{{ app.url_for('static', filename='htmx.js') }}"></script>
+{% endblock %}
+{% block body %}
 <h1>Update queue</h1>
 
-<div hx-get="/queue?inner=1" hx-swap="innerHTML" hx-trigger="every 5s">
-{% endif %}
-<ol id="queue">
-
-{% for pr, delta in prs %}
-<li><a href="{{ pr.html_url }}">{{ pr.base.repo.full_name }}#{{ pr.number }}</a> [ready: {{ delta }}]</li>
-{% endfor %}
-
-</ol>
-{% if not inner %}
+<div hx-get="/queue/inner" hx-swap="innerHTML" hx-trigger="every 5s">
+    {% include "queue_list.html.j2" %}
 </div>
-
-</body>
-</html>
-{% endif %}
+{% endblock %}

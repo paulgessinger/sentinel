@@ -1,12 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-    <title>Sentinel Webhook Event Detail</title>
-    <link rel="stylesheet" href="{{ app.url_for('static', filename='main.css') }}">
-</head>
-<body>
+{% extends "base.html.j2" %}
+{% block title %}Sentinel Webhook Event Detail{% endblock %}
+{% block body %}
 <main class="state-dashboard pr-detail">
     {% if not projection_publish_enabled %}
     <section class="mode-indicator mode-indicator-dry-run">
@@ -54,7 +48,8 @@
         <pre>{{ event.payload_pretty }}</pre>
     </section>
 </main>
-
+{% endblock %}
+{% block scripts %}
 <script>
 (() => {
     const pad2 = (value) => String(value).padStart(2, "0");
@@ -111,5 +106,4 @@
     });
 })();
 </script>
-</body>
-</html>
+{% endblock %}
