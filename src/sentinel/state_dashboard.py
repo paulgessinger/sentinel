@@ -340,8 +340,8 @@ def _state_pr_detail_context(
         limit=250,
     )
     for event in events:
-        event["payload_pretty"] = json.dumps(
-            event.get("payload") or {}, indent=2, sort_keys=True
+        event["details_url"] = (
+            f"/state/event/{event.get('delivery_id')}?repo_id={repo_id}&pr_number={pr_number}"
         )
 
     pr_state_display = _pr_state_display(
@@ -373,6 +373,30 @@ def _state_pr_detail_context(
             "rendered_output_text": _render_markdown(output_text),
         },
         "events": events,
+    }
+
+
+def _state_event_detail_context(
+    app: Sanic,
+    *,
+    delivery_id: str,
+    repo_id: int | None = None,
+    pr_number: int | None = None,
+) -> Dict[str, Any] | None:
+    event = app.ctx.webhook_store.get_webhook_event(delivery_id)
+    if event is None:
+        return None
+
+    event["payload_pretty"] = json.dumps(
+        event.get("payload") or {}, indent=2, sort_keys=True
+    )
+    if repo_id is not None and pr_number is not None:
+        event["pr_detail_url"] = f"/state/pr/{repo_id}/{pr_number}"
+    else:
+        event["pr_detail_url"] = None
+
+    return {
+        "event": event,
     }
 
 
@@ -424,6 +448,24 @@ def register_state_routes(app: Sanic) -> None:
         context = _state_pr_detail_context(app, repo_id=repo_id, pr_number=pr_number)
         if context is None:
             raise NotFound(f"PR not found: repo_id={repo_id} pr_number={pr_number}")
+        return {
+            "app": app,
+            **context,
+        }
+
+    @app.get("/state/event/<delivery_id:str>")
+    @app.ext.template("state_event_detail.html.j2")
+    async def state_event_detail(_request, delivery_id: str):
+        repo_id = _parse_int(_arg_value(_request, "repo_id"), 0)
+        pr_number = _parse_int(_arg_value(_request, "pr_number"), 0)
+        context = _state_event_detail_context(
+            app,
+            delivery_id=delivery_id,
+            repo_id=repo_id if repo_id > 0 else None,
+            pr_number=pr_number if pr_number > 0 else None,
+        )
+        if context is None:
+            raise NotFound(f"Webhook event not found: delivery_id={delivery_id}")
         return {
             "app": app,
             **context,

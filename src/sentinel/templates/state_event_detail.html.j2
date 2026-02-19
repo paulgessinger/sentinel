@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Sentinel Webhook Event Detail</title>
+    <link rel="stylesheet" href="{{ app.url_for('static', filename='main.css') }}">
+</head>
+<body>
+<main class="state-dashboard pr-detail">
+    {% if not app.config.PROJECTION_PUBLISH_ENABLED %}
+    <section class="mode-indicator mode-indicator-dry-run">
+        Dry run mode active: evaluation runs, GitHub publish is disabled.
+    </section>
+    {% endif %}
+
+    <header class="state-header">
+        <h1>Webhook Delivery</h1>
+        <p><code>{{ event.delivery_id }}</code></p>
+    </header>
+
+    <nav class="state-pagination">
+        <a href="/state">Back to Dashboard</a>
+        {% if event.pr_detail_url %}
+        <a href="{{ event.pr_detail_url }}">Back to PR Detail</a>
+        {% endif %}
+    </nav>
+
+    <section class="pr-summary-grid">
+        <div>
+            <strong>Received:</strong>
+            {% if event.received_at %}
+            <span data-utc="{{ event.received_at }}">{{ event.received_at }}</span>
+            {% else %}
+            -
+            {% endif %}
+        </div>
+        <div><strong>Event:</strong> {{ event.event }}</div>
+        <div><strong>Action:</strong> {{ event.action or "-" }}</div>
+        <div><strong>Detail:</strong> {{ event.detail or "-" }}</div>
+        <div><strong>Repository:</strong> {{ event.repo_full_name or "-" }}</div>
+        <div><strong>Installation:</strong> {{ event.installation_id or "-" }}</div>
+    </section>
+
+    {% if event.projection_error %}
+    <section class="detail-section">
+        <h2>Projection Error</h2>
+        <p class="error-text">{{ event.projection_error }}</p>
+    </section>
+    {% endif %}
+
+    <section class="detail-section">
+        <h2>Payload</h2>
+        <pre>{{ event.payload_pretty }}</pre>
+    </section>
+</main>
+
+<script>
+(() => {
+    const pad2 = (value) => String(value).padStart(2, "0");
+    const formatLocalDateTime = (dt) =>
+        `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())} ` +
+        `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}:${pad2(dt.getSeconds())}`;
+    const formatRelativeTime = (dt) => {
+        const nowMs = Date.now();
+        const diffSeconds = Math.round((dt.getTime() - nowMs) / 1000);
+        const absSeconds = Math.abs(diffSeconds);
+
+        if (absSeconds < 5) {
+            return { text: "just now", unit: "s" };
+        }
+
+        const units = [
+            { seconds: 31536000, label: "y" },
+            { seconds: 2592000, label: "mo" },
+            { seconds: 604800, label: "w" },
+            { seconds: 86400, label: "d" },
+            { seconds: 3600, label: "h" },
+            { seconds: 60, label: "m" },
+            { seconds: 1, label: "s" },
+        ];
+
+        let value = absSeconds;
+        let unit = "s";
+        for (const candidate of units) {
+            if (absSeconds >= candidate.seconds) {
+                value = Math.floor(absSeconds / candidate.seconds);
+                unit = candidate.label;
+                break;
+            }
+        }
+
+        if (diffSeconds < 0) {
+            return { text: `${value}${unit} ago`, unit };
+        }
+        return { text: `in ${value}${unit}`, unit };
+    };
+
+    document.querySelectorAll("[data-utc]").forEach((el) => {
+        const raw = el.getAttribute("data-utc");
+        if (!raw) {
+            return;
+        }
+        const dt = new Date(raw);
+        if (Number.isNaN(dt.getTime())) {
+            return;
+        }
+        const relative = formatRelativeTime(dt);
+        el.textContent = relative.text;
+        el.title = `${formatLocalDateTime(dt)} local (${raw})`;
+    });
+})();
+</script>
+</body>
+</html>

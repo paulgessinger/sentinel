@@ -332,6 +332,15 @@ a {
     margin-top: 24px;
 }
 
+.detail-section pre {
+    background: var(--color-code-bg);
+    border: 1px solid var(--color-code-border);
+    border-radius: 6px;
+    padding: 10px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 .rendered-markdown {
     margin-top: 8px;
 }

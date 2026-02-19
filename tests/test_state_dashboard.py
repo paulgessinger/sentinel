@@ -12,6 +12,7 @@ from sentinel.state_dashboard import (
     _publish_result_display,
     _conclusion_chip_class,
     _state_dashboard_context,
+    _state_event_detail_context,
     _state_pr_detail_context,
     _state_query_params,
     _status_chip_class,
@@ -242,6 +243,7 @@ def test_state_routes_registered():
     assert "state" in paths
     assert "state/table" in paths
     assert "state/stream" in paths
+    assert any("state/event" in path for path in paths)
     assert any("state/pr" in path for path in paths)
     assert any("state/pr" in path and "content" in path for path in paths)
 
@@ -385,3 +387,51 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
     assert "rendered-check-table" in context["row"]["rendered_output_text"]
     assert len(context["events"]) >= 3
     assert context["events"][0]["delivery_id"] == "status-1"
+    assert context["events"][0]["details_url"].endswith(
+        "/state/event/status-1?repo_id=10&pr_number=42"
+    )
+
+
+def test_state_event_detail_context_renders_payload_and_back_link(tmp_path):
+    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store.initialize()
+
+    payload = {
+        "action": "opened",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "pull_request": {
+            "id": 1001,
+            "number": 42,
+            "title": "Add dashboard",
+            "state": "open",
+            "head": {"sha": "a" * 40},
+            "base": {"ref": "main"},
+        },
+    }
+    store.persist_event(
+        delivery_id="delivery-abc",
+        event="pull_request",
+        payload=payload,
+        payload_json=store.payload_to_json(payload),
+    )
+
+    app = SimpleNamespace(
+        config=SimpleNamespace(
+            GITHUB_APP_ID=2877723,
+            PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+        ),
+        ctx=SimpleNamespace(webhook_store=store),
+    )
+
+    context = _state_event_detail_context(
+        cast(Sanic, app),
+        delivery_id="delivery-abc",
+        repo_id=10,
+        pr_number=42,
+    )
+    assert context is not None
+    assert context["event"]["delivery_id"] == "delivery-abc"
+    assert context["event"]["event"] == "pull_request"
+    assert '"number": 42' in context["event"]["payload_pretty"]
+    assert context["event"]["pr_detail_url"] == "/state/pr/10/42"

@@ -77,7 +77,6 @@
             <th>Action</th>
             <th>Detail</th>
             <th>Delivery</th>
-            <th>Payload</th>
         </tr>
         </thead>
         <tbody>
@@ -87,13 +86,7 @@
             <td>{{ event.event }}</td>
             <td>{{ event.action or "-" }}</td>
             <td>{{ event.detail or "-" }}</td>
-            <td><code>{{ event.delivery_id }}</code></td>
-            <td>
-                <details>
-                    <summary>show</summary>
-                    <pre>{{ event.payload_pretty }}</pre>
-                </details>
-            </td>
+            <td><a href="{{ event.details_url }}"><code>{{ event.delivery_id }}</code></a></td>
         </tr>
         {% endfor %}
         </tbody>

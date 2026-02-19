@@ -907,3 +907,24 @@ def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):
         limit=10,
     )
     assert [event["delivery_id"] for event in events] == ["status-1", "cr-1", "pr-1"]
+
+
+def test_get_webhook_event_returns_decoded_payload(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    payload = make_check_run_payload(conclusion="success")
+    store.persist_event(
+        delivery_id="delivery-123",
+        event="check_run",
+        payload=payload,
+        payload_json=store.payload_to_json(payload),
+    )
+
+    event = store.get_webhook_event("delivery-123")
+    assert event is not None
+    assert event["delivery_id"] == "delivery-123"
+    assert event["event"] == "check_run"
+    assert event["payload"]["check_run"]["id"] == 2001
+    assert "tests" in event["detail"]

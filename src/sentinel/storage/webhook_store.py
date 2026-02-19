@@ -954,6 +954,40 @@ class WebhookStore:
 
         return events
 
+    def get_webhook_event(self, delivery_id: str) -> Dict[str, Any] | None:
+        stmt = (
+            select(
+                webhook_events.c.delivery_id,
+                webhook_events.c.received_at,
+                webhook_events.c.event,
+                webhook_events.c.action,
+                webhook_events.c.installation_id,
+                webhook_events.c.repo_id,
+                webhook_events.c.repo_full_name,
+                webhook_events.c.payload_json,
+                webhook_events.c.projected_at,
+                webhook_events.c.projection_error,
+            )
+            .where(webhook_events.c.delivery_id == delivery_id)
+            .limit(1)
+        )
+        with self.engine.begin() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row is None:
+            return None
+
+        event = dict(row)
+        payload: Dict[str, Any]
+        try:
+            payload = json.loads(self.decode_payload_json(event.pop("payload_json")))
+        except ValueError:
+            payload = {}
+
+        event_name = str(event.get("event") or "")
+        event["payload"] = payload
+        event["detail"] = self._event_detail(event_name=event_name, payload=payload)
+        return event
+
     def count_pr_dashboard_rows(
         self,
         repo_full_name: str | None = None,
