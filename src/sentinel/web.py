@@ -3,6 +3,7 @@ import logging
 import logging.config
 from pathlib import Path
 import re
+import time
 
 import aiohttp
 from sanic import Sanic, response, Request
@@ -27,7 +28,8 @@ from sentinel.metric import (
     webhook_skipped_counter,
     queue_size,
     error_counter,
-    api_call_count,
+    record_api_call,
+    observe_view_response_latency,
     configure_webhook_db_size_metric,
 )
 from sentinel.projection import (
@@ -416,7 +418,7 @@ def create_app():
                     private_key=app.config.GITHUB_PRIVATE_KEY,
                 )
                 app.ctx.app_info = await gh.getitem("/app", jwt=jwt)
-                api_call_count.inc()
+                record_api_call(endpoint="/app")
 
         if app.ctx.webhook_store.enabled:
             logger.info(
@@ -496,9 +498,30 @@ def create_app():
 
     @app.on_request
     async def on_request(request: Request):
+        request.ctx.request_started_at = time.perf_counter()
         if request.path == "/metrics":
             return
         request_counter.labels(path=request.path).inc()
+
+    @app.on_response
+    async def on_response(request: Request, response):
+        started_at = getattr(request.ctx, "request_started_at", None)
+        if started_at is None:
+            return
+        if request.path == "/metrics":
+            return
+        content_type = (getattr(response, "content_type", None) or "").lower()
+        if not content_type.startswith("text/html"):
+            return
+
+        route = getattr(request, "route", None)
+        path_label = route.path if route is not None else request.path
+        observe_view_response_latency(
+            path=str(path_label),
+            method=request.method,
+            status=getattr(response, "status", 0),
+            seconds=time.perf_counter() - float(started_at),
+        )
 
     @app.get("/")
     async def index(request):

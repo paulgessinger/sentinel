@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from prometheus_client import Counter, Gauge
+from prometheus_client import Counter, Gauge, Histogram
 
 request_counter = Counter(
     "sentinel_num_req", "Total number of requests", labelnames=["path"]
@@ -38,7 +38,17 @@ error_counter = Counter(
     "sentinel_error_counter", "Total number of errors", labelnames=["context"]
 )
 
-api_call_count = Counter("sentinel_num_api_calls", "Total number of GitHub API calls")
+api_call_count = Counter(
+    "sentinel_num_api_calls",
+    "Total number of GitHub API calls",
+    labelnames=["endpoint"],
+)
+
+view_response_latency_seconds = Histogram(
+    "sentinel_view_response_latency_seconds",
+    "Latency in seconds for HTML view responses",
+    labelnames=["path", "method", "status"],
+)
 
 check_run_post = Counter(
     "sentinel_check_run_post",
@@ -127,3 +137,25 @@ def configure_webhook_db_size_metric(db_path: str) -> None:
     webhook_db_size_bytes.set_function(
         lambda: sqlite_db_total_size_bytes(db_path_value)
     )
+
+
+def record_api_call(endpoint: str, count: int = 1) -> None:
+    if count <= 0:
+        return
+    api_call_count.labels(endpoint=endpoint).inc(count)
+
+
+def observe_view_response_latency(
+    *,
+    path: str,
+    method: str,
+    status: int,
+    seconds: float,
+) -> None:
+    if seconds < 0:
+        return
+    view_response_latency_seconds.labels(
+        path=path,
+        method=method,
+        status=str(status),
+    ).observe(seconds)

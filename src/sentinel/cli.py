@@ -19,7 +19,7 @@ from sentinel.logger import get_log_handlers
 from sentinel import config
 from sentinel.cache import QueueItem, get_cache
 from sentinel.github.model import PullRequest
-from sentinel.metric import worker_error_count, api_call_count
+from sentinel.metric import worker_error_count, record_api_call
 from sentinel.storage import WebhookStore
 
 
@@ -95,7 +95,7 @@ async def installation_client(installation: int):
         )
 
         await gh.getitem("/app", jwt=jwt)
-        api_call_count.inc()
+        record_api_call(endpoint="/app")
 
         token = await get_access_token(gh, installation)
 
@@ -120,7 +120,7 @@ def queue_pr(
             pr = PullRequest.model_validate(
                 await gh.getitem(f"/repos/{repo}/pulls/{number}")
             )
-            api_call_count.inc()
+            record_api_call(endpoint=f"/repos/{repo}/pulls/{number}")
 
             with get_cache() as cache:
                 # print("in_queue:", await cache.in_queue(pr))
@@ -140,7 +140,7 @@ def pr(
             pr = PullRequest.model_validate(
                 await gh.getitem(f"/repos/{repo}/pulls/{number}")
             )
-            api_call_count.inc()
+            record_api_call(endpoint=f"/repos/{repo}/pulls/{number}")
             api = API(gh, installation)
             await process_pull_request(pr, api)
 

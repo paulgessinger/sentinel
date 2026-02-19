@@ -14,7 +14,7 @@ from sentinel.github.model import (
     PullRequest,
     Repository,
 )
-from sentinel.metric import api_call_count
+from sentinel.metric import record_api_call
 
 from sanic.log import logger
 
@@ -30,14 +30,13 @@ class API:
         self.installation = installation
         self.call_count = 0
 
-    def record_api_calls(self, count: int = 1) -> None:
+    def record_api_calls(self, *, endpoint: str, count: int = 1) -> None:
         if count <= 0:
             return
         self.call_count += count
-        api_call_count.inc(count)
+        record_api_call(endpoint=endpoint, count=count)
 
     async def post_check_run(self, repo_url: str, check_run: CheckRun) -> int | None:
-        self.record_api_calls()
         fields = {"name", "head_sha", "status", "started_at"}
         if check_run.completed_at is not None:
             fields.add("completed_at")
@@ -75,6 +74,7 @@ class API:
             if check_run.id is not None:
                 url = f"{repo_url}/check-runs/{check_run.id}"
                 logger.debug("Updating check run %d, %s", check_run.id, url)
+                self.record_api_calls(endpoint=url)
                 response = await self.gh.patch(
                     url,
                     data=payload,
@@ -82,6 +82,7 @@ class API:
             else:
                 url = f"{repo_url}/check-runs"
                 logger.debug("Creating check run %s on sha %s", url, check_run.head_sha)
+                self.record_api_calls(endpoint=url)
                 response = await self.gh.post(
                     url,
                     data=payload,
@@ -103,8 +104,8 @@ class API:
         check_name: str,
         app_id: int | None = None,
     ) -> CheckRun | None:
-        self.record_api_calls()
         url = f"{repo_url}/commits/{head_sha}/check-runs"
+        self.record_api_calls(endpoint=url)
         async for item in self.gh.getiter(url, iterable_key="check_runs"):
             check_run = CheckRun.model_validate(item)
             if check_run.name != check_name:
@@ -119,8 +120,8 @@ class API:
     async def get_check_runs_for_ref(
         self, repo: Repository, ref: str
     ) -> AsyncIterator[CheckRun]:
-        self.record_api_calls()
         url = f"{repo.url}/commits/{ref}/check-runs"
+        self.record_api_calls(endpoint=url)
         logger.debug("Get check runs for ref %s", url)
         async for item in self.gh.getiter(url, iterable_key="check_runs"):
             yield CheckRun.model_validate(item)
@@ -128,8 +129,8 @@ class API:
     async def get_status_for_ref(
         self, repo: Repository, ref: str
     ) -> AsyncIterator[CommitStatus]:
-        self.record_api_calls()
         url = f"{repo.url}/commits/{ref}/status"
+        self.record_api_calls(endpoint=url)
         logger.debug("Get commit status for ref %s", url)
         data = await self.gh.getitem(url)
         for item in data["statuses"]:
@@ -138,8 +139,8 @@ class API:
     async def get_check_suites_for_ref(
         self, repo: Repository, ref: str
     ) -> AsyncIterator[CheckSuite]:
-        self.record_api_calls()
         url = f"{repo.url}/commits/{ref}/check-suites"
+        self.record_api_calls(endpoint=url)
         logger.debug("Get check runs for ref %s", url)
         async for item in self.gh.getiter(url, iterable_key="check_suites"):
             yield CheckSuite.model_validate(item)
@@ -147,49 +148,50 @@ class API:
     async def get_workflow_runs_for_ref(
         self, repo: Repository, ref: str
     ) -> AsyncIterator[ActionsRun]:
-        self.record_api_calls()
         url = f"{repo.url}/actions/runs?head_sha={ref}"
+        self.record_api_calls(endpoint=url)
         logger.debug("Get workflow runs for ref %s", url)
         async for item in self.gh.getiter(url, iterable_key="workflow_runs"):
             yield ActionsRun.model_validate(item)
 
     async def get_content(self, repo_url: str, path: str) -> Content:
-        self.record_api_calls()
         url = f"{repo_url}/contents/{path}"
+        self.record_api_calls(endpoint=url)
         logger.debug("Get file content: %s", url)
         content = Content.model_validate(await self.gh.getitem(url))
 
         return content
 
     async def get_pull_request_files(self, pr: PullRequest) -> AsyncIterator[PrFile]:
-        self.record_api_calls()
         url = f"{pr.base.repo.url}/pulls/{pr.number}/files"
+        self.record_api_calls(endpoint=url)
         logger.debug("Getting files for PR #%d %s", pr.number, url)
         async for item in self.gh.getiter(url):
             yield PrFile.model_validate(item)
 
     async def get_check_suite(self, repo_url: str, id: int) -> CheckSuite:
-        self.record_api_calls()
         url = f"{repo_url}/check-suites/{id}"
+        self.record_api_calls(endpoint=url)
         return CheckSuite.model_validate(await self.gh.getitem(url))
 
     async def get_actions_job(self, repo_url: str, id: int) -> ActionsJob:
-        self.record_api_calls()
         url = f"{repo_url}/actions/jobs/{id}"
+        self.record_api_calls(endpoint=url)
         return ActionsJob.model_validate(await self.gh.getitem(url))
 
     async def get_repository(self, repo_url: str) -> Repository:
-        self.record_api_calls()
+        self.record_api_calls(endpoint=repo_url)
         return Repository.model_validate(await self.gh.getitem(repo_url))
 
     async def get_pulls(self, repo_url: str) -> AsyncIterator[PullRequest]:
-        self.record_api_calls()
-        async for item in self.gh.getiter(f"{repo_url}/pulls"):
+        url = f"{repo_url}/pulls"
+        self.record_api_calls(endpoint=url)
+        async for item in self.gh.getiter(url):
             yield PullRequest.model_validate(item)
 
     async def get_pull(self, repo_url: str, number: int) -> PullRequest:
-        self.record_api_calls()
         url = f"{repo_url}/pulls/{number}"
+        self.record_api_calls(endpoint=url)
         logger.debug("Get pull %s", url)
         item = await self.gh.getitem(url)
         return PullRequest.model_validate(item)
