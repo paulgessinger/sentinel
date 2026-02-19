@@ -21,14 +21,19 @@ from sentinel.web import create_app
 
 
 def test_state_query_params_parses_and_clamps():
-    request = SimpleNamespace(
-        args={
-            "page": ["-2"],
-            "page_size": ["999"],
-            "repo": [" org/repo "],
-            "include_closed": ["0"],
-        }
-    )
+    class _FakeArgs:
+        def __init__(self):
+            self._data = {
+                "page": ["-2"],
+                "page_size": ["999"],
+                "repo": [" org/repo "],
+                "include_closed": ["0"],
+            }
+
+        def getlist(self, key):
+            return list(self._data.get(key, []))
+
+    request = SimpleNamespace(args=_FakeArgs())
     page, page_size, repo, include_closed = _state_query_params(cast(Request, request))
     assert page == 1
     assert page_size == 200

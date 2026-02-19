@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated, Any, Mapping, TYPE_CHECKING, TypeVar
+from typing import Annotated, Any, TYPE_CHECKING
 
 import pydantic
 from pydantic import BeforeValidator, PlainSerializer
 
 if TYPE_CHECKING:
     from sentinel.github.model import ActionsRun, CheckRun, CommitStatus
-
-
-ModelT = TypeVar("ModelT", bound="StorageModel")
 
 
 def _parse_utc_datetime(value: Any) -> datetime:
@@ -42,26 +39,6 @@ UTCDateTime = Annotated[
 class StorageModel(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="ignore", validate_assignment=True)
 
-    @classmethod
-    def from_mapping(cls: type[ModelT], row: Any) -> ModelT:
-        if isinstance(row, cls):
-            return row
-        if isinstance(row, Mapping):
-            return cls.model_validate(dict(row))
-        return cls.model_validate(row)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
-
-    def __getitem__(self, key: str) -> Any:
-        return getattr(self, key)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        setattr(self, key, value)
-
-    def to_dict(self) -> dict[str, Any]:
-        return self.model_dump(mode="python")
-
 
 class CheckRunRow(StorageModel):
     check_run_id: int | None
@@ -83,16 +60,17 @@ class CheckRunRow(StorageModel):
 
     @classmethod
     def from_github_check_run(cls, check_run: CheckRun) -> CheckRunRow:
-        app = check_run.app
-        check_suite = check_run.check_suite
         return cls(
             check_run_id=check_run.id,
             name=check_run.name,
             status=check_run.status,
+            head_sha=str(check_run.head_sha),
             conclusion=check_run.conclusion,
-            app_id=app.id if app is not None else None,
-            app_slug=app.slug if app is not None else None,
-            check_suite_id=check_suite.id if check_suite is not None else None,
+            app_id=check_run.app.id if check_run.app is not None else None,
+            app_slug=check_run.app.slug if check_run.app is not None else None,
+            check_suite_id=(
+                check_run.check_suite.id if check_run.check_suite is not None else None
+            ),
             html_url=check_run.html_url,
             started_at=check_run.started_at,
             completed_at=check_run.completed_at,
@@ -127,6 +105,7 @@ class WorkflowRunRow(StorageModel):
             event=workflow_run.event,
             status=workflow_run.status,
             conclusion=workflow_run.conclusion,
+            head_sha=workflow_run.head_sha,
             run_number=workflow_run.run_number,
             workflow_id=workflow_run.workflow_id,
             check_suite_id=workflow_run.check_suite_id,
@@ -153,10 +132,10 @@ class CommitStatusRow(StorageModel):
     def from_github_commit_status(cls, status: CommitStatus) -> CommitStatusRow:
         return cls(
             status_id=status.id,
-            url=status.url,
-            sha=status.sha,
             context=status.context,
             state=status.state,
+            sha=str(status.sha),
+            url=status.url,
             created_at=status.created_at,
             updated_at=status.updated_at,
         )

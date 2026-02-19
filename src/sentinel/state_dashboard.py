@@ -8,6 +8,8 @@ from markdown_it import MarkdownIt
 from sanic import Request, Sanic, response
 from sanic.exceptions import NotFound
 
+from sentinel.storage.types import PRDashboardRow
+
 
 DEFAULT_STATE_PAGE_SIZE = 100
 MAX_STATE_PAGE_SIZE = 200
@@ -54,24 +56,8 @@ def _arg_value(request: Request, key: str, default: str | None = None) -> str | 
 
 
 def _arg_values(request: Request, key: str) -> list[str]:
-    args = request.args
-    values: list[Any]
-
-    if hasattr(args, "getlist"):
-        values = list(args.getlist(key))
-    elif hasattr(args, "getall"):
-        values = list(args.getall(key))
-    else:
-        value = args.get(key)
-        if value is None:
-            values = []
-        elif isinstance(value, list):
-            values = value
-        else:
-            values = [value]
-
     normalized: list[str] = []
-    for value in values:
+    for value in request.args.getlist(key):
         if value is None:
             continue
         normalized.append(str(value))
@@ -161,22 +147,22 @@ def _pr_draft_chip_class(is_draft: bool) -> str:
     return ""
 
 
-def _row_update_signature(row: Any) -> str:
+def _row_update_signature(row: PRDashboardRow) -> str:
     values = (
-        row.get("pr_updated_at"),
-        row.get("pr_state"),
-        row.get("pr_merged"),
-        row.get("pr_is_draft"),
-        row.get("head_sha"),
-        row.get("sentinel_status"),
-        row.get("sentinel_conclusion"),
-        row.get("last_eval_at"),
-        row.get("last_publish_at"),
-        row.get("last_publish_result"),
-        row.get("last_publish_error"),
-        row.get("output_summary_hash"),
-        row.get("output_text_hash"),
-        row.get("sentinel_check_run_id"),
+        row.pr_updated_at,
+        row.pr_state,
+        row.pr_merged,
+        row.pr_is_draft,
+        row.head_sha,
+        row.sentinel_status,
+        row.sentinel_conclusion,
+        row.last_eval_at,
+        row.last_publish_at,
+        row.last_publish_result,
+        row.last_publish_error,
+        row.output_summary_hash,
+        row.output_text_hash,
+        row.sentinel_check_run_id,
     )
     return "|".join("" if value is None else str(value) for value in values)
 
@@ -206,23 +192,23 @@ def _state_dashboard_context(
     )
     enriched_rows = []
     for row in rows:
-        row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
-        repo_full_name = row.get("repo_full_name")
-        pr_number = row.get("pr_number")
-        head_sha = row.get("head_sha")
-        check_run_id = row.get("sentinel_check_run_id")
-        repo_id = row.get("repo_id")
+        row_dict = row.model_dump(mode="json")
+        repo_full_name = row.repo_full_name
+        pr_number = row.pr_number
+        head_sha = row.head_sha
+        check_run_id = row.sentinel_check_run_id
+        repo_id = row.repo_id
         row_key = (
             f"{repo_id}:{pr_number}"
             if repo_id is not None and pr_number is not None
             else ""
         )
         pr_state_display = _pr_state_display(
-            row.get("pr_state"),
-            row.get("pr_merged"),
+            row.pr_state,
+            row.pr_merged,
         )
-        pr_is_draft = bool(row.get("pr_is_draft"))
-        pr_title_raw = row.get("pr_title") or (
+        pr_is_draft = bool(row.pr_is_draft)
+        pr_title_raw = row.pr_title or (
             f"PR #{pr_number}" if pr_number is not None else "PR"
         )
         enriched_rows.append(
@@ -230,7 +216,7 @@ def _state_dashboard_context(
                 **row_dict,
                 "short_sha": head_sha[:8] if head_sha else "",
                 "row_key": row_key,
-                "row_update_signature": _row_update_signature(row_dict),
+                "row_update_signature": _row_update_signature(row),
                 "pr_state_display": pr_state_display,
                 "pr_state_class": _pr_state_chip_class(pr_state_display),
                 "pr_is_draft": pr_is_draft,
@@ -238,18 +224,18 @@ def _state_dashboard_context(
                 "pr_url": _github_pr_url(repo_full_name, pr_number),
                 "commit_url": _github_commit_url(repo_full_name, head_sha),
                 "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
-                "sentinel_status_class": _status_chip_class(row.get("sentinel_status")),
+                "sentinel_status_class": _status_chip_class(row.sentinel_status),
                 "sentinel_conclusion_class": _conclusion_chip_class(
-                    row.get("sentinel_conclusion")
+                    row.sentinel_conclusion
                 ),
                 "publish_result_display": _publish_result_display(
-                    publish_result=row.get("last_publish_result"),
-                    status=row.get("sentinel_status"),
-                    conclusion=row.get("sentinel_conclusion"),
+                    publish_result=row.last_publish_result,
+                    status=row.sentinel_status,
+                    conclusion=row.sentinel_conclusion,
                 ),
                 "details_url": (
-                    f"/state/pr/{row.get('repo_id')}/{pr_number}"
-                    if row.get("repo_id") is not None and pr_number is not None
+                    f"/state/pr/{row.repo_id}/{pr_number}"
+                    if row.repo_id is not None and pr_number is not None
                     else None
                 ),
                 "rendered_pr_title": _render_markdown_inline(pr_title_raw),
@@ -414,12 +400,12 @@ def _state_pr_detail_context(
     if row is None:
         return None
 
-    repo_full_name = row.get("repo_full_name")
-    head_sha = row.get("head_sha")
-    check_run_id = row.get("sentinel_check_run_id")
-    output_summary = row.get("output_summary")
-    output_text = row.get("output_text")
-    output_checks_json = row.get("output_checks_json")
+    repo_full_name = row.repo_full_name
+    head_sha = row.head_sha
+    check_run_id = row.sentinel_check_run_id
+    output_summary = row.output_summary
+    output_text = row.output_text
+    output_checks_json = row.output_checks_json
 
     events = app.ctx.webhook_store.list_pr_related_events(
         repo_id=repo_id,
@@ -428,27 +414,20 @@ def _state_pr_detail_context(
         limit=250,
     )
     for event in events:
-        event["details_url"] = None
-        delivery_id = event.get("delivery_id")
-        if (
-            delivery_id
-            and isinstance(delivery_id, str)
-            and not delivery_id.startswith("activity-")
-        ):
-            event["details_url"] = (
+        event.details_url = None
+        delivery_id = event.delivery_id
+        if delivery_id and not delivery_id.startswith("activity-"):
+            event.details_url = (
                 f"/state/event/{delivery_id}?repo_id={repo_id}&pr_number={pr_number}"
             )
-    event_rows = [
-        event.to_dict() if hasattr(event, "to_dict") else dict(event)
-        for event in events
-    ]
+    event_rows = [event.model_dump(mode="json") for event in events]
 
     pr_state_display = _pr_state_display(
-        row.get("pr_state"),
-        row.get("pr_merged"),
+        row.pr_state,
+        row.pr_merged,
     )
-    pr_is_draft = bool(row.get("pr_is_draft"))
-    row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
+    pr_is_draft = bool(row.pr_is_draft)
+    row_dict = row.model_dump(mode="json")
     return {
         "row": {
             **row_dict,
@@ -460,18 +439,16 @@ def _state_pr_detail_context(
             "pr_state_class": _pr_state_chip_class(pr_state_display),
             "pr_is_draft": pr_is_draft,
             "pr_draft_class": _pr_draft_chip_class(pr_is_draft),
-            "sentinel_status_class": _status_chip_class(row.get("sentinel_status")),
+            "sentinel_status_class": _status_chip_class(row.sentinel_status),
             "sentinel_conclusion_class": _conclusion_chip_class(
-                row.get("sentinel_conclusion")
+                row.sentinel_conclusion
             ),
             "publish_result_display": _publish_result_display(
-                publish_result=row.get("last_publish_result"),
-                status=row.get("sentinel_status"),
-                conclusion=row.get("sentinel_conclusion"),
+                publish_result=row.last_publish_result,
+                status=row.sentinel_status,
+                conclusion=row.sentinel_conclusion,
             ),
-            "output_checks": _parse_output_checks(
-                output_checks_json if isinstance(output_checks_json, str) else None
-            ),
+            "output_checks": _parse_output_checks(output_checks_json),
             "rendered_output_summary": _render_markdown(output_summary),
             "rendered_output_text": _render_markdown(output_text),
         },
@@ -490,15 +467,13 @@ def _state_event_detail_context(
     if event is None:
         return None
 
-    event["payload_pretty"] = json.dumps(
-        event.get("payload") or {}, indent=2, sort_keys=True
-    )
+    event.payload_pretty = json.dumps(event.payload, indent=2, sort_keys=True)
     if repo_id is not None and pr_number is not None:
-        event["pr_detail_url"] = f"/state/pr/{repo_id}/{pr_number}"
+        event.pr_detail_url = f"/state/pr/{repo_id}/{pr_number}"
     else:
-        event["pr_detail_url"] = None
+        event.pr_detail_url = None
 
-    event_row = event.to_dict() if hasattr(event, "to_dict") else dict(event)
+    event_row = event.model_dump(mode="json")
     return {
         "event": event_row,
     }

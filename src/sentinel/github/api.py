@@ -134,7 +134,12 @@ class API:
         logger.debug("Get commit status for ref %s", url)
         data = await self.gh.getitem(url)
         for item in data["statuses"]:
-            yield CommitStatus(sha=data["sha"], **item)
+            yield CommitStatus.model_validate(
+                {
+                    **item,
+                    "sha": item.get("sha") or data["sha"],
+                }
+            )
 
     async def get_check_suites_for_ref(
         self, repo: Repository, ref: str

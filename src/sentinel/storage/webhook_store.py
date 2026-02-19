@@ -723,7 +723,7 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
-        return [PullRequestHeadRow.from_mapping(dict(row)) for row in rows]
+        return [PullRequestHeadRow.model_validate(row) for row in rows]
 
     def get_check_runs_for_head(self, repo_id: int, head_sha: str) -> list[CheckRunRow]:
         stmt = select(check_runs_current).where(
@@ -734,7 +734,7 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
-        return [CheckRunRow.from_mapping(dict(row)) for row in rows]
+        return [CheckRunRow.model_validate(row) for row in rows]
 
     def get_workflow_runs_for_head(
         self, repo_id: int, head_sha: str
@@ -747,7 +747,7 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
-        return [WorkflowRunRow.from_mapping(dict(row)) for row in rows]
+        return [WorkflowRunRow.model_validate(row) for row in rows]
 
     def get_commit_statuses_for_sha(
         self, repo_id: int, sha: str
@@ -760,7 +760,7 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
-        return [CommitStatusRow.from_mapping(dict(row)) for row in rows]
+        return [CommitStatusRow.model_validate(row) for row in rows]
 
     def upsert_head_snapshot_from_api(
         self,
@@ -803,7 +803,7 @@ class WebhookStore:
                     {
                         "repo_id": repo_id,
                         "repo_full_name": repo_full_name,
-                        "head_sha": head_sha,
+                        "head_sha": row.head_sha or head_sha,
                         "first_seen_at": now,
                         "last_seen_at": now,
                         "last_delivery_id": resolved_delivery_id,
@@ -858,7 +858,7 @@ class WebhookStore:
                     {
                         "repo_id": repo_id,
                         "repo_full_name": repo_full_name,
-                        "head_sha": head_sha,
+                        "head_sha": row.head_sha or head_sha,
                         "first_seen_at": now,
                         "last_seen_at": now,
                         "last_delivery_id": resolved_delivery_id,
@@ -954,7 +954,7 @@ class WebhookStore:
         )
         with self.engine.begin() as conn:
             row = conn.execute(stmt).mappings().first()
-        return None if row is None else SentinelCheckRunStateRow.from_mapping(dict(row))
+        return None if row is None else SentinelCheckRunStateRow.model_validate(row)
 
     def get_pr_dashboard_row(
         self,
@@ -1191,7 +1191,7 @@ class WebhookStore:
         event_name = str(event.get("event") or "")
         event["payload"] = payload
         event["detail"] = self._event_detail(event_name=event_name, payload=payload)
-        return WebhookEventRow.from_mapping(event)
+        return WebhookEventRow.model_validate(event)
 
     def count_pr_dashboard_rows(
         self,
@@ -1285,10 +1285,11 @@ class WebhookStore:
             )
         )
 
-    def _normalize_pr_dashboard_row(self, row: Dict[str, Any]) -> PRDashboardRow:
-        payload_json = row.pop("pr_event_payload_json", None)
+    def _normalize_pr_dashboard_row(self, row: Mapping[str, Any]) -> PRDashboardRow:
+        normalized = dict(row)
+        payload_json = normalized.pop("pr_event_payload_json", None)
         pr_merged: bool | None = None
-        pr_is_draft = row.get("pr_is_draft")
+        pr_is_draft = normalized.get("pr_is_draft")
 
         if payload_json is not None:
             try:
@@ -1304,9 +1305,11 @@ class WebhookStore:
             except Exception:  # noqa: BLE001
                 pr_merged = None
 
-        row["pr_merged"] = pr_merged
-        row["pr_is_draft"] = bool(pr_is_draft) if pr_is_draft is not None else False
-        return PRDashboardRow.from_mapping(row)
+        normalized["pr_merged"] = pr_merged
+        normalized["pr_is_draft"] = (
+            bool(pr_is_draft) if pr_is_draft is not None else False
+        )
+        return PRDashboardRow.model_validate(normalized)
 
     @staticmethod
     def _event_matches_pr(

@@ -166,11 +166,13 @@ class ProjectionEvaluator:
                 trigger.repo_full_name,
                 head_sha,
                 len(open_prs),
-                open_prs[0].get("pr_number"),
+                open_prs[0].pr_number,
             )
             sentinel_projection_eval_total.labels(result="ambiguous_pr").inc()
         pr_row = open_prs[0]
-        pr_number = int(pr_row["pr_number"])
+        if pr_row.pr_number is None:
+            raise ValueError("Projected PR row is missing pr_number")
+        pr_number = int(pr_row.pr_number)
         if len(open_prs) > 1:
             self._record_activity(
                 trigger=trigger,
@@ -182,6 +184,7 @@ class ProjectionEvaluator:
             )
 
         api = await self.api_factory(trigger.installation_id)
+        repo_url = f"/repos/{trigger.repo_full_name}"
         config = await self._get_repo_config(api, trigger, pr_number=pr_number)
         if config is None:
             logger.info(
@@ -209,7 +212,7 @@ class ProjectionEvaluator:
             "Projection eval inputs repo=%s sha=%s pr=%s rules=%d has_path_rules=%s",
             trigger.repo_full_name,
             head_sha,
-            pr_row.get("pr_number"),
+            pr_number,
             len(config.rules),
             has_path_rules,
         )
@@ -223,17 +226,17 @@ class ProjectionEvaluator:
                 "Projection eval path fallback repo=%s sha=%s pr=%s changed_files=%d",
                 trigger.repo_full_name,
                 head_sha,
-                pr_row.get("pr_number"),
+                pr_number,
                 len(changed_files),
             )
 
-        pr_like = _RulePullRequestLike(base=_RuleBaseRef(ref=str(pr_row["base_ref"])))
+        pr_like = _RulePullRequestLike(base=_RuleBaseRef(ref=pr_row.base_ref or ""))
         rules = determine_rules(changed_files, pr_like, config.rules)
         logger.debug(
             "Projection eval selected rules repo=%s sha=%s pr=%s selected=%d",
             trigger.repo_full_name,
             head_sha,
-            pr_row.get("pr_number"),
+            pr_number,
             len(rules),
         )
 
@@ -395,8 +398,8 @@ class ProjectionEvaluator:
             )
             return EvaluationResult(result="no_pr")
 
-        previous_status = sentinel_row.get("status") if sentinel_row else None
-        existing_id = sentinel_row.get("check_run_id") if sentinel_row else None
+        previous_status = sentinel_row.status if sentinel_row else None
+        existing_id = sentinel_row.check_run_id if sentinel_row else None
         check_run_id = (
             existing_id if isinstance(existing_id, int) and existing_id > 0 else None
         )
@@ -406,20 +409,20 @@ class ProjectionEvaluator:
 
         unchanged = bool(
             sentinel_row
-            and sentinel_row.get("status") == new_status
-            and sentinel_row.get("conclusion") == new_conclusion
-            and sentinel_row.get("output_title") == title
-            and sentinel_row.get("output_summary_hash") == summary_hash
-            and sentinel_row.get("output_text_hash") == text_hash
+            and sentinel_row.status == new_status
+            and sentinel_row.conclusion == new_conclusion
+            and sentinel_row.output_title == title
+            and sentinel_row.output_summary_hash == summary_hash
+            and sentinel_row.output_text_hash == text_hash
         )
         logger.debug(
             "Projection eval diff repo=%s sha=%s unchanged=%s prev_status=%s new_status=%s prev_conclusion=%s new_conclusion=%s",
             trigger.repo_full_name,
             head_sha,
             unchanged,
-            sentinel_row.get("status") if sentinel_row else None,
+            sentinel_row.status if sentinel_row else None,
             new_status,
-            sentinel_row.get("conclusion") if sentinel_row else None,
+            sentinel_row.conclusion if sentinel_row else None,
             new_conclusion,
         )
 
@@ -438,7 +441,7 @@ class ProjectionEvaluator:
                 "Projection eval unchanged repo=%s sha=%s pr=%s check_run_id=%s",
                 trigger.repo_full_name,
                 head_sha,
-                pr_row.get("pr_number"),
+                pr_number,
                 check_run_id,
             )
             sentinel_projection_publish_total.labels(result="unchanged").inc()
@@ -491,7 +494,7 @@ class ProjectionEvaluator:
                 "Projection publish attempt repo=%s sha=%s pr=%s current_id=%s status=%s conclusion=%s",
                 trigger.repo_full_name,
                 head_sha,
-                pr_row.get("pr_number"),
+                pr_number,
                 check_run_id,
                 new_status,
                 new_conclusion,
@@ -526,7 +529,7 @@ class ProjectionEvaluator:
                     head_sha,
                 )
                 existing = await api.find_existing_sentinel_check_run(
-                    repo_url=self._repo_url(trigger.repo_full_name),
+                    repo_url=repo_url,
                     head_sha=head_sha,
                     check_name=self.check_run_name,
                     app_id=self.app_id,
@@ -582,9 +585,7 @@ class ProjectionEvaluator:
                 )
 
             try:
-                posted_id = await api.post_check_run(
-                    self._repo_url(trigger.repo_full_name), check_run
-                )
+                posted_id = await api.post_check_run(repo_url, check_run)
                 published_id = posted_id or check_run.id
                 publish_result = "published"
                 publish_at = now_iso
@@ -621,7 +622,7 @@ class ProjectionEvaluator:
                     "Publishing projection check run failed repo=%s sha=%s pr=%s",
                     trigger.repo_full_name,
                     head_sha,
-                    pr_row.get("pr_number"),
+                    pr_number,
                     exc_info=True,
                 )
         else:
@@ -629,7 +630,7 @@ class ProjectionEvaluator:
                 "Projection publish skipped (dry_run) repo=%s sha=%s pr=%s status=%s conclusion=%s",
                 trigger.repo_full_name,
                 head_sha,
-                pr_row.get("pr_number"),
+                pr_number,
                 new_status,
                 new_conclusion,
             )
@@ -722,7 +723,7 @@ class ProjectionEvaluator:
         )
         try:
             content = await api.get_content(
-                self._repo_url(trigger.repo_full_name), ".merge-sentinel.yml"
+                f"/repos/{trigger.repo_full_name}", ".merge-sentinel.yml"
             )
             decoded = content.decoded_content()
             data = yaml.safe_load(io.StringIO(decoded))
@@ -741,7 +742,7 @@ class ProjectionEvaluator:
                 detail=f"Loaded config with {len(loaded.rules)} rules",
             )
         except Exception as exc:  # noqa: BLE001
-            if hasattr(exc, "status_code") and getattr(exc, "status_code") == 404:
+            if getattr(exc, "status_code", None) == 404:
                 loaded = None
                 logger.info(
                     "Projection config missing repo=%s repo_id=%s",
@@ -817,7 +818,7 @@ class ProjectionEvaluator:
             result="cache_miss",
             detail="Fetching PR changed files from GitHub API",
         )
-        pull = await api.get_pull(self._repo_url(trigger.repo_full_name), pr_number)
+        pull = await api.get_pull(f"/repos/{trigger.repo_full_name}", pr_number)
         files = [f.filename async for f in api.get_pull_request_files(pull)]
         self._pr_files_cache[key] = (now + self.pr_files_cache_seconds, list(files))
         logger.debug(
@@ -982,10 +983,10 @@ class ProjectionEvaluator:
             html_url = None
             source = "derived"
             if check_row is not None:
-                html_url = check_row.get("html_url")
+                html_url = check_row.html_url
                 source = "check_run"
             elif status_row is not None:
-                html_url = status_row.get("url")
+                html_url = status_row.url
                 source = "status"
             checks.append(
                 {
@@ -1115,7 +1116,7 @@ class ProjectionEvaluator:
             result="started",
             detail="Refreshing check runs/workflows/statuses from GitHub API",
         )
-        repo = await api.get_repository(self._repo_url(trigger.repo_full_name))
+        repo = await api.get_repository(f"/repos/{trigger.repo_full_name}")
         check_runs = [
             check_run
             async for check_run in api.get_check_runs_for_ref(repo, trigger.head_sha)
@@ -1130,11 +1131,16 @@ class ProjectionEvaluator:
             status async for status in api.get_status_for_ref(repo, trigger.head_sha)
         ]
 
-        check_rows = [self._check_run_to_row(check_run) for check_run in check_runs]
-        workflow_rows = [
-            self._workflow_run_to_row(workflow_run) for workflow_run in workflow_runs
+        check_rows = [
+            CheckRunRow.from_github_check_run(check_run) for check_run in check_runs
         ]
-        status_rows = [self._status_to_row(status) for status in statuses]
+        workflow_rows = [
+            WorkflowRunRow.from_github_actions_run(workflow_run)
+            for workflow_run in workflow_runs
+        ]
+        status_rows = [
+            CommitStatusRow.from_github_commit_status(status) for status in statuses
+        ]
         persisted = self.store.upsert_head_snapshot_from_api(
             repo_id=trigger.repo_id,
             repo_full_name=trigger.repo_full_name,
@@ -1164,18 +1170,6 @@ class ProjectionEvaluator:
             ),
         )
         return check_rows, workflow_rows, status_rows
-
-    @staticmethod
-    def _check_run_to_row(check_run: CheckRun) -> CheckRunRow:
-        return CheckRunRow.from_github_check_run(check_run)
-
-    @staticmethod
-    def _workflow_run_to_row(workflow_run: Any) -> WorkflowRunRow:
-        return WorkflowRunRow.from_github_actions_run(workflow_run)
-
-    @staticmethod
-    def _status_to_row(status: Any) -> CommitStatusRow:
-        return CommitStatusRow.from_github_commit_status(status)
 
     @staticmethod
     def _dt_to_iso(value: datetime | None) -> str | None:
@@ -1210,10 +1204,6 @@ class ProjectionEvaluator:
         if not vals:
             return None
         return max(vals)
-
-    @staticmethod
-    def _repo_url(repo_full_name: str) -> str:
-        return f"/repos/{repo_full_name}"
 
     def _record_activity(
         self,

@@ -572,18 +572,18 @@ async def test_force_api_refresh_persists_projection_rows(tmp_path):
 
     check_rows = store.get_check_runs_for_head(11, "a" * 40)
     assert len(check_rows) == 1
-    assert check_rows[0]["name"] == "tests"
-    assert check_rows[0]["last_delivery_id"] == "d-api-1"
+    assert check_rows[0].name == "tests"
+    assert check_rows[0].last_delivery_id == "d-api-1"
 
     workflow_rows = store.get_workflow_runs_for_head(11, "a" * 40)
     assert len(workflow_rows) == 1
-    assert workflow_rows[0]["name"] == "Builds"
-    assert workflow_rows[0]["last_delivery_id"] == "d-api-1"
+    assert workflow_rows[0].name == "Builds"
+    assert workflow_rows[0].last_delivery_id == "d-api-1"
 
     status_rows = store.get_commit_statuses_for_sha(11, "a" * 40)
     assert len(status_rows) == 1
-    assert status_rows[0]["context"] == "lint"
-    assert status_rows[0]["last_delivery_id"] == "d-api-1"
+    assert status_rows[0].context == "lint"
+    assert status_rows[0].last_delivery_id == "d-api-1"
 
 
 @pytest.mark.asyncio

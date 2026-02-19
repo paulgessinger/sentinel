@@ -736,10 +736,10 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
         page_size=1,
     )
     assert len(page1) == 1
-    assert page1[0]["repo_full_name"] == "org/repo-b"
-    assert page1[0]["pr_title"] == "Repo B PR"
-    assert page1[0]["pr_is_draft"] is True
-    assert page1[0]["output_summary"] is not None
+    assert page1[0].repo_full_name == "org/repo-b"
+    assert page1[0].pr_title == "Repo B PR"
+    assert page1[0].pr_is_draft is True
+    assert page1[0].output_summary is not None
 
     page2 = store.list_pr_dashboard_rows(
         app_id=999,
@@ -748,9 +748,9 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
         page_size=1,
     )
     assert len(page2) == 1
-    assert page2[0]["repo_full_name"] == "org/repo-a"
-    assert page2[0]["pr_title"] == "Repo A PR"
-    assert page2[0]["sentinel_status"] is None
+    assert page2[0].repo_full_name == "org/repo-a"
+    assert page2[0].pr_title == "Repo A PR"
+    assert page2[0].sentinel_status is None
 
     filtered = store.list_pr_dashboard_rows(
         app_id=999,
@@ -760,7 +760,7 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
         repo_full_name="org/repo-a",
     )
     assert len(filtered) == 1
-    assert filtered[0]["repo_full_name"] == "org/repo-a"
+    assert filtered[0].repo_full_name == "org/repo-a"
 
     open_only = store.list_pr_dashboard_rows(
         app_id=999,
@@ -770,7 +770,7 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
         include_closed=False,
     )
     assert len(open_only) == 1
-    assert open_only[0]["repo_full_name"] == "org/repo-b"
+    assert open_only[0].repo_full_name == "org/repo-b"
 
 
 def test_dashboard_rows_include_pr_merged_flag_from_last_pr_event(tmp_path):
@@ -818,9 +818,9 @@ def test_dashboard_rows_include_pr_merged_flag_from_last_pr_event(tmp_path):
         page=1,
         page_size=10,
     )
-    by_pr = {row["pr_number"]: row for row in rows}
-    assert by_pr[42]["pr_merged"] is True
-    assert by_pr[43]["pr_merged"] is False
+    by_pr = {row.pr_number: row for row in rows}
+    assert by_pr[42].pr_merged is True
+    assert by_pr[43].pr_merged is False
 
 
 def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):
@@ -900,7 +900,7 @@ def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):
         pr_number=42,
     )
     assert row is not None
-    assert row["pr_title"] == "Tracked PR"
+    assert row.pr_title == "Tracked PR"
 
     events = store.list_pr_related_events(
         repo_id=103,
@@ -908,7 +908,7 @@ def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):
         head_sha=head_sha,
         limit=10,
     )
-    assert [event["delivery_id"] for event in events] == ["status-1", "cr-1", "pr-1"]
+    assert [event.delivery_id for event in events] == ["status-1", "cr-1", "pr-1"]
 
 
 def test_get_webhook_event_returns_decoded_payload(tmp_path):
@@ -926,10 +926,11 @@ def test_get_webhook_event_returns_decoded_payload(tmp_path):
 
     event = store.get_webhook_event("delivery-123")
     assert event is not None
-    assert event["delivery_id"] == "delivery-123"
-    assert event["event"] == "check_run"
-    assert event["payload"]["check_run"]["id"] == 2001
-    assert "tests" in event["detail"]
+    assert event.delivery_id == "delivery-123"
+    assert event.event == "check_run"
+    assert event.payload["check_run"]["id"] == 2001
+    assert event.detail is not None
+    assert "tests" in event.detail
 
 
 def test_pr_related_events_include_projection_activity(tmp_path):
@@ -970,10 +971,10 @@ def test_pr_related_events_include_projection_activity(tmp_path):
         head_sha=head_sha,
         limit=10,
     )
-    assert events[0]["event"] == "sentinel"
-    assert events[0]["action"] == "publish"
-    assert events[0]["delivery_id"] == "cr-1"
-    assert events[0]["payload"]["status"] == "completed"
+    assert events[0].event == "sentinel"
+    assert events[0].action == "publish"
+    assert events[0].delivery_id == "cr-1"
+    assert events[0].payload["status"] == "completed"
 
 
 def test_prune_old_activity_events(tmp_path):
