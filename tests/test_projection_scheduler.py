@@ -54,10 +54,10 @@ async def test_scheduler_coalesces_multiple_triggers_for_same_key():
 
 @pytest.mark.asyncio
 async def test_scheduler_adds_extra_delay_for_pull_request_synchronize():
-    seen = []
+    seen: list[tuple[str | None, bool]] = []
 
     async def handler(trigger: ProjectionTrigger):
-        seen.append(trigger.delivery_id)
+        seen.append((trigger.delivery_id, trigger.pre_delay_pending))
 
     scheduler = ProjectionStatusScheduler(
         debounce_seconds=0.0,
@@ -78,12 +78,12 @@ async def test_scheduler_adds_extra_delay_for_pull_request_synchronize():
     )
 
     await asyncio.sleep(0.02)
-    assert seen == []
+    assert seen == [("d-sync", True)]
 
     await asyncio.sleep(0.05)
     await scheduler.shutdown()
 
-    assert seen == ["d-sync"]
+    assert seen == [("d-sync", True), ("d-sync", False)]
 
 
 @pytest.mark.asyncio
@@ -97,10 +97,10 @@ async def test_scheduler_adds_extra_delay_for_pull_request_synchronize():
 async def test_scheduler_adds_extra_delay_for_pull_request_opened_and_reopened(
     action: str, delivery_id: str
 ):
-    seen = []
+    seen: list[tuple[str | None, bool]] = []
 
     async def handler(trigger: ProjectionTrigger):
-        seen.append(trigger.delivery_id)
+        seen.append((trigger.delivery_id, trigger.pre_delay_pending))
 
     scheduler = ProjectionStatusScheduler(
         debounce_seconds=0.0,
@@ -121,20 +121,20 @@ async def test_scheduler_adds_extra_delay_for_pull_request_opened_and_reopened(
     )
 
     await asyncio.sleep(0.02)
-    assert seen == []
+    assert seen == [(delivery_id, True)]
 
     await asyncio.sleep(0.05)
     await scheduler.shutdown()
 
-    assert seen == [delivery_id]
+    assert seen == [(delivery_id, True), (delivery_id, False)]
 
 
 @pytest.mark.asyncio
 async def test_scheduler_preserves_pr_delay_when_non_pr_events_coalesce_after_opened():
-    seen = []
+    seen: list[tuple[str | None, bool]] = []
 
     async def handler(trigger: ProjectionTrigger):
-        seen.append(trigger.delivery_id)
+        seen.append((trigger.delivery_id, trigger.pre_delay_pending))
 
     scheduler = ProjectionStatusScheduler(
         debounce_seconds=0.0,
@@ -166,9 +166,10 @@ async def test_scheduler_preserves_pr_delay_when_non_pr_events_coalesce_after_op
     )
 
     await asyncio.sleep(0.03)
-    assert seen == []
+    assert any(pre_delay for _, pre_delay in seen)
+    assert not any((not pre_delay) for _, pre_delay in seen)
 
     await asyncio.sleep(0.05)
     await scheduler.shutdown()
 
-    assert seen == ["d-check"]
+    assert seen[-1] == ("d-check", False)

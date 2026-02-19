@@ -13,6 +13,7 @@ class ProjectionTrigger:
     event: str | None = None
     action: str | None = None
     force_api_refresh: bool = False
+    pre_delay_pending: bool = False
 
     @property
     def key(self) -> str:

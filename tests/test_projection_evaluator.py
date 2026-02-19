@@ -54,8 +54,10 @@ class _FakeAPI:
         self._on_get_content = on_get_content
         self.post_calls = []
         self.lookup_calls = 0
+        self.get_content_calls = 0
 
     async def get_content(self, _repo_url: str, _path: str):
+        self.get_content_calls += 1
         callback = self._on_get_content
         if callback is not None:
             self._on_get_content = None
@@ -373,6 +375,76 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
     assert ("config_fetch", "cache_miss") in activity_rows
     assert ("config_fetch", "loaded") in activity_rows
     assert ("publish", "dry_run") in activity_rows
+
+
+@pytest.mark.asyncio
+async def test_projection_pre_delay_pending_emits_in_progress_before_full_eval(
+    tmp_path,
+):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=_pull_request_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPI(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n",
+        post_id=9001,
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-pre-delay-1",
+            event="pull_request",
+            action="synchronize",
+            pre_delay_pending=True,
+        )
+    )
+
+    assert result.result == "pre_delay_pending"
+    assert api.get_content_calls == 0
+    assert api.post_calls == []
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        row = conn.execute(
+            """
+            SELECT status, conclusion, output_title, last_publish_result
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ?
+            LIMIT 1
+            """,
+            (11, "a" * 40, "merge-sentinel"),
+        ).fetchone()
+
+    assert row == (
+        "in_progress",
+        None,
+        "Waiting briefly for checks after PR update",
+        "dry_run",
+    )
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        activity_rows = conn.execute(
+            """
+            SELECT activity_type, result
+            FROM sentinel_activity_events
+            WHERE repo_id = ? AND pr_number = ? AND head_sha = ?
+            ORDER BY activity_id
+            """,
+            (11, 42, "a" * 40),
+        ).fetchall()
+    assert ("publish_pre_delay", "dry_run") in activity_rows
 
 
 @pytest.mark.asyncio

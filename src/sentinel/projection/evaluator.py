@@ -102,21 +102,23 @@ class ProjectionEvaluator:
     ) -> EvaluationResult:
         started = time.monotonic()
         logger.info(
-            "Projection eval start repo=%s sha=%s event=%s delivery=%s",
+            "Projection eval start repo=%s sha=%s event=%s delivery=%s pre_delay_pending=%s",
             trigger.repo_full_name,
             trigger.head_sha,
             trigger.event,
             trigger.delivery_id,
+            trigger.pre_delay_pending,
         )
         try:
             result = await self._evaluate_and_publish(trigger)
             logger.info(
-                "Projection eval done repo=%s sha=%s result=%s changed=%s check_run_id=%s duration_ms=%.1f",
+                "Projection eval done repo=%s sha=%s result=%s changed=%s check_run_id=%s pre_delay_pending=%s duration_ms=%.1f",
                 trigger.repo_full_name,
                 trigger.head_sha,
                 result.result,
                 result.changed,
                 result.check_run_id,
+                trigger.pre_delay_pending,
                 (time.monotonic() - started) * 1000.0,
             )
             return result
@@ -169,6 +171,13 @@ class ProjectionEvaluator:
                 result="ambiguous",
                 detail="Multiple open PRs matched this head SHA",
                 metadata={"count": len(open_prs)},
+            )
+
+        if trigger.pre_delay_pending:
+            return await self._publish_pre_delay_pending(
+                trigger=trigger,
+                pr_row=pr_row,
+                pr_number=pr_number,
             )
 
         api = await self.api_factory(trigger.installation_id)
@@ -713,6 +722,221 @@ class ProjectionEvaluator:
         )
         return EvaluationResult(
             result=publish_result,
+            check_run_id=final_id,
+            changed=True,
+            error=publish_error,
+        )
+
+    async def _publish_pre_delay_pending(
+        self,
+        *,
+        trigger: ProjectionTrigger,
+        pr_row: PullRequestHeadRow,
+        pr_number: int,
+    ) -> EvaluationResult:
+        repo_id = trigger.repo_id
+        head_sha = trigger.head_sha
+
+        if not self.store.get_open_pr_candidates(repo_id, head_sha):
+            logger.info(
+                "Projection pre-delay skip repo=%s sha=%s reason=no_open_pr_before_publish",
+                trigger.repo_full_name,
+                head_sha,
+            )
+            sentinel_projection_eval_total.labels(result="no_pr").inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="publish_pre_delay",
+                result="skip_no_open_pr",
+                detail="PR closed before pre-delay pending publish",
+            )
+            return EvaluationResult(result="no_pr")
+
+        title = "Waiting briefly for checks after PR update"
+        output_summary = (
+            ":yellow_circle: Delaying full evaluation briefly after PR update"
+        )
+        output_text = (
+            "# Checks\n\n"
+            "Waiting briefly for additional check runs/statuses to arrive after "
+            "pull request update before full evaluation."
+        )
+        output_checks_json = "[]"
+        summary_hash = hashlib.sha256(output_summary.encode("utf-8")).hexdigest()
+        text_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+        now_iso = utcnow_iso()
+
+        sentinel_row = self.store.get_sentinel_check_run(
+            repo_id=repo_id,
+            head_sha=head_sha,
+            check_name=self.config.PROJECTION_CHECK_RUN_NAME,
+            app_id=self.config.GITHUB_APP_ID,
+        )
+        previous_status = sentinel_row.status if sentinel_row else None
+        existing_id = sentinel_row.check_run_id if sentinel_row else None
+        check_run_id = (
+            existing_id if isinstance(existing_id, int) and existing_id > 0 else None
+        )
+        if previous_status != "in_progress":
+            check_run_id = None
+
+        unchanged = bool(
+            sentinel_row
+            and sentinel_row.status == "in_progress"
+            and sentinel_row.conclusion is None
+            and sentinel_row.output_title == title
+            and sentinel_row.output_summary_hash == summary_hash
+            and sentinel_row.output_text_hash == text_hash
+        )
+        if unchanged:
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="publish_pre_delay",
+                result="unchanged",
+                detail="in_progress/-",
+            )
+            self.store.upsert_sentinel_check_run(
+                repo_id=repo_id,
+                repo_full_name=trigger.repo_full_name,
+                check_run_id=check_run_id,
+                head_sha=head_sha,
+                name=self.config.PROJECTION_CHECK_RUN_NAME,
+                status="in_progress",
+                conclusion=None,
+                app_id=self.config.GITHUB_APP_ID,
+                started_at=now_iso,
+                completed_at=None,
+                output_title=title,
+                output_summary=output_summary,
+                output_text=output_text,
+                output_checks_json=output_checks_json,
+                output_summary_hash=summary_hash,
+                output_text_hash=text_hash,
+                last_eval_at=now_iso,
+                last_publish_at=(
+                    self._dt_to_iso(sentinel_row.last_publish_at)
+                    if sentinel_row
+                    else None
+                ),
+                last_publish_result="unchanged",
+                last_publish_error=None,
+                last_delivery_id=trigger.delivery_id,
+            )
+            sentinel_projection_eval_total.labels(result="unchanged").inc()
+            return EvaluationResult(
+                result="pre_delay_pending_unchanged",
+                check_run_id=check_run_id,
+                changed=False,
+            )
+
+        published_id: int | None = None
+        publish_result = "dry_run"
+        publish_error: str | None = None
+        publish_at: str | None = None
+
+        if self.config.PROJECTION_PUBLISH_ENABLED and bool(pr_row.pr_draft):
+            publish_result = "skipped_draft"
+            sentinel_projection_publish_total.labels(result="skipped_draft").inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="publish_pre_delay",
+                result="skipped_draft",
+                detail="Draft PR, would publish in_progress/-",
+            )
+        elif self.config.PROJECTION_PUBLISH_ENABLED:
+            api = await self.api_factory(trigger.installation_id)
+            check_run = CheckRun.make_app_check_run(
+                id=check_run_id,
+                head_sha=head_sha,
+                status="in_progress",
+                conclusion=None,
+                started_at=datetime.now(timezone.utc),
+                completed_at=None,
+                output=CheckRunOutput(
+                    title=title,
+                    summary=output_summary,
+                    text=output_text,
+                ),
+                actions=self._build_manual_refresh_actions("in_progress"),
+            )
+            try:
+                posted_id = await api.post_check_run(
+                    f"/repos/{trigger.repo_full_name}",
+                    check_run,
+                )
+                published_id = posted_id or check_run.id
+                publish_result = "published"
+                publish_at = now_iso
+                sentinel_projection_publish_total.labels(result="published").inc()
+                self._record_activity(
+                    trigger=trigger,
+                    pr_number=pr_number,
+                    activity_type="publish_pre_delay",
+                    result="published",
+                    detail=f"Published pending check_run_id={published_id}",
+                )
+            except Exception as exc:  # noqa: BLE001
+                publish_result = "error"
+                publish_error = str(exc)
+                sentinel_projection_publish_total.labels(result="error").inc()
+                self._record_activity(
+                    trigger=trigger,
+                    pr_number=pr_number,
+                    activity_type="publish_pre_delay",
+                    result="error",
+                    detail=publish_error,
+                )
+                logger.error(
+                    "Publishing pre-delay pending check run failed repo=%s sha=%s pr=%s",
+                    trigger.repo_full_name,
+                    head_sha,
+                    pr_number,
+                    exc_info=True,
+                )
+        else:
+            sentinel_projection_publish_total.labels(result="dry_run").inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="publish_pre_delay",
+                result="dry_run",
+                detail=(
+                    "Draft PR, would not publish in_progress/- (dry-run)"
+                    if bool(pr_row.pr_draft)
+                    else "Would publish in_progress/-"
+                ),
+            )
+
+        final_id = int(published_id) if published_id is not None else check_run_id
+        self.store.upsert_sentinel_check_run(
+            repo_id=repo_id,
+            repo_full_name=trigger.repo_full_name,
+            check_run_id=final_id,
+            head_sha=head_sha,
+            name=self.config.PROJECTION_CHECK_RUN_NAME,
+            status="in_progress",
+            conclusion=None,
+            app_id=self.config.GITHUB_APP_ID,
+            started_at=now_iso,
+            completed_at=None,
+            output_title=title,
+            output_summary=output_summary,
+            output_text=output_text,
+            output_checks_json=output_checks_json,
+            output_summary_hash=summary_hash,
+            output_text_hash=text_hash,
+            last_eval_at=now_iso,
+            last_publish_at=publish_at,
+            last_publish_result=publish_result,
+            last_publish_error=publish_error,
+            last_delivery_id=trigger.delivery_id,
+        )
+        sentinel_projection_eval_total.labels(result="evaluated").inc()
+        return EvaluationResult(
+            result="pre_delay_pending",
             check_run_id=final_id,
             changed=True,
             error=publish_error,

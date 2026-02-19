@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Awaitable, Callable, Dict
 
 from sentinel.metric import sentinel_projection_debounce_total
@@ -14,6 +14,7 @@ class _KeyState:
     dirty: bool = False
     debounce_until: float = 0.0
     pull_request_delay_until: float = 0.0
+    pre_delay_pending_emitted: bool = False
 
 
 class ProjectionStatusScheduler:
@@ -48,10 +49,13 @@ class ProjectionStatusScheduler:
                 state.trigger = trigger
                 state.dirty = True
                 state.debounce_until = max(state.debounce_until, debounce_until)
+                previous_delay_until = state.pull_request_delay_until
                 state.pull_request_delay_until = max(
                     state.pull_request_delay_until,
                     pull_request_delay_until,
                 )
+                if state.pull_request_delay_until > previous_delay_until:
+                    state.pre_delay_pending_emitted = False
                 sentinel_projection_debounce_total.labels(result="coalesced").inc()
                 return
 
@@ -60,6 +64,7 @@ class ProjectionStatusScheduler:
                 dirty=False,
                 debounce_until=debounce_until,
                 pull_request_delay_until=pull_request_delay_until,
+                pre_delay_pending_emitted=False,
             )
             sentinel_projection_debounce_total.labels(result="scheduled").inc()
             self._tasks[key] = asyncio.create_task(self._run_key(key))
@@ -79,14 +84,29 @@ class ProjectionStatusScheduler:
         loop = asyncio.get_running_loop()
         try:
             while True:
+                emit_pre_delay_pending = False
+                pre_delay_trigger: ProjectionTrigger | None = None
                 async with self._lock:
                     state = self._states.get(key)
                     if state is None:
                         return
+                    now = loop.time()
+                    if (
+                        not state.pre_delay_pending_emitted
+                        and state.pull_request_delay_until > now
+                    ):
+                        state.pre_delay_pending_emitted = True
+                        emit_pre_delay_pending = True
+                        pre_delay_trigger = replace(
+                            state.trigger, pre_delay_pending=True
+                        )
                     execute_after = max(
                         state.debounce_until,
                         state.pull_request_delay_until,
                     )
+                if emit_pre_delay_pending and pre_delay_trigger is not None:
+                    await self.handler(pre_delay_trigger)
+                    continue
                 sleep_for = execute_after - loop.time()
                 if sleep_for > 0:
                     await asyncio.sleep(sleep_for)
