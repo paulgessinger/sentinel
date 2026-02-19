@@ -76,6 +76,10 @@ else:
     WEBHOOK_DB_RETENTION_SECONDS = int(
         float(os.environ.get("WEBHOOK_DB_RETENTION_DAYS", 30)) * 24 * 60 * 60
     )
+# Retention window for internal projection activity events shown in PR detail logs.
+WEBHOOK_ACTIVITY_RETENTION_SECONDS: int = int(
+    os.environ.get("WEBHOOK_ACTIVITY_RETENTION_SECONDS", WEBHOOK_DB_RETENTION_SECONDS)
+)
 # Event types that should be persisted/projected into SQLite.
 WEBHOOK_DB_EVENTS: tuple[str, ...] = tuple(
     part.strip()

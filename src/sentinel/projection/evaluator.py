@@ -6,7 +6,7 @@ from fnmatch import fnmatch
 import hashlib
 import io
 import time
-from typing import Any, Awaitable, Callable, Dict, Iterable, List
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping
 
 from sanic.log import logger
 import yaml
@@ -162,15 +162,32 @@ class ProjectionEvaluator:
             )
             sentinel_projection_eval_total.labels(result="ambiguous_pr").inc()
         pr_row = open_prs[0]
+        pr_number = int(pr_row["pr_number"])
+        if len(open_prs) > 1:
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="pr_selection",
+                result="ambiguous",
+                detail="Multiple open PRs matched this head SHA",
+                metadata={"count": len(open_prs)},
+            )
 
         api = await self.api_factory(trigger.installation_id)
-        config = await self._get_repo_config(api, trigger)
+        config = await self._get_repo_config(api, trigger, pr_number=pr_number)
         if config is None:
             logger.info(
                 "Projection eval skip repo=%s sha=%s pr=%s reason=no_config",
                 trigger.repo_full_name,
                 head_sha,
-                pr_row.get("pr_number"),
+                pr_number,
+            )
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="config_fetch",
+                result="no_config",
+                detail="No .merge-sentinel.yml found",
             )
             sentinel_projection_eval_total.labels(result="no_config").inc()
             return EvaluationResult(result="no_config")
@@ -192,7 +209,7 @@ class ProjectionEvaluator:
             changed_files = await self._get_pr_files(
                 api=api,
                 trigger=trigger,
-                pr_number=int(pr_row["pr_number"]),
+                pr_number=pr_number,
             )
             logger.debug(
                 "Projection eval path fallback repo=%s sha=%s pr=%s changed_files=%d",
@@ -225,6 +242,7 @@ class ProjectionEvaluator:
             ) = await self._load_head_rows_from_api(
                 api=api,
                 trigger=trigger,
+                pr_number=pr_number,
             )
         else:
             check_rows = self.store.get_check_runs_for_head(repo_id, head_sha)
@@ -248,6 +266,7 @@ class ProjectionEvaluator:
         if self._should_auto_refresh_on_missing(
             trigger=trigger,
             pr_row=pr_row,
+            pr_number=pr_number,
             missing_pattern_failures=computed.missing_pattern_failures,
             explicit_failures=computed.explicit_failures,
         ):
@@ -267,6 +286,7 @@ class ProjectionEvaluator:
             ) = await self._load_head_rows_from_api(
                 api=api,
                 trigger=trigger,
+                pr_number=pr_number,
             )
             computed = self._evaluate_rows(
                 check_rows=check_rows,
@@ -357,6 +377,13 @@ class ProjectionEvaluator:
                 head_sha,
             )
             sentinel_projection_eval_total.labels(result="no_pr").inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="publish",
+                result="skip_no_open_pr",
+                detail="PR closed before publish",
+            )
             return EvaluationResult(result="no_pr")
 
         previous_status = sentinel_row.get("status") if sentinel_row else None
@@ -404,6 +431,13 @@ class ProjectionEvaluator:
                 check_run_id,
             )
             sentinel_projection_publish_total.labels(result="unchanged").inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="publish",
+                result="unchanged",
+                detail=f"{new_status}/{new_conclusion or '-'}",
+            )
             self.store.upsert_sentinel_check_run(
                 repo_id=repo_id,
                 repo_full_name=trigger.repo_full_name,
@@ -465,6 +499,13 @@ class ProjectionEvaluator:
 
             if check_run.id is None:
                 sentinel_projection_lookup_total.labels(result="local_id_miss").inc()
+                self._record_activity(
+                    trigger=trigger,
+                    pr_number=pr_number,
+                    activity_type="publish_lookup",
+                    result="local_id_miss",
+                    detail="No local check_run_id; lookup on GitHub",
+                )
                 logger.debug(
                     "Projection lookup local miss repo=%s sha=%s",
                     trigger.repo_full_name,
@@ -481,6 +522,13 @@ class ProjectionEvaluator:
                         result="gh_lookup_hit"
                     ).inc()
                     check_run.id = int(existing.id)
+                    self._record_activity(
+                        trigger=trigger,
+                        pr_number=pr_number,
+                        activity_type="publish_lookup",
+                        result="gh_lookup_hit",
+                        detail=f"Found existing check_run_id={check_run.id}",
+                    )
                     logger.info(
                         "Projection lookup github hit repo=%s sha=%s found_id=%s",
                         trigger.repo_full_name,
@@ -491,6 +539,13 @@ class ProjectionEvaluator:
                     sentinel_projection_lookup_total.labels(
                         result="gh_lookup_miss"
                     ).inc()
+                    self._record_activity(
+                        trigger=trigger,
+                        pr_number=pr_number,
+                        activity_type="publish_lookup",
+                        result="gh_lookup_miss",
+                        detail="No existing check run found on GitHub",
+                    )
                     logger.info(
                         "Projection lookup github miss repo=%s sha=%s",
                         trigger.repo_full_name,
@@ -498,6 +553,13 @@ class ProjectionEvaluator:
                     )
             else:
                 sentinel_projection_lookup_total.labels(result="local_id_hit").inc()
+                self._record_activity(
+                    trigger=trigger,
+                    pr_number=pr_number,
+                    activity_type="publish_lookup",
+                    result="local_id_hit",
+                    detail=f"Using local check_run_id={check_run.id}",
+                )
                 logger.debug(
                     "Projection lookup local hit repo=%s sha=%s id=%s",
                     trigger.repo_full_name,
@@ -513,6 +575,17 @@ class ProjectionEvaluator:
                 publish_result = "published"
                 publish_at = now_iso
                 sentinel_projection_publish_total.labels(result="published").inc()
+                self._record_activity(
+                    trigger=trigger,
+                    pr_number=pr_number,
+                    activity_type="publish",
+                    result="published",
+                    detail=f"Published check_run_id={published_id}",
+                    metadata={
+                        "status": new_status,
+                        "conclusion": new_conclusion,
+                    },
+                )
                 logger.info(
                     "Projection publish success repo=%s sha=%s published_id=%s",
                     trigger.repo_full_name,
@@ -523,6 +596,13 @@ class ProjectionEvaluator:
                 publish_result = "error"
                 publish_error = str(exc)
                 sentinel_projection_publish_total.labels(result="error").inc()
+                self._record_activity(
+                    trigger=trigger,
+                    pr_number=pr_number,
+                    activity_type="publish",
+                    result="error",
+                    detail=publish_error,
+                )
                 logger.error(
                     "Publishing projection check run failed repo=%s sha=%s pr=%s",
                     trigger.repo_full_name,
@@ -540,6 +620,13 @@ class ProjectionEvaluator:
                 new_conclusion,
             )
             sentinel_projection_publish_total.labels(result="dry_run").inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="publish",
+                result="dry_run",
+                detail=f"Would publish {new_status}/{new_conclusion or '-'}",
+            )
 
         final_id = int(published_id) if published_id is not None else check_run_id
         self.store.upsert_sentinel_check_run(
@@ -581,7 +668,7 @@ class ProjectionEvaluator:
         )
 
     async def _get_repo_config(
-        self, api: API, trigger: ProjectionTrigger
+        self, api: API, trigger: ProjectionTrigger, *, pr_number: int
     ) -> Config | None:
         now = time.monotonic()
         cached = self._config_cache.get(trigger.repo_id)
@@ -594,6 +681,13 @@ class ProjectionEvaluator:
                 trigger.repo_full_name,
                 trigger.repo_id,
             )
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="config_fetch",
+                result="cache_hit",
+                detail="Using cached .merge-sentinel.yml",
+            )
             return cached[1]
 
         sentinel_projection_fallback_total.labels(
@@ -603,6 +697,13 @@ class ProjectionEvaluator:
             "Projection config cache miss repo=%s repo_id=%s",
             trigger.repo_full_name,
             trigger.repo_id,
+        )
+        self._record_activity(
+            trigger=trigger,
+            pr_number=pr_number,
+            activity_type="config_fetch",
+            result="cache_miss",
+            detail="Fetching .merge-sentinel.yml from GitHub API",
         )
         try:
             content = await api.get_content(
@@ -617,6 +718,13 @@ class ProjectionEvaluator:
                 trigger.repo_id,
                 len(loaded.rules),
             )
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="config_fetch",
+                result="loaded",
+                detail=f"Loaded config with {len(loaded.rules)} rules",
+            )
         except Exception as exc:  # noqa: BLE001
             if hasattr(exc, "status_code") and getattr(exc, "status_code") == 404:
                 loaded = None
@@ -625,7 +733,21 @@ class ProjectionEvaluator:
                     trigger.repo_full_name,
                     trigger.repo_id,
                 )
+                self._record_activity(
+                    trigger=trigger,
+                    pr_number=pr_number,
+                    activity_type="config_fetch",
+                    result="missing",
+                    detail="Config not found (404)",
+                )
             else:
+                self._record_activity(
+                    trigger=trigger,
+                    pr_number=pr_number,
+                    activity_type="config_fetch",
+                    result="error",
+                    detail=str(exc),
+                )
                 raise
 
         self._config_cache[trigger.repo_id] = (
@@ -655,6 +777,13 @@ class ProjectionEvaluator:
                 pr_number,
                 len(cached[1]),
             )
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="pr_files_fetch",
+                result="cache_hit",
+                detail=f"Using cached changed files ({len(cached[1])})",
+            )
             return list(cached[1])
 
         sentinel_projection_fallback_total.labels(
@@ -666,6 +795,13 @@ class ProjectionEvaluator:
             trigger.head_sha,
             pr_number,
         )
+        self._record_activity(
+            trigger=trigger,
+            pr_number=pr_number,
+            activity_type="pr_files_fetch",
+            result="cache_miss",
+            detail="Fetching PR changed files from GitHub API",
+        )
         pull = await api.get_pull(self._repo_url(trigger.repo_full_name), pr_number)
         files = [f.filename async for f in api.get_pull_request_files(pull)]
         self._pr_files_cache[key] = (now + self.pr_files_cache_seconds, list(files))
@@ -675,6 +811,13 @@ class ProjectionEvaluator:
             trigger.head_sha,
             pr_number,
             len(files),
+        )
+        self._record_activity(
+            trigger=trigger,
+            pr_number=pr_number,
+            activity_type="pr_files_fetch",
+            result="fetched",
+            detail=f"Fetched changed files ({len(files)})",
         )
         return files
 
@@ -815,6 +958,7 @@ class ProjectionEvaluator:
         *,
         trigger: ProjectionTrigger,
         pr_row: Dict[str, Any],
+        pr_number: int,
         missing_pattern_failures: list[str],
         explicit_failures: list[_ResultItem],
     ) -> bool:
@@ -822,21 +966,46 @@ class ProjectionEvaluator:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_force_api_refresh"
             ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="missing_refresh",
+                result="skip_force_api_refresh",
+                detail="Manual force refresh already requested",
+            )
             return False
         if not self.auto_refresh_on_missing_enabled:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_disabled"
             ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="missing_refresh",
+                result="skip_disabled",
+            )
             return False
         if not missing_pattern_failures:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_no_missing"
             ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="missing_refresh",
+                result="skip_no_missing",
+            )
             return False
         if explicit_failures:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_explicit_failure"
             ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="missing_refresh",
+                result="skip_explicit_failure",
+            )
             return False
 
         pr_updated_at = self._parse_dt(pr_row.get("updated_at"))
@@ -844,12 +1013,25 @@ class ProjectionEvaluator:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_no_pr_updated_at"
             ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="missing_refresh",
+                result="skip_no_pr_updated_at",
+            )
             return False
         pr_age_seconds = (datetime.now(timezone.utc) - pr_updated_at).total_seconds()
         if pr_age_seconds < self.auto_refresh_on_missing_stale_seconds:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_recent_pr"
             ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="missing_refresh",
+                result="skip_recent_pr",
+                detail=f"pr_age_seconds={int(pr_age_seconds)}",
+            )
             return False
 
         now = time.monotonic()
@@ -858,15 +1040,36 @@ class ProjectionEvaluator:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_cooldown"
             ).inc()
+            self._record_activity(
+                trigger=trigger,
+                pr_number=pr_number,
+                activity_type="missing_refresh",
+                result="skip_cooldown",
+            )
             return False
         self._auto_refresh_missing_cooldown[trigger.key] = (
             now + self.auto_refresh_on_missing_cooldown_seconds
         )
+        self._record_activity(
+            trigger=trigger,
+            pr_number=pr_number,
+            activity_type="missing_refresh",
+            result="triggered",
+            detail="Refreshing projections from GitHub API",
+            metadata={"missing_patterns": missing_pattern_failures},
+        )
         return True
 
     async def _load_head_rows_from_api(
-        self, *, api: API, trigger: ProjectionTrigger
+        self, *, api: API, trigger: ProjectionTrigger, pr_number: int
     ) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]], list[Dict[str, Any]]]:
+        self._record_activity(
+            trigger=trigger,
+            pr_number=pr_number,
+            activity_type="api_snapshot_refresh",
+            result="started",
+            detail="Refreshing check runs/workflows/statuses from GitHub API",
+        )
         repo = await api.get_repository(self._repo_url(trigger.repo_full_name))
         check_runs = [
             check_run
@@ -903,6 +1106,17 @@ class ProjectionEvaluator:
             persisted["check_runs"],
             persisted["workflow_runs"],
             persisted["commit_statuses"],
+        )
+        self._record_activity(
+            trigger=trigger,
+            pr_number=pr_number,
+            activity_type="api_snapshot_refresh",
+            result="persisted",
+            detail=(
+                f"checks={persisted['check_runs']} "
+                f"workflows={persisted['workflow_runs']} "
+                f"statuses={persisted['commit_statuses']}"
+            ),
         )
         return check_rows, workflow_rows, status_rows
 
@@ -1004,3 +1218,33 @@ class ProjectionEvaluator:
     @staticmethod
     def _repo_url(repo_full_name: str) -> str:
         return f"/repos/{repo_full_name}"
+
+    def _record_activity(
+        self,
+        *,
+        trigger: ProjectionTrigger,
+        pr_number: int,
+        activity_type: str,
+        result: str | None,
+        detail: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        try:
+            self.store.record_projection_activity_event(
+                repo_id=trigger.repo_id,
+                repo_full_name=trigger.repo_full_name,
+                pr_number=pr_number,
+                head_sha=trigger.head_sha,
+                delivery_id=trigger.delivery_id,
+                activity_type=activity_type,
+                result=result,
+                detail=detail,
+                metadata=metadata,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Failed to record projection activity event type=%s result=%s",
+                activity_type,
+                result,
+                exc_info=True,
+            )

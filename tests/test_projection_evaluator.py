@@ -313,6 +313,21 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
         None,
     )
 
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        activity_rows = conn.execute(
+            """
+            SELECT activity_type, result
+            FROM sentinel_activity_events
+            WHERE repo_id = ? AND pr_number = ? AND head_sha = ?
+            ORDER BY activity_id
+            """,
+            (11, 42, "a" * 40),
+        ).fetchall()
+
+    assert ("config_fetch", "cache_miss") in activity_rows
+    assert ("config_fetch", "loaded") in activity_rows
+    assert ("publish", "dry_run") in activity_rows
+
 
 @pytest.mark.asyncio
 async def test_projection_second_identical_eval_is_unchanged(tmp_path):
@@ -641,3 +656,16 @@ async def test_auto_refresh_on_missing_pattern_for_stale_pr(tmp_path):
     assert row is not None
     assert row[0] == "success"
     assert "Builds / tests" in row[1]
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        refresh_rows = conn.execute(
+            """
+            SELECT result
+            FROM sentinel_activity_events
+            WHERE repo_id = ? AND pr_number = ? AND head_sha = ?
+              AND activity_type = 'missing_refresh'
+            ORDER BY activity_id
+            """,
+            (11, 42, "a" * 40),
+        ).fetchall()
+    assert ("triggered",) in refresh_rows

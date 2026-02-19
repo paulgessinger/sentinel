@@ -384,6 +384,7 @@ def create_app():
     app.ctx.webhook_store = WebhookStore(
         db_path=app.config.WEBHOOK_DB_PATH,
         retention_seconds=app.config.WEBHOOK_DB_RETENTION_SECONDS,
+        activity_retention_seconds=app.config.WEBHOOK_ACTIVITY_RETENTION_SECONDS,
         projection_completed_retention_seconds=(
             app.config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS
             if app.config.WEBHOOK_PROJECTION_PRUNE_ENABLED
@@ -426,6 +427,7 @@ def create_app():
 
         app.ctx.webhook_store.initialize()
         app.ctx.webhook_store.prune_old_events()
+        app.ctx.webhook_store.prune_old_activity_events()
         if app.config.WEBHOOK_PROJECTION_PRUNE_ENABLED:
             app.ctx.webhook_store.prune_old_projections(
                 completed_retention_seconds=app.config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS,

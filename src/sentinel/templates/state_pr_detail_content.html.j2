@@ -81,12 +81,18 @@
         </thead>
         <tbody>
         {% for event in events %}
-        <tr>
+        <tr{% if event.is_activity %} class="event-row-sentinel"{% endif %}>
             <td class="muted"><span data-utc="{{ event.received_at }}">{{ event.received_at }}</span></td>
             <td>{{ event.event }}</td>
             <td>{{ event.action or "-" }}</td>
             <td>{{ event.detail or "-" }}</td>
-            <td><a href="{{ event.details_url }}"><code>{{ event.delivery_id }}</code></a></td>
+            <td>
+                {% if event.details_url %}
+                <a href="{{ event.details_url }}"><code>{{ event.delivery_id }}</code></a>
+                {% else %}
+                <code>{{ event.delivery_id }}</code>
+                {% endif %}
+            </td>
         </tr>
         {% endfor %}
         </tbody>

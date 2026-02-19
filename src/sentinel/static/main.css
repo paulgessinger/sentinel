@@ -14,6 +14,7 @@
     --color-input-fg: #12141a;
     --color-table-border: #d7dce6;
     --color-table-head: #3d4657;
+    --color-row-sentinel-bg: #eef3ff;
     --color-row-flash: rgba(246, 196, 89, 0.35);
     --color-disabled: #8a94a8;
     --color-chip-border: #b7bfce;
@@ -53,6 +54,7 @@
         --color-input-fg: #eee;
         --color-table-border: #2f2f2f;
         --color-table-head: #bbb;
+        --color-row-sentinel-bg: #1d2438;
         --color-row-flash: rgba(246, 196, 89, 0.45);
         --color-disabled: #666;
         --color-chip-border: #454545;
@@ -204,6 +206,10 @@ a {
 .state-table th {
     color: var(--color-table-head);
     font-weight: 600;
+}
+
+.state-table tr.event-row-sentinel td {
+    background: var(--color-row-sentinel-bg);
 }
 
 .state-pr-title-link {

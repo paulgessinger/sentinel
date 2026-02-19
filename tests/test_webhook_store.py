@@ -128,6 +128,7 @@ def test_initialize_schema(tmp_path):
     assert "commit_status_current" in tables
     assert "pr_heads_current" in tables
     assert "sentinel_check_run_state" in tables
+    assert "sentinel_activity_events" in tables
 
 
 def test_duplicate_delivery_id_is_ignored(tmp_path):
@@ -928,3 +929,85 @@ def test_get_webhook_event_returns_decoded_payload(tmp_path):
     assert event["event"] == "check_run"
     assert event["payload"]["check_run"]["id"] == 2001
     assert "tests" in event["detail"]
+
+
+def test_pr_related_events_include_projection_activity(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path))
+    store.initialize()
+
+    head_sha = "a" * 40
+    pr_payload = make_pull_request_payload(head_sha=head_sha, title="Tracked PR")
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=pr_payload,
+        payload_json=store.payload_to_json(pr_payload),
+    )
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=make_check_run_payload(),
+        payload_json=store.payload_to_json(make_check_run_payload()),
+    )
+    store.record_projection_activity_event(
+        repo_id=103,
+        repo_full_name="org/repo",
+        pr_number=42,
+        head_sha=head_sha,
+        delivery_id="cr-1",
+        activity_type="publish",
+        result="dry_run",
+        detail="Would publish completed/success",
+        metadata={"status": "completed"},
+        recorded_at="2030-01-01T00:00:00.000000Z",
+    )
+
+    events = store.list_pr_related_events(
+        repo_id=103,
+        pr_number=42,
+        head_sha=head_sha,
+        limit=10,
+    )
+    assert events[0]["event"] == "sentinel"
+    assert events[0]["action"] == "publish"
+    assert events[0]["delivery_id"] == "cr-1"
+    assert events[0]["payload"]["status"] == "completed"
+
+
+def test_prune_old_activity_events(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = WebhookStore(str(db_path), activity_retention_seconds=60)
+    store.initialize()
+    store.record_projection_activity_event(
+        repo_id=103,
+        repo_full_name="org/repo",
+        pr_number=42,
+        head_sha="a" * 40,
+        delivery_id="d-new",
+        activity_type="publish",
+        result="dry_run",
+        recorded_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+    )
+    old_recorded_at = (datetime.now(timezone.utc) - timedelta(seconds=3600)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    store.record_projection_activity_event(
+        repo_id=103,
+        repo_full_name="org/repo",
+        pr_number=42,
+        head_sha="a" * 40,
+        delivery_id="d-old",
+        activity_type="publish",
+        result="dry_run",
+        recorded_at=old_recorded_at,
+    )
+
+    pruned = store.prune_old_activity_events(retention_seconds=300)
+    assert pruned == 1
+
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT delivery_id FROM sentinel_activity_events ORDER BY activity_id"
+        ).fetchall()
+    assert rows == [("d-new",)]

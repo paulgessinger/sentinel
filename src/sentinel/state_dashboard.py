@@ -340,9 +340,16 @@ def _state_pr_detail_context(
         limit=250,
     )
     for event in events:
-        event["details_url"] = (
-            f"/state/event/{event.get('delivery_id')}?repo_id={repo_id}&pr_number={pr_number}"
-        )
+        event["details_url"] = None
+        delivery_id = event.get("delivery_id")
+        if (
+            delivery_id
+            and isinstance(delivery_id, str)
+            and not delivery_id.startswith("activity-")
+        ):
+            event["details_url"] = (
+                f"/state/event/{delivery_id}?repo_id={repo_id}&pr_number={pr_number}"
+            )
 
     pr_state_display = _pr_state_display(
         row.get("pr_state"),

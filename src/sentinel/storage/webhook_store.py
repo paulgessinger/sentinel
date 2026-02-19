@@ -102,6 +102,22 @@ sentinel_check_run_state = Table(
     Column("last_delivery_id", String),
 )
 
+sentinel_activity_events = Table(
+    "sentinel_activity_events",
+    metadata,
+    Column("activity_id", Integer, primary_key=True, autoincrement=True),
+    Column("recorded_at", String, nullable=False),
+    Column("repo_id", Integer, nullable=False),
+    Column("repo_full_name", String),
+    Column("pr_number", Integer, nullable=False),
+    Column("head_sha", String, nullable=False),
+    Column("delivery_id", String),
+    Column("activity_type", String, nullable=False),
+    Column("result", String),
+    Column("detail", String),
+    Column("metadata_json", LargeBinary),
+)
+
 check_suites_current = Table(
     "check_suites_current",
     metadata,
@@ -216,6 +232,22 @@ Index(
     sentinel_check_run_state.c.repo_id,
     sentinel_check_run_state.c.head_sha,
 )
+Index(
+    "idx_sentinel_activity_events_repo_pr_recorded",
+    sentinel_activity_events.c.repo_id,
+    sentinel_activity_events.c.pr_number,
+    sentinel_activity_events.c.recorded_at,
+)
+Index(
+    "idx_sentinel_activity_events_repo_head_recorded",
+    sentinel_activity_events.c.repo_id,
+    sentinel_activity_events.c.head_sha,
+    sentinel_activity_events.c.recorded_at,
+)
+Index(
+    "idx_sentinel_activity_events_recorded_at",
+    sentinel_activity_events.c.recorded_at,
+)
 
 
 def utcnow_iso() -> str:
@@ -236,6 +268,7 @@ class WebhookStore:
         self,
         db_path: str,
         retention_seconds: int = 30 * 24 * 60 * 60,
+        activity_retention_seconds: int | None = None,
         projection_completed_retention_seconds: int | None = None,
         projection_active_retention_seconds: int | None = None,
         enabled: bool = True,
@@ -244,6 +277,11 @@ class WebhookStore:
     ):
         self.db_path = Path(db_path)
         self.retention_seconds = retention_seconds
+        self.activity_retention_seconds = (
+            activity_retention_seconds
+            if activity_retention_seconds is not None
+            else retention_seconds
+        )
         self.projection_completed_retention_seconds = (
             projection_completed_retention_seconds
         )
@@ -364,6 +402,7 @@ class WebhookStore:
         pruned_rows = 0
         if self._should_prune():
             pruned_rows = self.prune_old_events()
+            self.prune_old_activity_events()
             if (
                 self.projection_completed_retention_seconds is not None
                 and self.projection_active_retention_seconds is not None
@@ -404,6 +443,33 @@ class WebhookStore:
 
         if count > 0:
             webhook_event_pruned_total.inc(count)
+        return count
+
+    def prune_old_activity_events(self, retention_seconds: int | None = None) -> int:
+        if not self.enabled:
+            return 0
+
+        retention_seconds = (
+            self.activity_retention_seconds
+            if retention_seconds is None
+            else max(0, retention_seconds)
+        )
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=retention_seconds)
+        ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                delete(sentinel_activity_events).where(
+                    sentinel_activity_events.c.recorded_at < cutoff
+                )
+            )
+            count = result.rowcount or 0
+
+        if count > 0:
+            webhook_projection_pruned_total.labels(
+                table="sentinel_activity_events", kind="all"
+            ).inc(count)
         return count
 
     def migrate_event_payloads_to_zstd(self, batch_size: int = 500) -> Dict[str, int]:
@@ -952,7 +1018,108 @@ class WebhookStore:
             if len(events) >= target_limit:
                 break
 
+        activity_stmt = (
+            select(
+                sentinel_activity_events.c.activity_id,
+                sentinel_activity_events.c.recorded_at,
+                sentinel_activity_events.c.activity_type,
+                sentinel_activity_events.c.result,
+                sentinel_activity_events.c.detail,
+                sentinel_activity_events.c.delivery_id,
+                sentinel_activity_events.c.metadata_json,
+            )
+            .where(
+                and_(
+                    sentinel_activity_events.c.repo_id == repo_id,
+                    sentinel_activity_events.c.pr_number == pr_number,
+                )
+            )
+            .order_by(sentinel_activity_events.c.recorded_at.desc())
+            .limit(target_limit)
+        )
+        if head_sha:
+            activity_stmt = activity_stmt.where(
+                sentinel_activity_events.c.head_sha == head_sha
+            )
+        with self.engine.begin() as conn:
+            activity_rows = conn.execute(activity_stmt).mappings().all()
+
+        for row in activity_rows:
+            metadata: Dict[str, Any] = {}
+            metadata_blob = row.get("metadata_json")
+            if metadata_blob:
+                try:
+                    metadata = json.loads(self.decode_payload_json(metadata_blob))
+                except ValueError:
+                    metadata = {}
+            detail_parts = []
+            result = row.get("result")
+            detail = row.get("detail")
+            if result:
+                detail_parts.append(str(result))
+            if detail:
+                detail_parts.append(str(detail))
+            formatted_detail = ": ".join(detail_parts) if detail_parts else "activity"
+            activity_id = row.get("activity_id")
+            events.append(
+                {
+                    "delivery_id": row.get("delivery_id")
+                    or (f"activity-{activity_id}" if activity_id is not None else "-"),
+                    "received_at": row.get("recorded_at"),
+                    "event": "sentinel",
+                    "action": row.get("activity_type") or "activity",
+                    "projection_error": None,
+                    "detail": formatted_detail,
+                    "payload": metadata,
+                    "is_activity": True,
+                }
+            )
+
+        events.sort(
+            key=lambda item: str(item.get("received_at") or ""),
+            reverse=True,
+        )
+        if len(events) > target_limit:
+            events = events[:target_limit]
+
         return events
+
+    def record_projection_activity_event(
+        self,
+        *,
+        repo_id: int,
+        repo_full_name: str | None,
+        pr_number: int,
+        head_sha: str,
+        delivery_id: str | None,
+        activity_type: str,
+        result: str | None = None,
+        detail: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        recorded_at: str | None = None,
+    ) -> None:
+        if not self.enabled:
+            return
+        now = recorded_at or utcnow_iso()
+        metadata_payload = (
+            self.encode_payload_json(json.dumps(metadata, sort_keys=True))
+            if metadata is not None
+            else None
+        )
+        stmt = sqlite_insert(sentinel_activity_events).values(
+            recorded_at=now,
+            repo_id=repo_id,
+            repo_full_name=repo_full_name,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            delivery_id=delivery_id,
+            activity_type=activity_type,
+            result=result,
+            detail=detail,
+            metadata_json=metadata_payload,
+        )
+        with self.engine.begin() as conn:
+            conn.execute(stmt)
 
     def get_webhook_event(self, delivery_id: str) -> Dict[str, Any] | None:
         stmt = (
