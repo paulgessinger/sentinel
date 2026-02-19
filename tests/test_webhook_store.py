@@ -715,6 +715,7 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
         output_title="All checks green",
         output_summary=":white_check_mark: successful required checks: Build / test",
         output_text="# Checks\n\n| Check | Status | Required? |",
+        output_checks_json='[{"name":"Build / test","status":"success","required":true}]',
         output_summary_hash="h1",
         output_text_hash="h2",
         last_eval_at="2026-02-18T11:00:01Z",

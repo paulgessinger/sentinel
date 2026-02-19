@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from fnmatch import fnmatch
 import hashlib
 import io
+import json
 import time
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping
 
@@ -51,6 +52,7 @@ class _RulePullRequestLike:
 class _ComputedEvaluation:
     check_by_name: Dict[str, Dict[str, Any]]
     result_items: Dict[str, _ResultItem]
+    status_by_name: Dict[str, Dict[str, Any]]
     failures: list[_ResultItem]
     explicit_failures: list[_ResultItem]
     in_progress: list[_ResultItem]
@@ -362,6 +364,7 @@ class ProjectionEvaluator:
 
         summary_hash = hashlib.sha256(output_summary.encode("utf-8")).hexdigest()
         text_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+        output_checks_json = self._build_output_checks_json(computed)
 
         sentinel_row = self.store.get_sentinel_check_run(
             repo_id=repo_id,
@@ -452,6 +455,7 @@ class ProjectionEvaluator:
                 output_title=title,
                 output_summary=output_summary,
                 output_text=output_text,
+                output_checks_json=output_checks_json,
                 output_summary_hash=summary_hash,
                 output_text_hash=text_hash,
                 last_eval_at=now_iso,
@@ -643,6 +647,7 @@ class ProjectionEvaluator:
             output_title=title,
             output_summary=output_summary,
             output_text=output_text,
+            output_checks_json=output_checks_json,
             output_summary_hash=summary_hash,
             output_text_hash=text_hash,
             last_eval_at=now_iso,
@@ -901,6 +906,12 @@ class ProjectionEvaluator:
                 name=context, status=status, required=False
             )
 
+        status_by_name = {
+            str(row.get("context")): row
+            for row in status_rows
+            if row.get("context") is not None
+        }
+
         observed_names = set(result_items.keys())
         missing_pattern_failures: list[str] = []
         for rule in rules:
@@ -946,12 +957,40 @@ class ProjectionEvaluator:
         return _ComputedEvaluation(
             check_by_name=check_by_name,
             result_items=result_items,
+            status_by_name=status_by_name,
             failures=failures,
             explicit_failures=explicit_failures,
             in_progress=in_progress,
             required_successes=required_successes,
             missing_pattern_failures=missing_pattern_failures,
         )
+
+    @staticmethod
+    def _build_output_checks_json(computed: _ComputedEvaluation) -> str:
+        checks: list[Dict[str, Any]] = []
+        for item in sorted(
+            computed.result_items.values(), key=lambda value: value.name
+        ):
+            check_row = computed.check_by_name.get(item.name)
+            status_row = computed.status_by_name.get(item.name)
+            html_url = None
+            source = "derived"
+            if check_row is not None:
+                html_url = check_row.get("html_url")
+                source = "check_run"
+            elif status_row is not None:
+                html_url = status_row.get("url")
+                source = "status"
+            checks.append(
+                {
+                    "name": item.name,
+                    "status": item.status,
+                    "required": item.required,
+                    "html_url": html_url,
+                    "source": source,
+                }
+            )
+        return json.dumps(checks, separators=(",", ":"), sort_keys=True)
 
     def _should_auto_refresh_on_missing(
         self,
@@ -1132,6 +1171,7 @@ class ProjectionEvaluator:
             "app_id": app.id if app is not None else None,
             "app_slug": app.slug if app is not None else None,
             "check_suite_id": check_suite.id if check_suite is not None else None,
+            "html_url": check_run.html_url,
             "started_at": ProjectionEvaluator._dt_to_iso(check_run.started_at),
             "completed_at": ProjectionEvaluator._dt_to_iso(check_run.completed_at),
         }

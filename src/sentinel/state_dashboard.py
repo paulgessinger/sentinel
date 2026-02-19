@@ -312,6 +312,92 @@ def _render_markdown_inline(text: str | None) -> str:
     return MARKDOWN_RENDERER.renderInline(emojized)
 
 
+def _check_status_display(status: str | None) -> Dict[str, Any]:
+    normalized = (status or "unknown").strip().lower()
+    if normalized == "success":
+        return {
+            "label": "success",
+            "symbol": "✓",
+            "class_name": "check-status-success",
+            "is_running": False,
+        }
+    if normalized == "failure":
+        return {
+            "label": "failure",
+            "symbol": "✕",
+            "class_name": "check-status-failure",
+            "is_running": False,
+        }
+    if normalized in {"pending", "in_progress", "queued"}:
+        return {
+            "label": "running",
+            "symbol": "…",
+            "class_name": "check-status-running",
+            "is_running": True,
+        }
+    if normalized == "missing":
+        return {
+            "label": "missing",
+            "symbol": "!",
+            "class_name": "check-status-missing",
+            "is_running": False,
+        }
+    return {
+        "label": normalized,
+        "symbol": "•",
+        "class_name": "check-status-neutral",
+        "is_running": False,
+    }
+
+
+def _parse_output_checks(output_checks_json: str | None) -> list[Dict[str, Any]]:
+    if output_checks_json is None or output_checks_json.strip() == "":
+        return []
+
+    try:
+        parsed = json.loads(output_checks_json)
+    except ValueError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    rows: list[Dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        name_value = item.get("name")
+        if not isinstance(name_value, str) or not name_value.strip():
+            continue
+        status_value = item.get("status")
+        required = bool(item.get("required"))
+        html_url_value = item.get("html_url")
+        html_url = (
+            html_url_value
+            if isinstance(html_url_value, str)
+            and html_url_value.startswith(("https://", "http://"))
+            else None
+        )
+        source_value = item.get("source")
+        source = source_value if isinstance(source_value, str) else "derived"
+        status_display = _check_status_display(
+            status_value if isinstance(status_value, str) else None
+        )
+        rows.append(
+            {
+                "name": name_value,
+                "status": status_display["label"],
+                "status_symbol": status_display["symbol"],
+                "status_class": status_display["class_name"],
+                "is_running": status_display["is_running"],
+                "required": required,
+                "html_url": html_url,
+                "source": source,
+            }
+        )
+
+    return rows
+
+
 def _state_pr_detail_context(
     app: Sanic,
     *,
@@ -332,6 +418,7 @@ def _state_pr_detail_context(
     check_run_id = row.get("sentinel_check_run_id")
     output_summary = row.get("output_summary")
     output_text = row.get("output_text")
+    output_checks_json = row.get("output_checks_json")
 
     events = app.ctx.webhook_store.list_pr_related_events(
         repo_id=repo_id,
@@ -375,6 +462,9 @@ def _state_pr_detail_context(
                 publish_result=row.get("last_publish_result"),
                 status=row.get("sentinel_status"),
                 conclusion=row.get("sentinel_conclusion"),
+            ),
+            "output_checks": _parse_output_checks(
+                output_checks_json if isinstance(output_checks_json, str) else None
             ),
             "rendered_output_summary": _render_markdown(output_summary),
             "rendered_output_text": _render_markdown(output_text),

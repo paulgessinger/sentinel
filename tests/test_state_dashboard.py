@@ -101,6 +101,7 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
         output_title="All good",
         output_summary="summary",
         output_text="text",
+        output_checks_json='[{"name":"build","status":"success","required":true}]',
         output_summary_hash="h1",
         output_text_hash="h2",
         last_eval_at="2026-02-18T12:00:01Z",
@@ -360,6 +361,10 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
             "# Checks\n\n| Check | Status | Required? |\n| --- | --- | --- |\n"
             "| Builds / tests | success | yes |"
         ),
+        output_checks_json=(
+            '[{"name":"Builds / tests","status":"success","required":true,'
+            '"html_url":"https://github.com/org/repo/runs/333"}]'
+        ),
         output_summary_hash="h1",
         output_text_hash="h2",
         last_eval_at="2026-02-18T12:00:01Z",
@@ -383,6 +388,11 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
     assert context["row"]["pr_is_draft"] is True
     assert context["row"]["pr_draft_class"] == "chip-bg-amber"
     assert context["row"]["publish_result_display"] == "completed/success (dry-run)"
+    assert len(context["row"]["output_checks"]) == 1
+    assert context["row"]["output_checks"][0]["name"] == "Builds / tests"
+    assert context["row"]["output_checks"][0]["status"] == "success"
+    assert context["row"]["output_checks"][0]["html_url"].endswith("/runs/333")
+    assert context["row"]["output_checks"][0]["is_running"] is False
     assert "\u2705" in context["row"]["rendered_output_summary"]
     assert "rendered-check-table" in context["row"]["rendered_output_text"]
     assert len(context["events"]) >= 3

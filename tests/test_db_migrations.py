@@ -21,4 +21,4 @@ def test_migrate_webhook_db_runs_from_packaged_scripts(tmp_path, monkeypatch):
     assert "webhook_events" in tables
     assert "pr_heads_current" in tables
     assert "sentinel_activity_events" in tables
-    assert revision == "0006_add_sentinel_activity_events"
+    assert revision == "0007_add_output_checks_json_and_check_run_html_url"

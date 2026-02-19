@@ -58,10 +58,55 @@
 </section>
 
 <section class="detail-section">
-    <h2>Rendered Check Output</h2>
-    <h3>{{ row.output_title or "No output title" }}</h3>
-    <div class="rendered-markdown">{{ row.rendered_output_summary | safe }}</div>
-    <div class="rendered-markdown">{{ row.rendered_output_text | safe }}</div>
+    <h2>Check Summary</h2>
+    {% if row.output_checks and row.output_checks|length > 0 %}
+    <table class="state-table check-summary-table">
+        <thead>
+        <tr>
+            <th>Check</th>
+            <th>Status</th>
+            <th>Required</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for check in row.output_checks %}
+        <tr>
+            <td>
+                {% if check.html_url %}
+                <a href="{{ check.html_url }}" target="_blank" rel="noreferrer">{{ check.name }}</a>
+                {% else %}
+                {{ check.name }}
+                {% endif %}
+            </td>
+            <td>
+                <span class="check-status-pill {{ check.status_class }}">
+                    {% if check.is_running %}
+                    <span class="check-spinner" aria-hidden="true"></span>
+                    {% else %}
+                    <span class="check-status-symbol">{{ check.status_symbol }}</span>
+                    {% endif %}
+                    <span>{{ check.status }}</span>
+                </span>
+            </td>
+            <td>{{ "yes" if check.required else "no" }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No structured check summary available yet.</p>
+    {% endif %}
+</section>
+
+<section class="detail-section">
+    <details class="detail-collapsible">
+        <summary>Rendered Raw Output (sent to GitHub)</summary>
+        <div class="detail-collapsible-body">
+            <h3>{{ row.output_title or "No output title" }}</h3>
+            <div class="rendered-markdown">{{ row.rendered_output_summary | safe }}</div>
+            <div class="rendered-markdown">{{ row.rendered_output_text | safe }}</div>
+        </div>
+    </details>
 </section>
 
 <section class="detail-section">
