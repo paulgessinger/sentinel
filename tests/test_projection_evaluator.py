@@ -264,6 +264,8 @@ async def _seed(store: WebhookStore) -> None:
 @dataclass
 class _EvaluatorConfig:
     GITHUB_APP_ID: int = 2877723
+    WEBHOOK_FILTER_SELF_APP_ID: bool = True
+    WEBHOOK_FILTER_APP_IDS: tuple[int, ...] = ()
     PROJECTION_CHECK_RUN_NAME: str = "merge-sentinel"
     PROJECTION_PUBLISH_ENABLED: bool = False
     PROJECTION_MANUAL_REFRESH_ACTION_ENABLED: bool = True
@@ -372,7 +374,6 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
             (11, 42, "a" * 40),
         ).fetchall()
 
-    assert ("config_fetch", "cache_miss") in activity_rows
     assert ("config_fetch", "loaded") in activity_rows
     assert ("publish", "dry_run") in activity_rows
 
@@ -922,6 +923,54 @@ async def test_force_api_refresh_always_creates_new_published_check_run(tmp_path
     assert api.post_calls[1][1].id is None
     # No additional lookup on forced refresh.
     assert api.lookup_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_force_api_refresh_applies_app_id_filter(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=_pull_request_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPIRefresh(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n"
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = ProjectionEvaluator(
+        store=store,
+        config=_EvaluatorConfig(
+            WEBHOOK_FILTER_SELF_APP_ID=False,
+            WEBHOOK_FILTER_APP_IDS=(1,),
+        ),
+        api_factory=api_factory,
+    )
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-api-filter-1",
+            event="check_run",
+            force_api_refresh=True,
+        )
+    )
+
+    assert result.result == "dry_run"
+    check_rows = store.get_check_runs_for_head(11, "a" * 40)
+    assert check_rows == []
+
+    workflow_rows = store.get_workflow_runs_for_head(11, "a" * 40)
+    assert len(workflow_rows) == 1
+    assert workflow_rows[0].name == "Builds"
 
 
 @pytest.mark.asyncio

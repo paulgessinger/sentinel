@@ -68,6 +68,8 @@ class _ComputedEvaluation:
 
 class ProjectionEvaluatorConfig(Protocol):
     GITHUB_APP_ID: int
+    WEBHOOK_FILTER_SELF_APP_ID: bool
+    WEBHOOK_FILTER_APP_IDS: tuple[int, ...]
     PROJECTION_CHECK_RUN_NAME: str
     PROJECTION_PUBLISH_ENABLED: bool
     PROJECTION_MANUAL_REFRESH_ACTION_ENABLED: bool
@@ -593,13 +595,6 @@ class ProjectionEvaluator:
                     sentinel_projection_lookup_total.labels(
                         result="local_id_miss"
                     ).inc()
-                    self._record_activity(
-                        trigger=trigger,
-                        pr_number=pr_number,
-                        activity_type="publish_lookup",
-                        result="local_id_miss",
-                        detail="No local check_run_id; lookup on GitHub",
-                    )
                     logger.debug(
                         "Projection lookup local miss repo=%s sha=%s",
                         trigger.repo_full_name,
@@ -1024,13 +1019,6 @@ class ProjectionEvaluator:
             trigger.repo_full_name,
             trigger.repo_id,
         )
-        self._record_activity(
-            trigger=trigger,
-            pr_number=pr_number,
-            activity_type="config_fetch",
-            result="cache_miss",
-            detail="Fetching .merge-sentinel.yml from GitHub API",
-        )
         try:
             content = await api.get_content(
                 f"/repos/{trigger.repo_full_name}", ".merge-sentinel.yml"
@@ -1120,13 +1108,6 @@ class ProjectionEvaluator:
             trigger.repo_full_name,
             trigger.head_sha,
             pr_number,
-        )
-        self._record_activity(
-            trigger=trigger,
-            pr_number=pr_number,
-            activity_type="pr_files_fetch",
-            result="cache_miss",
-            detail="Fetching PR changed files from GitHub API",
         )
         pull = await api.get_pull(f"/repos/{trigger.repo_full_name}", pr_number)
         files = [f.filename async for f in api.get_pull_request_files(pull)]
@@ -1556,18 +1537,35 @@ class ProjectionEvaluator:
     async def _load_head_rows_from_api(
         self, *, api: API, trigger: ProjectionTrigger, pr_number: int
     ) -> tuple[list[CheckRunRow], list[WorkflowRunRow], list[CommitStatusRow]]:
-        self._record_activity(
-            trigger=trigger,
-            pr_number=pr_number,
-            activity_type="api_snapshot_refresh",
-            result="started",
-            detail="Refreshing check runs/workflows/statuses from GitHub API",
-        )
         repo = await api.get_repository(f"/repos/{trigger.repo_full_name}")
         check_runs = [
             check_run
             async for check_run in api.get_check_runs_for_ref(repo, trigger.head_sha)
         ]
+        filtered_count = 0
+        filtered_app_ids: list[int] = []
+        excluded_app_ids = self._excluded_app_ids_for_snapshot()
+        if excluded_app_ids:
+            original_count = len(check_runs)
+            check_runs = [
+                check_run
+                for check_run in check_runs
+                if (
+                    check_run.app is None
+                    or check_run.app.id is None
+                    or check_run.app.id not in excluded_app_ids
+                )
+            ]
+            filtered_count = original_count - len(check_runs)
+            filtered_app_ids = sorted(excluded_app_ids)
+            if filtered_count > 0:
+                logger.info(
+                    "Projection API snapshot filtered check runs repo=%s sha=%s filtered=%d app_ids=%s",
+                    trigger.repo_full_name,
+                    trigger.head_sha,
+                    filtered_count,
+                    filtered_app_ids,
+                )
         workflow_runs = [
             workflow_run
             async for workflow_run in api.get_workflow_runs_for_ref(
@@ -1614,9 +1612,21 @@ class ProjectionEvaluator:
                 f"checks={persisted['check_runs']} "
                 f"workflows={persisted['workflow_runs']} "
                 f"statuses={persisted['commit_statuses']}"
+                + (f" filtered_checks={filtered_count}" if filtered_count > 0 else "")
+            ),
+            metadata=(
+                {"filtered_check_runs": filtered_count, "app_ids": filtered_app_ids}
+                if filtered_count > 0
+                else None
             ),
         )
         return check_rows, workflow_rows, status_rows
+
+    def _excluded_app_ids_for_snapshot(self) -> set[int]:
+        excluded = set(self.config.WEBHOOK_FILTER_APP_IDS or ())
+        if self.config.WEBHOOK_FILTER_SELF_APP_ID:
+            excluded.add(self.config.GITHUB_APP_ID)
+        return excluded
 
     @staticmethod
     def _dt_to_iso(value: datetime | None) -> str | None:
