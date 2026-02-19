@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import threading
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Mapping, Protocol, Sequence
 
 from sanic.log import logger
 from sqlalchemy import (
@@ -275,57 +275,40 @@ class PersistResult:
     pruned_rows: int = 0
 
 
+class WebhookStoreSettings(Protocol):
+    WEBHOOK_DB_PATH: Path
+    WEBHOOK_DB_RETENTION_SECONDS: int
+    WEBHOOK_ACTIVITY_RETENTION_SECONDS: int
+    WEBHOOK_PROJECTION_PRUNE_ENABLED: bool
+    WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS: int
+    WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS: int
+    WEBHOOK_DB_ENABLED: bool
+    WEBHOOK_DB_EVENTS: tuple[str, ...]
+
+
 class WebhookStore:
     def __init__(
         self,
-        db_path: str,
-        retention_seconds: int = 30 * 24 * 60 * 60,
-        activity_retention_seconds: int | None = None,
-        projection_completed_retention_seconds: int | None = None,
-        projection_active_retention_seconds: int | None = None,
-        enabled: bool = True,
-        events: Sequence[str] | None = None,
+        *,
+        settings: WebhookStoreSettings,
         prune_every: int = 500,
     ):
-        self.db_path = Path(db_path)
-        self.retention_seconds = retention_seconds
-        self.activity_retention_seconds = (
-            activity_retention_seconds
-            if activity_retention_seconds is not None
-            else retention_seconds
-        )
-        self.projection_completed_retention_seconds = (
-            projection_completed_retention_seconds
-        )
-        self.projection_active_retention_seconds = projection_active_retention_seconds
-        self.enabled = enabled
-        self.events = {
-            event.strip()
-            for event in (
-                events
-                or (
-                    "check_run",
-                    "check_suite",
-                    "workflow_run",
-                    "status",
-                    "pull_request",
-                )
-            )
-            if event.strip()
-        }
+        self.settings = settings
         self.prune_every = max(1, prune_every)
         self._persisted_since_prune = 0
         self._counter_lock = threading.Lock()
-        self.engine = self._build_engine(self.db_path)
+        self.engine = self._build_engine(self.settings.WEBHOOK_DB_PATH)
 
     def initialize(self) -> None:
-        if not self.enabled:
+        if not self.settings.WEBHOOK_DB_ENABLED:
             return
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings.WEBHOOK_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         metadata.create_all(self.engine)
 
     def should_persist(self, event: str) -> bool:
-        return self.enabled and event in self.events
+        if not self.settings.WEBHOOK_DB_ENABLED:
+            return False
+        return event in self.settings.WEBHOOK_DB_EVENTS
 
     def persist_event(
         self,
@@ -415,16 +398,8 @@ class WebhookStore:
         if self._should_prune():
             pruned_rows = self.prune_old_events()
             self.prune_old_activity_events()
-            if (
-                self.projection_completed_retention_seconds is not None
-                and self.projection_active_retention_seconds is not None
-            ):
-                self.prune_old_projections(
-                    completed_retention_seconds=(
-                        self.projection_completed_retention_seconds
-                    ),
-                    active_retention_seconds=self.projection_active_retention_seconds,
-                )
+            if self.settings.WEBHOOK_PROJECTION_PRUNE_ENABLED:
+                self.prune_old_projections()
 
         return PersistResult(
             inserted=True,
@@ -434,15 +409,11 @@ class WebhookStore:
             pruned_rows=pruned_rows,
         )
 
-    def prune_old_events(self, retention_seconds: int | None = None) -> int:
-        if not self.enabled:
+    def prune_old_events(self) -> int:
+        if not self.settings.WEBHOOK_DB_ENABLED:
             return 0
 
-        retention_seconds = (
-            self.retention_seconds
-            if retention_seconds is None
-            else max(0, retention_seconds)
-        )
+        retention_seconds = max(0, self.settings.WEBHOOK_DB_RETENTION_SECONDS)
         cutoff = (
             datetime.now(timezone.utc) - timedelta(seconds=retention_seconds)
         ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -457,15 +428,11 @@ class WebhookStore:
             webhook_event_pruned_total.inc(count)
         return count
 
-    def prune_old_activity_events(self, retention_seconds: int | None = None) -> int:
-        if not self.enabled:
+    def prune_old_activity_events(self) -> int:
+        if not self.settings.WEBHOOK_DB_ENABLED:
             return 0
 
-        retention_seconds = (
-            self.activity_retention_seconds
-            if retention_seconds is None
-            else max(0, retention_seconds)
-        )
+        retention_seconds = max(0, self.settings.WEBHOOK_ACTIVITY_RETENTION_SECONDS)
         cutoff = (
             datetime.now(timezone.utc) - timedelta(seconds=retention_seconds)
         ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -540,14 +507,16 @@ class WebhookStore:
             "skipped_rows": skipped_rows,
         }
 
-    def prune_old_projections(
-        self, *, completed_retention_seconds: int, active_retention_seconds: int
-    ) -> Dict[str, int]:
-        if not self.enabled:
+    def prune_old_projections(self) -> Dict[str, int]:
+        if not self.settings.WEBHOOK_DB_ENABLED:
             return {}
 
-        completed_retention_seconds = max(0, completed_retention_seconds)
-        active_retention_seconds = max(0, active_retention_seconds)
+        completed_retention_seconds = max(
+            0, self.settings.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS
+        )
+        active_retention_seconds = max(
+            0, self.settings.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS
+        )
         completed_cutoff = (
             datetime.now(timezone.utc) - timedelta(seconds=completed_retention_seconds)
         ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -1136,7 +1105,7 @@ class WebhookStore:
         metadata: Mapping[str, Any] | None = None,
         recorded_at: str | None = None,
     ) -> None:
-        if not self.enabled:
+        if not self.settings.WEBHOOK_DB_ENABLED:
             return
         now = recorded_at or utcnow_iso()
         metadata_payload = (

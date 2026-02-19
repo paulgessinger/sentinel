@@ -31,13 +31,16 @@ logger = logging.getLogger("sentinel")
 # cache = get_cache()
 
 DEFAULT_WEBHOOK_DB_PATH = SETTINGS.WEBHOOK_DB_PATH
-if DEFAULT_WEBHOOK_DB_PATH is None:
-    raise RuntimeError("WEBHOOK_DB_PATH should never be None after settings load")
 
 DEFAULT_WEBHOOK_DB_RETENTION_SECONDS = SETTINGS.WEBHOOK_DB_RETENTION_SECONDS
-if DEFAULT_WEBHOOK_DB_RETENTION_SECONDS is None:
-    raise RuntimeError(
-        "WEBHOOK_DB_RETENTION_SECONDS should never be None after settings load"
+
+
+def _store_settings(path: Path, **updates):
+    return SETTINGS.model_copy(
+        update={
+            "WEBHOOK_DB_PATH": path,
+            **updates,
+        }
     )
 
 
@@ -160,11 +163,11 @@ def pr(
 @app.command("vacuum-webhook-db")
 def vacuum_webhook_db(
     path: Annotated[
-        str,
+        Path,
         typer.Option("--path", help="Path to webhook SQLite database file"),
     ] = DEFAULT_WEBHOOK_DB_PATH,
 ):
-    db_path = Path(path)
+    db_path = path
     if not db_path.exists():
         typer.echo(f"Database does not exist: {db_path}")
         raise typer.Exit(code=1)
@@ -183,7 +186,7 @@ def vacuum_webhook_db(
 @app.command("migrate-webhook-db")
 def migrate_webhook_db(
     path: Annotated[
-        str,
+        Path,
         typer.Option("--path", help="Path to webhook SQLite database file"),
     ] = DEFAULT_WEBHOOK_DB_PATH,
     revision: Annotated[
@@ -203,7 +206,7 @@ def migrate_webhook_db(
 @app.command("prune-webhook-db")
 def prune_webhook_db(
     path: Annotated[
-        str,
+        Path,
         typer.Option("--path", help="Path to webhook SQLite database file"),
     ] = DEFAULT_WEBHOOK_DB_PATH,
     retention_seconds: Annotated[
@@ -214,7 +217,7 @@ def prune_webhook_db(
         ),
     ] = DEFAULT_WEBHOOK_DB_RETENTION_SECONDS,
 ):
-    db_path = Path(path)
+    db_path = path
     if not db_path.exists():
         typer.echo(f"Database does not exist: {db_path}")
         raise typer.Exit(code=1)
@@ -224,12 +227,14 @@ def prune_webhook_db(
         raise typer.Exit(code=1)
 
     store = WebhookStore(
-        db_path=str(db_path),
-        retention_seconds=retention_seconds,
+        settings=_store_settings(
+            db_path,
+            WEBHOOK_DB_RETENTION_SECONDS=retention_seconds,
+        )
     )
 
     try:
-        pruned = store.prune_old_events(retention_seconds=retention_seconds)
+        pruned = store.prune_old_events()
     except sqlite3.Error as exc:
         typer.echo(f"Prune failed for {db_path}: {exc}")
         raise typer.Exit(code=1)
@@ -242,7 +247,7 @@ def prune_webhook_db(
 @app.command("prune-webhook-projections")
 def prune_webhook_projections(
     path: Annotated[
-        str,
+        Path,
         typer.Option("--path", help="Path to webhook SQLite database file"),
     ] = DEFAULT_WEBHOOK_DB_PATH,
     completed_retention_seconds: Annotated[
@@ -260,7 +265,7 @@ def prune_webhook_projections(
         ),
     ] = SETTINGS.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS,
 ):
-    db_path = Path(path)
+    db_path = path
     if not db_path.exists():
         typer.echo(f"Database does not exist: {db_path}")
         raise typer.Exit(code=1)
@@ -274,13 +279,17 @@ def prune_webhook_projections(
         typer.echo(f"Invalid active-retention-seconds: {active_retention_seconds}")
         raise typer.Exit(code=1)
 
-    store = WebhookStore(db_path=str(db_path))
+    store = WebhookStore(
+        settings=_store_settings(
+            db_path,
+            WEBHOOK_PROJECTION_PRUNE_ENABLED=True,
+            WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS=completed_retention_seconds,
+            WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS=active_retention_seconds,
+        )
+    )
 
     try:
-        counts = store.prune_old_projections(
-            completed_retention_seconds=completed_retention_seconds,
-            active_retention_seconds=active_retention_seconds,
-        )
+        counts = store.prune_old_projections()
     except sqlite3.Error as exc:
         typer.echo(f"Projection prune failed for {db_path}: {exc}")
         raise typer.Exit(code=1)
@@ -296,7 +305,7 @@ def prune_webhook_projections(
 @app.command("migrate-webhook-db-zstd")
 def migrate_webhook_db_zstd(
     path: Annotated[
-        str,
+        Path,
         typer.Option("--path", help="Path to webhook SQLite database file"),
     ] = DEFAULT_WEBHOOK_DB_PATH,
     batch_size: Annotated[
@@ -314,7 +323,7 @@ def migrate_webhook_db_zstd(
         ),
     ] = True,
 ):
-    db_path = Path(path)
+    db_path = path
     if not db_path.exists():
         typer.echo(f"Database does not exist: {db_path}")
         raise typer.Exit(code=1)
@@ -332,7 +341,7 @@ def migrate_webhook_db_zstd(
             raise typer.Exit(code=1)
         typer.echo(f"Backup created: {backup_path}")
 
-    store = WebhookStore(db_path=str(db_path))
+    store = WebhookStore(settings=_store_settings(db_path))
     try:
         result = store.migrate_event_payloads_to_zstd(batch_size=batch_size)
     except sqlite3.Error as exc:

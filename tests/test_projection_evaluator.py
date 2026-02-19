@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+from pathlib import Path
 import sqlite3
 
 import pytest
 
+from sentinel.config import SETTINGS
 from sentinel.github.model import (
     ActionsRun,
     App,
@@ -18,6 +20,17 @@ from sentinel.github.model import (
 )
 from sentinel.projection import ProjectionEvaluator, ProjectionTrigger
 from sentinel.storage import WebhookStore
+
+
+def _make_store(db_path, **updates):
+    return WebhookStore(
+        settings=SETTINGS.model_copy(
+            update={
+                "WEBHOOK_DB_PATH": Path(db_path),
+                **updates,
+            }
+        )
+    )
 
 
 @dataclass
@@ -284,7 +297,7 @@ def _make_evaluator(
 
 @pytest.mark.asyncio
 async def test_projection_dry_run_persists_sentinel_row(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
     await _seed(store)
 
@@ -364,7 +377,7 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
 
 @pytest.mark.asyncio
 async def test_projection_second_identical_eval_is_unchanged(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
     await _seed(store)
 
@@ -407,7 +420,7 @@ async def test_projection_second_identical_eval_is_unchanged(tmp_path):
 
 @pytest.mark.asyncio
 async def test_projection_publish_persists_real_id(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
     await _seed(store)
 
@@ -457,7 +470,7 @@ async def test_projection_publish_persists_real_id(tmp_path):
 
 @pytest.mark.asyncio
 async def test_projection_publish_skips_for_draft_pr(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
     store.persist_event(
         delivery_id="pr-1",
@@ -532,7 +545,7 @@ async def test_projection_publish_skips_for_draft_pr(tmp_path):
 
 @pytest.mark.asyncio
 async def test_projection_publish_skips_when_pr_closed_during_evaluation(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
     await _seed(store)
 
@@ -586,7 +599,7 @@ async def test_projection_publish_skips_when_pr_closed_during_evaluation(tmp_pat
 
 @pytest.mark.asyncio
 async def test_force_api_refresh_persists_projection_rows(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
     store.persist_event(
         delivery_id="pr-1",
@@ -636,7 +649,7 @@ async def test_force_api_refresh_persists_projection_rows(tmp_path):
 
 @pytest.mark.asyncio
 async def test_auto_refresh_on_missing_pattern_for_stale_pr(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
     store.persist_event(
         delivery_id="pr-1",
@@ -709,7 +722,7 @@ async def test_auto_refresh_on_missing_pattern_for_stale_pr(tmp_path):
 
 @pytest.mark.asyncio
 async def test_auto_refresh_on_stale_running_check(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
     store.persist_event(
         delivery_id="pr-1",

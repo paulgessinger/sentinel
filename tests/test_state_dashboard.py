@@ -1,9 +1,11 @@
 from types import SimpleNamespace
+from pathlib import Path
 from typing import cast
 
 import pytest
 from sanic import Request, Sanic
 
+from sentinel.config import SETTINGS
 from sentinel.storage import WebhookStore
 from sentinel.state_dashboard import (
     StateUpdateBroadcaster,
@@ -18,6 +20,17 @@ from sentinel.state_dashboard import (
     _status_chip_class,
 )
 from sentinel.web import create_app
+
+
+def _make_store(db_path, **updates):
+    return WebhookStore(
+        settings=SETTINGS.model_copy(
+            update={
+                "WEBHOOK_DB_PATH": Path(db_path),
+                **updates,
+            }
+        )
+    )
 
 
 def test_state_query_params_parses_and_clamps():
@@ -69,7 +82,7 @@ def test_state_query_params_include_closed_uses_all_values_when_duplicated():
 
 
 def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
 
     store.persist_event(
@@ -116,12 +129,14 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
         last_delivery_id="d1",
     )
 
+    settings = SimpleNamespace(
+        GITHUB_APP_ID=2877723,
+        PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+        PROJECTION_PUBLISH_ENABLED=True,
+    )
     app = SimpleNamespace(
-        config=SimpleNamespace(
-            GITHUB_APP_ID=2877723,
-            PROJECTION_CHECK_RUN_NAME="merge-sentinel",
-        ),
-        ctx=SimpleNamespace(webhook_store=store),
+        config=settings,
+        ctx=SimpleNamespace(webhook_store=store, settings=settings),
     )
 
     context = _state_dashboard_context(
@@ -155,7 +170,7 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
 
 
 def test_state_dashboard_context_can_exclude_closed_prs(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
 
     open_payload = {
@@ -200,12 +215,14 @@ def test_state_dashboard_context_can_exclude_closed_prs(tmp_path):
         payload_json=store.payload_to_json(closed_payload),
     )
 
+    settings = SimpleNamespace(
+        GITHUB_APP_ID=2877723,
+        PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+        PROJECTION_PUBLISH_ENABLED=True,
+    )
     app = SimpleNamespace(
-        config=SimpleNamespace(
-            GITHUB_APP_ID=2877723,
-            PROJECTION_CHECK_RUN_NAME="merge-sentinel",
-        ),
-        ctx=SimpleNamespace(webhook_store=store),
+        config=settings,
+        ctx=SimpleNamespace(webhook_store=store, settings=settings),
     )
 
     all_rows_context = _state_dashboard_context(
@@ -290,7 +307,7 @@ def test_chip_classes_for_status_and_conclusion():
 
 
 def test_state_pr_detail_context_renders_output_and_events(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
 
     pr_payload = {
@@ -379,12 +396,14 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
         last_delivery_id="d1",
     )
 
+    settings = SimpleNamespace(
+        GITHUB_APP_ID=2877723,
+        PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+        PROJECTION_PUBLISH_ENABLED=True,
+    )
     app = SimpleNamespace(
-        config=SimpleNamespace(
-            GITHUB_APP_ID=2877723,
-            PROJECTION_CHECK_RUN_NAME="merge-sentinel",
-        ),
-        ctx=SimpleNamespace(webhook_store=store),
+        config=settings,
+        ctx=SimpleNamespace(webhook_store=store, settings=settings),
     )
 
     context = _state_pr_detail_context(cast(Sanic, app), repo_id=10, pr_number=42)
@@ -408,7 +427,7 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
 
 
 def test_state_event_detail_context_renders_payload_and_back_link(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
 
     payload = {
@@ -431,12 +450,14 @@ def test_state_event_detail_context_renders_payload_and_back_link(tmp_path):
         payload_json=store.payload_to_json(payload),
     )
 
+    settings = SimpleNamespace(
+        GITHUB_APP_ID=2877723,
+        PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+        PROJECTION_PUBLISH_ENABLED=True,
+    )
     app = SimpleNamespace(
-        config=SimpleNamespace(
-            GITHUB_APP_ID=2877723,
-            PROJECTION_CHECK_RUN_NAME="merge-sentinel",
-        ),
-        ctx=SimpleNamespace(webhook_store=store),
+        config=settings,
+        ctx=SimpleNamespace(webhook_store=store, settings=settings),
     )
 
     context = _state_event_detail_context(

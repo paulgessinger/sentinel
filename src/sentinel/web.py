@@ -100,23 +100,21 @@ def event_source_app_id(event: sansio.Event) -> int | None:
 
 
 def excluded_app_ids_for_event(app: Sanic) -> set[int]:
-    cfg = getattr(app, "config", None)
-    excluded = set(getattr(cfg, "WEBHOOK_FILTER_APP_IDS", ()) or ())
-    if getattr(cfg, "WEBHOOK_FILTER_SELF_APP_ID", True):
-        app_id = getattr(cfg, "GITHUB_APP_ID", None)
+    settings = app.ctx.settings
+    excluded = set(settings.WEBHOOK_FILTER_APP_IDS or ())
+    if settings.WEBHOOK_FILTER_SELF_APP_ID:
+        app_id = settings.GITHUB_APP_ID
         if app_id is not None:
             excluded.add(app_id)
     return excluded
 
 
 def webhook_dispatch_enabled(app: Sanic) -> bool:
-    cfg = getattr(app, "config", None)
-    return bool(getattr(cfg, "WEBHOOK_DISPATCH_ENABLED", False))
+    return bool(app.ctx.settings.WEBHOOK_DISPATCH_ENABLED)
 
 
 def projection_eval_enabled(app: Sanic) -> bool:
-    cfg = getattr(app, "config", None)
-    return bool(getattr(cfg, "PROJECTION_EVAL_ENABLED", False))
+    return bool(app.ctx.settings.PROJECTION_EVAL_ENABLED)
 
 
 def is_projection_manual_refresh_requested(app: Sanic, event: sansio.Event) -> bool:
@@ -126,14 +124,10 @@ def is_projection_manual_refresh_requested(app: Sanic, event: sansio.Event) -> b
     if payload.get("action") != "requested_action":
         return False
 
-    cfg = getattr(app, "config", None)
-    action_identifier = getattr(
-        cfg,
-        "PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER",
-        "refresh_from_api",
-    )
-    check_run_name = getattr(cfg, "PROJECTION_CHECK_RUN_NAME", "merge-sentinel")
-    github_app_id = getattr(cfg, "GITHUB_APP_ID", None)
+    settings = app.ctx.settings
+    action_identifier = settings.PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER
+    check_run_name = settings.PROJECTION_CHECK_RUN_NAME
+    github_app_id = settings.GITHUB_APP_ID
 
     check_run = payload.get("check_run") or {}
     requested_action = payload.get("requested_action") or {}
@@ -250,7 +244,8 @@ async def process_github_event(
         )
         return
 
-    name_filter = getattr(getattr(app, "config", None), "CHECK_RUN_NAME_FILTER", None)
+    settings = app.ctx.settings
+    name_filter = settings.CHECK_RUN_NAME_FILTER
 
     if (not manual_refresh_requested) and should_skip_event_by_name_filter(
         event, name_filter
@@ -265,7 +260,7 @@ async def process_github_event(
         return
 
     persist_result = None
-    if app.ctx.webhook_store.enabled:
+    if app.ctx.settings.WEBHOOK_DB_ENABLED:
         try:
             persist_result = persist_webhook_event(
                 app, event, delivery_id, payload_json
@@ -305,15 +300,11 @@ async def process_github_event(
         trigger = projection_trigger_from_event(
             event,
             delivery_id,
-            projection_check_run_name=getattr(
-                app.config, "PROJECTION_CHECK_RUN_NAME", "merge-sentinel"
+            projection_check_run_name=settings.PROJECTION_CHECK_RUN_NAME,
+            manual_refresh_action_identifier=(
+                settings.PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER
             ),
-            manual_refresh_action_identifier=getattr(
-                app.config,
-                "PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER",
-                "refresh_from_api",
-            ),
-            projection_app_id=getattr(app.config, "GITHUB_APP_ID", None),
+            projection_app_id=settings.GITHUB_APP_ID,
         )
         if trigger is not None:
             try:
@@ -377,7 +368,7 @@ async def process_github_event_background(
 def create_app():
 
     app = Sanic("sentinel")
-    app.update_config(SETTINGS.model_dump())
+    app.ctx.settings = SETTINGS
     app.config.TEMPLATING_PATH_TO_TEMPLATES = Path(__file__).parent / "templates"
     app.static("/static", Path(__file__).parent / "static")
 
@@ -393,29 +384,14 @@ def create_app():
     app.ctx.github_router = create_router()
     app.ctx.projection_scheduler = None
     app.ctx.state_broadcaster = StateUpdateBroadcaster()
-    app.ctx.webhook_store = WebhookStore(
-        db_path=app.config.WEBHOOK_DB_PATH,
-        retention_seconds=app.config.WEBHOOK_DB_RETENTION_SECONDS,
-        activity_retention_seconds=app.config.WEBHOOK_ACTIVITY_RETENTION_SECONDS,
-        projection_completed_retention_seconds=(
-            app.config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS
-            if app.config.WEBHOOK_PROJECTION_PRUNE_ENABLED
-            else None
-        ),
-        projection_active_retention_seconds=(
-            app.config.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS
-            if app.config.WEBHOOK_PROJECTION_PRUNE_ENABLED
-            else None
-        ),
-        enabled=app.config.WEBHOOK_DB_ENABLED,
-        events=app.config.WEBHOOK_DB_EVENTS,
-    )
+    app.ctx.webhook_store = WebhookStore(settings=app.ctx.settings)
 
     # app.register_middleware(make_asgi_app())
 
     @app.listener("before_server_start")
     async def init(app):
-        configure_webhook_db_size_metric(app.config.WEBHOOK_DB_PATH)
+        settings = app.ctx.settings
+        configure_webhook_db_size_metric(settings.WEBHOOK_DB_PATH)
 
         if webhook_dispatch_enabled(app) or projection_eval_enabled(app):
             logger.debug("Creating aiohttp session")
@@ -424,27 +400,24 @@ def create_app():
             if webhook_dispatch_enabled(app):
                 gh = gh_aiohttp.GitHubAPI(app.ctx.aiohttp_session, __name__)
                 jwt = get_jwt(
-                    app_id=str(app.config.GITHUB_APP_ID),
-                    private_key=app.config.GITHUB_PRIVATE_KEY,
+                    app_id=str(settings.GITHUB_APP_ID),
+                    private_key=settings.GITHUB_PRIVATE_KEY,
                 )
                 app.ctx.app_info = await gh.getitem("/app", jwt=jwt)
                 record_api_call(endpoint="/app")
 
-        if app.ctx.webhook_store.enabled:
+        if app.ctx.settings.WEBHOOK_DB_ENABLED:
             logger.info(
                 "Running webhook DB migrations to head for %s",
-                app.config.WEBHOOK_DB_PATH,
+                settings.WEBHOOK_DB_PATH,
             )
-            run_webhook_db_migrations(app.config.WEBHOOK_DB_PATH, revision="head")
+            run_webhook_db_migrations(settings.WEBHOOK_DB_PATH, revision="head")
 
         app.ctx.webhook_store.initialize()
         app.ctx.webhook_store.prune_old_events()
         app.ctx.webhook_store.prune_old_activity_events()
-        if app.config.WEBHOOK_PROJECTION_PRUNE_ENABLED:
-            app.ctx.webhook_store.prune_old_projections(
-                completed_retention_seconds=app.config.WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS,
-                active_retention_seconds=app.config.WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS,
-            )
+        if settings.WEBHOOK_PROJECTION_PRUNE_ENABLED:
+            app.ctx.webhook_store.prune_old_projections()
 
         if projection_eval_enabled(app):
 
@@ -454,7 +427,7 @@ def create_app():
 
             evaluator = ProjectionEvaluator(
                 store=app.ctx.webhook_store,
-                config=app.config,
+                config=settings,
                 api_factory=projection_api_factory,
             )
 
@@ -478,9 +451,9 @@ def create_app():
                     )
 
             app.ctx.projection_scheduler = ProjectionStatusScheduler(
-                debounce_seconds=app.config.PROJECTION_DEBOUNCE_SECONDS,
+                debounce_seconds=settings.PROJECTION_DEBOUNCE_SECONDS,
                 pull_request_synchronize_delay_seconds=(
-                    app.config.PROJECTION_PULL_REQUEST_SYNCHRONIZE_DELAY_SECONDS
+                    settings.PROJECTION_PULL_REQUEST_SYNCHRONIZE_DELAY_SECONDS
                 ),
                 handler=projection_handler,
             )
@@ -546,9 +519,10 @@ def create_app():
     @app.route("/webhook", methods=["POST"])
     async def github(request):
         logger.debug("Webhook received")
+        settings = app.ctx.settings
 
         event = sansio.Event.from_http(
-            request.headers, request.body, secret=app.config.GITHUB_WEBHOOK_SECRET
+            request.headers, request.body, secret=settings.GITHUB_WEBHOOK_SECRET
         )
         delivery_id = request.headers.get("X-GitHub-Delivery", "")
         payload_json = request.body.decode("utf-8", errors="replace")

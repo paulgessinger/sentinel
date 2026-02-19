@@ -140,7 +140,7 @@ def sqlite_db_total_size_bytes(db_path: Path) -> float:
     return float(total_size)
 
 
-def configure_webhook_db_size_metric(db_path: str) -> None:
+def configure_webhook_db_size_metric(db_path: str | Path) -> None:
     db_path_value = Path(db_path)
     webhook_db_size_bytes.set_function(
         lambda: sqlite_db_total_size_bytes(db_path_value)

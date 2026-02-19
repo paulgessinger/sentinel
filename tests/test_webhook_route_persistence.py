@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from pathlib import Path
 import sqlite3
 from typing import cast
 
@@ -6,6 +7,7 @@ import pytest
 from gidgethub import sansio
 from sanic import Sanic
 
+from sentinel.config import SETTINGS
 from sentinel.metric import error_counter
 from sentinel.storage import WebhookStore
 from sentinel.web import process_github_event
@@ -20,6 +22,8 @@ class _RecordingBroadcaster:
 
 
 async def _process_github_event(app, event, request):
+    if getattr(app.ctx, "settings", None) is None:
+        app.ctx.settings = app.config
     await process_github_event(
         cast(Sanic, app),
         cast(sansio.Event, event),
@@ -78,18 +82,34 @@ def make_requested_action_event(
 def make_config(**overrides):
     data = {
         "WEBHOOK_DISPATCH_ENABLED": False,
+        "WEBHOOK_DB_ENABLED": True,
         "PROJECTION_EVAL_ENABLED": False,
         "PROJECTION_CHECK_RUN_NAME": "merge-sentinel",
         "PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER": "refresh_from_api",
+        "CHECK_RUN_NAME_FILTER": None,
+        "GITHUB_APP_ID": 2877723,
+        "WEBHOOK_FILTER_SELF_APP_ID": True,
+        "WEBHOOK_FILTER_APP_IDS": (),
     }
     data.update(overrides)
     return SimpleNamespace(**data)
 
 
+def _make_store(db_path, **updates):
+    return WebhookStore(
+        settings=SETTINGS.model_copy(
+            update={
+                "WEBHOOK_DB_PATH": Path(db_path),
+                **updates,
+            }
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_supported_event_persists_without_dispatch(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     broadcaster = _RecordingBroadcaster()
@@ -120,7 +140,7 @@ async def test_supported_event_persists_without_dispatch(tmp_path):
 @pytest.mark.asyncio
 async def test_supported_event_enqueues_projection_eval_when_enabled(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     enqueued = []
@@ -152,7 +172,7 @@ async def test_supported_event_enqueues_projection_eval_when_enabled(tmp_path):
 
 @pytest.mark.asyncio
 async def test_persistence_exception_is_tolerated(tmp_path, monkeypatch):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
 
     app = SimpleNamespace(
@@ -181,7 +201,7 @@ async def test_persistence_exception_is_tolerated(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_unsupported_event_does_not_project(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     app = SimpleNamespace(
@@ -203,7 +223,7 @@ async def test_unsupported_event_does_not_project(tmp_path):
 
 @pytest.mark.asyncio
 async def test_dispatch_runs_when_enabled(tmp_path, monkeypatch):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
 
     dispatch_called = {"value": False}
@@ -237,7 +257,7 @@ async def test_dispatch_runs_when_enabled(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_check_run_name_filter_skips_persistence(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     app = SimpleNamespace(
@@ -261,7 +281,7 @@ async def test_check_run_name_filter_skips_persistence(tmp_path):
 
 @pytest.mark.asyncio
 async def test_check_run_name_filter_skips_dispatch_when_enabled(tmp_path, monkeypatch):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
 
     dispatch_called = {"value": False}
@@ -298,7 +318,7 @@ async def test_check_run_name_filter_skips_dispatch_when_enabled(tmp_path, monke
 @pytest.mark.asyncio
 async def test_self_app_id_filter_skips_persistence(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     app = SimpleNamespace(
@@ -325,7 +345,7 @@ async def test_self_app_id_filter_skips_persistence(tmp_path):
 @pytest.mark.asyncio
 async def test_configured_app_id_filter_skips_persistence(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     app = SimpleNamespace(
@@ -352,7 +372,7 @@ async def test_configured_app_id_filter_skips_persistence(tmp_path):
 @pytest.mark.asyncio
 async def test_requested_action_from_self_app_enqueues_force_api_refresh(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     enqueued = []

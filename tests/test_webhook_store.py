@@ -1,7 +1,20 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import sqlite3
 
+from sentinel.config import SETTINGS
 from sentinel.storage import WebhookStore
+
+
+def _make_store(db_path, **updates):
+    return WebhookStore(
+        settings=SETTINGS.model_copy(
+            update={
+                "WEBHOOK_DB_PATH": Path(db_path),
+                **updates,
+            }
+        )
+    )
 
 
 def make_check_run_payload(conclusion: str = "success") -> dict:
@@ -110,7 +123,7 @@ def make_pull_request_payload(
 
 def test_initialize_schema(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     with sqlite3.connect(str(db_path)) as conn:
@@ -133,7 +146,7 @@ def test_initialize_schema(tmp_path):
 
 def test_duplicate_delivery_id_is_ignored(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
     payload = make_check_run_payload()
     payload_json = store.payload_to_json(payload)
@@ -161,7 +174,7 @@ def test_duplicate_delivery_id_is_ignored(tmp_path):
 
 def test_payload_json_is_stored_compressed(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
     payload = make_check_run_payload()
     payload_json = store.payload_to_json(payload)
@@ -185,7 +198,7 @@ def test_payload_json_is_stored_compressed(tmp_path):
 
 def test_migrate_payload_json_to_zstd_converts_legacy_plaintext_rows(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     modern_payload = make_check_run_payload()
@@ -228,7 +241,7 @@ def test_migrate_payload_json_to_zstd_converts_legacy_plaintext_rows(tmp_path):
 
 def test_check_run_projection_upserts(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     store.persist_event(
@@ -259,7 +272,7 @@ def test_check_run_projection_upserts(tmp_path):
 
 def test_status_projection_updates_state(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     store.persist_event(
@@ -290,7 +303,7 @@ def test_status_projection_updates_state(tmp_path):
 
 def test_pull_request_projection_updates_head_sha(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     store.persist_event(
@@ -330,7 +343,7 @@ def test_pull_request_projection_updates_head_sha(tmp_path):
 
 def test_check_suite_projection_upserts(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     store.persist_event(
@@ -361,7 +374,7 @@ def test_check_suite_projection_upserts(tmp_path):
 
 def test_workflow_run_projection_upserts(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     store.persist_event(
@@ -393,7 +406,7 @@ def test_workflow_run_projection_upserts(tmp_path):
 def test_retention_prunes_old_events_only(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
     retention_seconds = 60 * 60
-    store = WebhookStore(str(db_path), retention_seconds=retention_seconds)
+    store = _make_store(db_path, WEBHOOK_DB_RETENTION_SECONDS=retention_seconds)
     store.initialize()
 
     store.persist_event(
@@ -438,7 +451,7 @@ def test_retention_prunes_old_events_only(tmp_path):
 
 def test_prune_old_projections_uses_completed_and_active_windows(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     now = datetime.now(timezone.utc)
@@ -611,10 +624,13 @@ def test_prune_old_projections_uses_completed_and_active_windows(tmp_path):
         )
         conn.commit()
 
-    counts = store.prune_old_projections(
-        completed_retention_seconds=3600,
-        active_retention_seconds=7200,
+    store = _make_store(
+        db_path,
+        WEBHOOK_PROJECTION_PRUNE_ENABLED=True,
+        WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS=3600,
+        WEBHOOK_PROJECTION_ACTIVE_RETENTION_SECONDS=7200,
     )
+    counts = store.prune_old_projections()
 
     assert counts["check_runs_current:completed"] == 1
     assert counts["check_runs_current:active"] == 1
@@ -639,7 +655,7 @@ def test_prune_old_projections_uses_completed_and_active_windows(tmp_path):
 
 def test_dashboard_rows_join_pagination_and_filter(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     store.persist_event(
@@ -775,7 +791,7 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
 
 def test_dashboard_rows_include_pr_merged_flag_from_last_pr_event(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     merged_payload = make_pull_request_payload(
@@ -825,7 +841,7 @@ def test_dashboard_rows_include_pr_merged_flag_from_last_pr_event(tmp_path):
 
 def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     head_sha = "c" * 40
@@ -913,7 +929,7 @@ def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):
 
 def test_get_webhook_event_returns_decoded_payload(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     payload = make_check_run_payload(conclusion="success")
@@ -935,7 +951,7 @@ def test_get_webhook_event_returns_decoded_payload(tmp_path):
 
 def test_pr_related_events_include_projection_activity(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path))
+    store = _make_store(db_path)
     store.initialize()
 
     head_sha = "a" * 40
@@ -979,7 +995,7 @@ def test_pr_related_events_include_projection_activity(tmp_path):
 
 def test_prune_old_activity_events(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
-    store = WebhookStore(str(db_path), activity_retention_seconds=60)
+    store = _make_store(db_path, WEBHOOK_ACTIVITY_RETENTION_SECONDS=60)
     store.initialize()
     store.record_projection_activity_event(
         repo_id=103,
@@ -1005,7 +1021,11 @@ def test_prune_old_activity_events(tmp_path):
         recorded_at=old_recorded_at,
     )
 
-    pruned = store.prune_old_activity_events(retention_seconds=300)
+    store = _make_store(
+        db_path,
+        WEBHOOK_ACTIVITY_RETENTION_SECONDS=300,
+    )
+    pruned = store.prune_old_activity_events()
     assert pruned == 1
 
     with sqlite3.connect(str(db_path)) as conn:

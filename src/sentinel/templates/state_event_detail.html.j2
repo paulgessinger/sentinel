@@ -8,7 +8,7 @@
 </head>
 <body>
 <main class="state-dashboard pr-detail">
-    {% if not app.config.PROJECTION_PUBLISH_ENABLED %}
+    {% if not projection_publish_enabled %}
     <section class="mode-indicator mode-indicator-dry-run">
         Dry run mode active: evaluation runs, GitHub publish is disabled.
     </section>

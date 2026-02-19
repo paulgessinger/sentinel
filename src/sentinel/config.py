@@ -66,12 +66,12 @@ class Settings(BaseSettings):
     # Enable/disable webhook SQLite persistence and projections.
     WEBHOOK_DB_ENABLED: bool = True
     # SQLite file path for webhook event log + projection tables.
-    WEBHOOK_DB_PATH: str | None = None
+    WEBHOOK_DB_PATH: Path
     # Event retention in seconds (preferred), with days fallback for compatibility.
-    WEBHOOK_DB_RETENTION_SECONDS: int | None = None
+    WEBHOOK_DB_RETENTION_SECONDS: int
     WEBHOOK_DB_RETENTION_DAYS: float = 30
     # Retention window for internal projection activity events shown in PR detail logs.
-    WEBHOOK_ACTIVITY_RETENTION_SECONDS: int | None = None
+    WEBHOOK_ACTIVITY_RETENTION_SECONDS: int
     # Event types that should be persisted/projected into SQLite.
     WEBHOOK_DB_EVENTS: Annotated[tuple[str, ...], NoDecode] = (
         "check_run",
@@ -185,28 +185,29 @@ class Settings(BaseSettings):
             return tuple(int(part) for part in value)
         return ()
 
-    @model_validator(mode="after")
-    def _derive_paths_and_retention(self) -> Settings:
-        if not self.WEBHOOK_DB_PATH:
-            self.WEBHOOK_DB_PATH = str(Path(self.DISKCACHE_DIR) / "webhooks.sqlite3")
-        if self.WEBHOOK_DB_RETENTION_SECONDS is None:
-            self.WEBHOOK_DB_RETENTION_SECONDS = int(
-                float(self.WEBHOOK_DB_RETENTION_DAYS) * 24 * 60 * 60
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_paths_and_retention(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+
+        data = dict(values)
+        if not data.get("WEBHOOK_DB_PATH"):
+            diskcache_dir = data.get("DISKCACHE_DIR")
+            if diskcache_dir:
+                data["WEBHOOK_DB_PATH"] = Path(str(diskcache_dir)) / "webhooks.sqlite3"
+
+        if data.get("WEBHOOK_DB_RETENTION_SECONDS") in (None, ""):
+            data["WEBHOOK_DB_RETENTION_SECONDS"] = int(
+                float(data.get("WEBHOOK_DB_RETENTION_DAYS", 30)) * 24 * 60 * 60
             )
-        if self.WEBHOOK_ACTIVITY_RETENTION_SECONDS is None:
-            self.WEBHOOK_ACTIVITY_RETENTION_SECONDS = self.WEBHOOK_DB_RETENTION_SECONDS
-        return self
+
+        if data.get("WEBHOOK_ACTIVITY_RETENTION_SECONDS") in (None, ""):
+            data["WEBHOOK_ACTIVITY_RETENTION_SECONDS"] = data.get(
+                "WEBHOOK_DB_RETENTION_SECONDS"
+            )
+
+        return data
 
 
 SETTINGS = Settings()  # ty: ignore[missing-argument]
-
-if SETTINGS.WEBHOOK_DB_PATH is None:
-    raise RuntimeError("WEBHOOK_DB_PATH should never be None after settings load")
-if SETTINGS.WEBHOOK_DB_RETENTION_SECONDS is None:
-    raise RuntimeError(
-        "WEBHOOK_DB_RETENTION_SECONDS should never be None after settings load"
-    )
-if SETTINGS.WEBHOOK_ACTIVITY_RETENTION_SECONDS is None:
-    raise RuntimeError(
-        "WEBHOOK_ACTIVITY_RETENTION_SECONDS should never be None after settings load"
-    )

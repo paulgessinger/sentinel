@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
+from sentinel.config import SETTINGS
 from sentinel.github.model import (
     ActionsRun,
     App,
@@ -10,6 +12,17 @@ from sentinel.github.model import (
 )
 from sentinel.storage import WebhookStore
 from sentinel.storage.types import CheckRunRow, CommitStatusRow, WorkflowRunRow
+
+
+def _make_store(db_path, **updates):
+    return WebhookStore(
+        settings=SETTINGS.model_copy(
+            update={
+                "WEBHOOK_DB_PATH": Path(db_path),
+                **updates,
+            }
+        )
+    )
 
 
 def test_check_run_row_from_github_check_run_maps_expected_fields():
@@ -100,7 +113,7 @@ def test_commit_status_row_from_github_commit_status_maps_expected_fields():
 
 
 def test_upsert_head_snapshot_from_api_prefers_row_head_sha(tmp_path):
-    store = WebhookStore(str(tmp_path / "webhooks.sqlite3"))
+    store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()
 
     head_sha = "d" * 40

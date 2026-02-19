@@ -175,6 +175,7 @@ def _state_dashboard_context(
     repo_filter: str | None,
     include_closed: bool,
 ) -> Dict[str, Any]:
+    settings = app.ctx.settings
     total = app.ctx.webhook_store.count_pr_dashboard_rows(
         repo_full_name=repo_filter,
         include_closed=include_closed,
@@ -183,8 +184,8 @@ def _state_dashboard_context(
     page = min(page, total_pages)
 
     rows = app.ctx.webhook_store.list_pr_dashboard_rows(
-        app_id=app.config.GITHUB_APP_ID,
-        check_name=app.config.PROJECTION_CHECK_RUN_NAME,
+        app_id=settings.GITHUB_APP_ID,
+        check_name=settings.PROJECTION_CHECK_RUN_NAME,
         page=page,
         page_size=page_size,
         repo_full_name=repo_filter,
@@ -398,9 +399,10 @@ def _state_pr_detail_context(
     repo_id: int,
     pr_number: int,
 ) -> Dict[str, Any] | None:
+    settings = app.ctx.settings
     row = app.ctx.webhook_store.get_pr_dashboard_row(
-        app_id=app.config.GITHUB_APP_ID,
-        check_name=app.config.PROJECTION_CHECK_RUN_NAME,
+        app_id=settings.GITHUB_APP_ID,
+        check_name=settings.PROJECTION_CHECK_RUN_NAME,
         repo_id=repo_id,
         pr_number=pr_number,
     )
@@ -491,8 +493,10 @@ def register_state_routes(app: Sanic) -> None:
     @app.ext.template("state.html.j2")
     async def state(_request):
         page, page_size, repo_filter, include_closed = _state_query_params(_request)
+        settings = app.ctx.settings
         return {
             "app": app,
+            "projection_publish_enabled": settings.PROJECTION_PUBLISH_ENABLED,
             **_state_dashboard_context(
                 app,
                 page=page,
@@ -506,8 +510,10 @@ def register_state_routes(app: Sanic) -> None:
     @app.ext.template("state_table.html.j2")
     async def state_table(_request):
         page, page_size, repo_filter, include_closed = _state_query_params(_request)
+        settings = app.ctx.settings
         return {
             "app": app,
+            "projection_publish_enabled": settings.PROJECTION_PUBLISH_ENABLED,
             **_state_dashboard_context(
                 app,
                 page=page,
@@ -523,8 +529,10 @@ def register_state_routes(app: Sanic) -> None:
         context = _state_pr_detail_context(app, repo_id=repo_id, pr_number=pr_number)
         if context is None:
             raise NotFound(f"PR not found: repo_id={repo_id} pr_number={pr_number}")
+        settings = app.ctx.settings
         return {
             "app": app,
+            "projection_publish_enabled": settings.PROJECTION_PUBLISH_ENABLED,
             **context,
         }
 
@@ -534,8 +542,10 @@ def register_state_routes(app: Sanic) -> None:
         context = _state_pr_detail_context(app, repo_id=repo_id, pr_number=pr_number)
         if context is None:
             raise NotFound(f"PR not found: repo_id={repo_id} pr_number={pr_number}")
+        settings = app.ctx.settings
         return {
             "app": app,
+            "projection_publish_enabled": settings.PROJECTION_PUBLISH_ENABLED,
             **context,
         }
 
@@ -552,8 +562,10 @@ def register_state_routes(app: Sanic) -> None:
         )
         if context is None:
             raise NotFound(f"Webhook event not found: delivery_id={delivery_id}")
+        settings = app.ctx.settings
         return {
             "app": app,
+            "projection_publish_enabled": settings.PROJECTION_PUBLISH_ENABLED,
             **context,
         }
 
