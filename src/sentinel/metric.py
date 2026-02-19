@@ -52,6 +52,12 @@ view_response_latency_seconds = Histogram(
     labelnames=["path", "method", "status"],
 )
 
+webhook_processing_seconds = Histogram(
+    "sentinel_webhook_processing_seconds",
+    "Background webhook processing duration in seconds",
+    labelnames=["event", "result"],
+)
+
 check_run_post = Counter(
     "sentinel_check_run_post",
     "Number of check run update posts",
@@ -161,6 +167,14 @@ def observe_view_response_latency(
         method=method,
         status=str(status),
     ).observe(seconds)
+
+
+def observe_webhook_processing_latency(
+    *, event: str, result: str, seconds: float
+) -> None:
+    if seconds < 0:
+        return
+    webhook_processing_seconds.labels(event=event, result=result).observe(seconds)
 
 
 def _normalize_api_endpoint(endpoint: str) -> str:

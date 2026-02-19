@@ -30,6 +30,7 @@ from sentinel.metric import (
     error_counter,
     record_api_call,
     observe_view_response_latency,
+    observe_webhook_processing_latency,
     configure_webhook_db_size_metric,
 )
 from sentinel.projection import (
@@ -353,14 +354,23 @@ async def process_github_event(
 async def process_github_event_background(
     app: Sanic, event: sansio.Event, delivery_id: str, payload_json: str
 ) -> None:
+    started_at = time.perf_counter()
+    result = "ok"
     try:
         await process_github_event(app, event, delivery_id, payload_json)
     except Exception:  # noqa: BLE001
+        result = "error"
         error_counter.labels(context="event_background").inc()
         logger.error(
             "Unhandled exception in background webhook processing for event %s",
             event.event,
             exc_info=True,
+        )
+    finally:
+        observe_webhook_processing_latency(
+            event=event.event,
+            result=result,
+            seconds=time.perf_counter() - started_at,
         )
 
 
@@ -510,17 +520,26 @@ def create_app():
             return
         if request.path == "/metrics":
             return
+        elapsed_seconds = time.perf_counter() - float(started_at)
+        route = getattr(request, "route", None)
+        path_label = route.path if route is not None else request.path
+        if request.path == "/webhook":
+            observe_view_response_latency(
+                path=str(path_label),
+                method=request.method,
+                status=getattr(response, "status", 0),
+                seconds=elapsed_seconds,
+            )
+            return
         content_type = (getattr(response, "content_type", None) or "").lower()
         if not content_type.startswith("text/html"):
             return
 
-        route = getattr(request, "route", None)
-        path_label = route.path if route is not None else request.path
         observe_view_response_latency(
             path=str(path_label),
             method=request.method,
             status=getattr(response, "status", 0),
-            seconds=time.perf_counter() - float(started_at),
+            seconds=elapsed_seconds,
         )
 
     @app.get("/")

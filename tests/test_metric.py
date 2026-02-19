@@ -6,7 +6,9 @@ from sentinel.metric import (
     record_api_call,
     sqlite_db_total_size_bytes,
     view_response_latency_seconds,
+    webhook_processing_seconds,
     observe_view_response_latency,
+    observe_webhook_processing_latency,
 )
 
 
@@ -55,6 +57,21 @@ def test_observe_view_response_latency_tracks_path_method_status():
         method=labels["method"],
         status=int(labels["status"]),
         seconds=0.25,
+    )
+    after_sum = metric._sum.get()
+    after_bucket_total = sum(bucket.get() for bucket in metric._buckets)
+    assert after_sum > before_sum
+    assert after_bucket_total == before_bucket_total + 1
+
+
+def test_observe_webhook_processing_latency_tracks_event_and_result():
+    metric = webhook_processing_seconds.labels(event="check_run", result="ok")
+    before_sum = metric._sum.get()
+    before_bucket_total = sum(bucket.get() for bucket in metric._buckets)
+    observe_webhook_processing_latency(
+        event="check_run",
+        result="ok",
+        seconds=0.1,
     )
     after_sum = metric._sum.get()
     after_bucket_total = sum(bucket.get() for bucket in metric._buckets)
