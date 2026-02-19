@@ -1,7 +1,15 @@
 {% extends "base.html.j2" %}
 {% block title %}Sentinel State Dashboard{% endblock %}
+{% block head_extra %}
+<script src="{{ app.url_for('static', filename='htmx.js') }}"></script>
+<script src="{{ app.url_for('static', filename='htmx-ext-sse.js') }}"></script>
+{% endblock %}
 {% block body %}
-<main id="state-dashboard" class="state-dashboard">
+{% set table_query = "?page=" ~ page ~ "&page_size=" ~ page_size ~ "&include_closed=" ~ (1 if include_closed else 0) %}
+{% if repo_filter %}
+{% set table_query = table_query ~ "&repo=" ~ repo_filter %}
+{% endif %}
+<main id="state-dashboard" class="state-dashboard" hx-ext="sse" sse-connect="/state/stream">
     {% if not projection_publish_enabled %}
     <section class="mode-indicator mode-indicator-dry-run">
         Dry run mode active: evaluation runs, GitHub publish is disabled.
@@ -34,6 +42,14 @@
         <button type="submit">Apply</button>
     </form>
 
+    <div
+        id="state-table-refresh"
+        hx-get="/state/table{{ table_query }}"
+        hx-trigger="sse:state_update throttle:500ms, refresh"
+        hx-target="#state-table-container"
+        hx-swap="innerHTML"
+    ></div>
+
     <section id="state-table-container">
         {% include "state_table.html.j2" %}
     </section>
@@ -43,11 +59,9 @@
 <script>
 (() => {
     const tableContainer = document.getElementById("state-table-container");
-    const query = window.location.search || "";
-    const streamUrl = `/state/stream${query}`;
-    let refreshScheduled = false;
-    let stream = null;
+    const refreshTrigger = document.getElementById("state-table-refresh");
     let relativeTimesTimer = null;
+    let previousSignatures = new Map();
 
     const captureRowSignatures = (root) => {
         const signatures = new Map();
@@ -135,72 +149,41 @@
         }, nextDelayMs);
     };
 
-    const refreshTable = async () => {
-        try {
-            const previousSignatures = captureRowSignatures(tableContainer);
-            const response = await fetch(`/state/table${query}`, { credentials: "same-origin" });
-            if (!response.ok) {
-                return;
-            }
-            const nextMarkup = await response.text();
-            const nextContainer = document.createElement("div");
-            nextContainer.innerHTML = nextMarkup;
-            nextContainer.querySelectorAll("tr[data-row-key]").forEach((row) => {
-                const key = row.getAttribute("data-row-key");
-                if (!key) {
-                    return;
-                }
-                const previousSignature = previousSignatures.get(key);
-                const nextSignature = row.getAttribute("data-row-signature") || "";
-                if (previousSignature !== undefined && previousSignature !== nextSignature) {
-                    row.classList.add("row-flash-once");
-                }
-            });
-            tableContainer.innerHTML = nextContainer.innerHTML;
-            formatLocalTimes(tableContainer);
-            scheduleRelativeTimesRefresh();
-        } finally {
-            refreshScheduled = false;
-        }
-    };
-
-    const scheduleRefresh = () => {
-        if (refreshScheduled) {
+    document.body.addEventListener("htmx:beforeRequest", (event) => {
+        const requestElement = event.detail.elt;
+        if (!(requestElement instanceof Element) || requestElement.id !== "state-table-refresh") {
             return;
         }
-        refreshScheduled = true;
-        window.setTimeout(refreshTable, 500);
-    };
+        previousSignatures = captureRowSignatures(tableContainer);
+    });
 
-    const connectStream = () => {
-        if (stream) {
-            stream.close();
+    document.body.addEventListener("htmx:afterSwap", (event) => {
+        const target = event.detail.target;
+        if (!(target instanceof Element) || target.id !== "state-table-container") {
+            return;
         }
-        stream = new EventSource(streamUrl);
-        stream.addEventListener("state_update", scheduleRefresh);
-        stream.addEventListener("ready", () => {});
-        stream.onerror = () => {
-            if (!stream) {
+        target.querySelectorAll("tr[data-row-key]").forEach((row) => {
+            const key = row.getAttribute("data-row-key");
+            if (!key) {
                 return;
             }
-            if (stream.readyState === EventSource.CLOSED && !document.hidden) {
-                window.setTimeout(connectStream, 1000);
+            const previousSignature = previousSignatures.get(key);
+            const nextSignature = row.getAttribute("data-row-signature") || "";
+            if (previousSignature !== undefined && previousSignature !== nextSignature) {
+                row.classList.add("row-flash-once");
             }
-        };
-    };
+        });
+        formatLocalTimes(tableContainer);
+        scheduleRelativeTimesRefresh();
+    });
 
     window.addEventListener("pageshow", (event) => {
-        if (event.persisted) {
-            connectStream();
-            scheduleRefresh();
+        if (event.persisted && refreshTrigger) {
+            htmx.trigger(refreshTrigger, "refresh");
         }
     });
 
     window.addEventListener("pagehide", () => {
-        if (stream) {
-            stream.close();
-            stream = null;
-        }
         if (relativeTimesTimer !== null) {
             window.clearTimeout(relativeTimesTimer);
             relativeTimesTimer = null;
@@ -208,12 +191,11 @@
     });
 
     document.addEventListener("visibilitychange", () => {
-        if (!document.hidden && (!stream || stream.readyState === EventSource.CLOSED)) {
-            connectStream();
+        if (!document.hidden && refreshTrigger) {
+            htmx.trigger(refreshTrigger, "refresh");
         }
     });
 
-    connectStream();
     formatLocalTimes(document);
     scheduleRelativeTimesRefresh();
 })();
