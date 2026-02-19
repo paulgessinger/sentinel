@@ -24,9 +24,15 @@
     --color-chip-green-bg: #d6f0de;
     --color-chip-green-border: #4e9964;
     --color-chip-green-fg: #114522;
+    --color-chip-green-bg-muted: #e6f3ea;
+    --color-chip-green-border-muted: #7ea88a;
+    --color-chip-green-fg-muted: #2b5834;
     --color-chip-red-bg: #f8d9d9;
     --color-chip-red-border: #c35b5b;
     --color-chip-red-fg: #5d1616;
+    --color-chip-red-bg-muted: #f5e5e5;
+    --color-chip-red-border-muted: #c88a8a;
+    --color-chip-red-fg-muted: #6c2f2f;
     --color-chip-amber-bg: #fff1d4;
     --color-chip-amber-border: #b57f22;
     --color-chip-amber-fg: #5f4100;
@@ -64,9 +70,15 @@
         --color-chip-green-bg: #285b38;
         --color-chip-green-border: #3f8a56;
         --color-chip-green-fg: #ecffef;
+        --color-chip-green-bg-muted: #335743;
+        --color-chip-green-border-muted: #4f8262;
+        --color-chip-green-fg-muted: #d8f0dd;
         --color-chip-red-bg: #6f2525;
         --color-chip-red-border: #a94444;
         --color-chip-red-fg: #ffecec;
+        --color-chip-red-bg-muted: #5b3333;
+        --color-chip-red-border-muted: #8b5555;
+        --color-chip-red-fg-muted: #f3d9d9;
         --color-chip-amber-bg: #5a4518;
         --color-chip-amber-border: #9d7a25;
         --color-chip-amber-fg: #ffe9b5;
@@ -300,6 +312,18 @@ a {
     background: var(--color-chip-red-bg);
     border-color: var(--color-chip-red-border);
     color: var(--color-chip-red-fg);
+}
+
+.chip-draft-muted.chip-bg-green {
+    background: var(--color-chip-green-bg-muted);
+    border-color: var(--color-chip-green-border-muted);
+    color: var(--color-chip-green-fg-muted);
+}
+
+.chip-draft-muted.chip-bg-red {
+    background: var(--color-chip-red-bg-muted);
+    border-color: var(--color-chip-red-border-muted);
+    color: var(--color-chip-red-fg-muted);
 }
 
 .chip-bg-amber {

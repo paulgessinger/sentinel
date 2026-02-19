@@ -50,9 +50,9 @@
         </td>
         <td>
             <div>
-                <span class="chip chip-status {{ row.sentinel_status_class }}">{{ row.sentinel_status or "not_evaluated" }}</span>
+                <span class="chip chip-status {{ row.sentinel_status_class }}{% if row.pr_is_draft %} chip-draft-muted{% endif %}">{{ row.sentinel_status or "not_evaluated" }}</span>
                 {% if row.sentinel_conclusion %}
-                <span class="chip chip-conclusion {{ row.sentinel_conclusion_class }}">{{ row.sentinel_conclusion }}</span>
+                <span class="chip chip-conclusion {{ row.sentinel_conclusion_class }}{% if row.pr_is_draft %} chip-draft-muted{% endif %}">{{ row.sentinel_conclusion }}</span>
                 {% endif %}
             </div>
             <div class="muted">
