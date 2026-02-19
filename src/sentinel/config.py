@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     PROJECTION_MANUAL_REFRESH_ACTION_LABEL: str = "Re-evaluate now"
     # Description shown for the manual re-evaluation action in GitHub UI.
     PROJECTION_MANUAL_REFRESH_ACTION_DESCRIPTION: str = (
-        "Force refresh checks from GitHub and re-evaluate"
+        "Refresh checks from API and re-evaluate"
     )
     # Cache TTL for repository config fetches (.merge-sentinel.yml).
     PROJECTION_CONFIG_CACHE_SECONDS: int = 300

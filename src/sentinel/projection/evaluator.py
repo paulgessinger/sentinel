@@ -83,6 +83,10 @@ class ProjectionEvaluatorConfig(Protocol):
 
 
 class ProjectionEvaluator:
+    _MANUAL_ACTION_IDENTIFIER_MAX_LEN = 20
+    _MANUAL_ACTION_LABEL_MAX_LEN = 20
+    _MANUAL_ACTION_DESCRIPTION_MAX_LEN = 40
+
     def __init__(
         self,
         *,
@@ -1104,13 +1108,51 @@ class ProjectionEvaluator:
             return []
         if status != "completed":
             return []
+        identifier = self._sanitize_manual_action_field(
+            value=self.config.PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER,
+            field_name="identifier",
+            max_len=self._MANUAL_ACTION_IDENTIFIER_MAX_LEN,
+        )
+        label = self._sanitize_manual_action_field(
+            value=self.config.PROJECTION_MANUAL_REFRESH_ACTION_LABEL,
+            field_name="label",
+            max_len=self._MANUAL_ACTION_LABEL_MAX_LEN,
+        )
+        description = self._sanitize_manual_action_field(
+            value=self.config.PROJECTION_MANUAL_REFRESH_ACTION_DESCRIPTION,
+            field_name="description",
+            max_len=self._MANUAL_ACTION_DESCRIPTION_MAX_LEN,
+        )
+        if not identifier or not label or not description:
+            logger.warning(
+                "Projection manual refresh action disabled for publish due to invalid action fields"
+            )
+            return []
         return [
             CheckRunAction(
-                label=self.config.PROJECTION_MANUAL_REFRESH_ACTION_LABEL,
-                description=self.config.PROJECTION_MANUAL_REFRESH_ACTION_DESCRIPTION,
-                identifier=self.config.PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER,
+                label=label,
+                description=description,
+                identifier=identifier,
             )
         ]
+
+    @staticmethod
+    def _sanitize_manual_action_field(
+        *, value: str, field_name: str, max_len: int
+    ) -> str:
+        sanitized = value.strip()
+        if not sanitized:
+            logger.warning("Projection manual refresh action %s is blank", field_name)
+            return ""
+        if len(sanitized) <= max_len:
+            return sanitized
+        logger.warning(
+            "Projection manual refresh action %s too long (%d > %d), truncating",
+            field_name,
+            len(sanitized),
+            max_len,
+        )
+        return sanitized[:max_len]
 
     def _evaluate_rows(
         self,
