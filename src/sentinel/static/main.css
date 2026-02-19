@@ -434,9 +434,9 @@ a {
 }
 
 .check-spinner {
-    width: 12px;
-    height: 12px;
-    border: 2px solid currentColor;
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid currentColor;
     border-right-color: transparent;
     border-radius: 50%;
     display: inline-block;

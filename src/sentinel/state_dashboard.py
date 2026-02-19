@@ -329,6 +329,13 @@ def _check_status_display(status: str | None) -> Dict[str, Any]:
             "class_name": "check-status-missing",
             "is_running": False,
         }
+    if normalized == "neutral":
+        return {
+            "label": "neutral",
+            "symbol": "",
+            "class_name": "check-status-neutral",
+            "is_running": False,
+        }
     return {
         "label": normalized,
         "symbol": "•",

@@ -59,6 +59,14 @@
 
 <section class="detail-section">
     <h2>Check Summary</h2>
+    <p class="muted">
+        <strong>Combined status:</strong>
+        {% if row.sentinel_status %}
+        {{ row.sentinel_status }}{% if row.sentinel_conclusion %}/{{ row.sentinel_conclusion }}{% endif %}
+        {% else %}
+        not_evaluated
+        {% endif %}
+    </p>
     {% if row.output_checks and row.output_checks|length > 0 %}
     <table class="state-table check-summary-table">
         <thead>
@@ -83,7 +91,9 @@
                     {% if check.is_running %}
                     <span class="check-spinner" aria-hidden="true"></span>
                     {% else %}
+                    {% if check.status_symbol %}
                     <span class="check-status-symbol">{{ check.status_symbol }}</span>
+                    {% endif %}
                     {% endif %}
                     <span>{{ check.status }}</span>
                 </span>
