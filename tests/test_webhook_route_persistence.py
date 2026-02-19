@@ -81,6 +81,20 @@ def make_requested_action_event(
     return SimpleNamespace(event="check_run", data=payload)
 
 
+def make_rerequested_event(
+    *,
+    app_id: int = 1234,
+    check_run_name: str = "merge-sentinel",
+    pr_number: int = 42,
+):
+    payload = make_check_run_event(app_id=app_id).data
+    payload["action"] = "rerequested"
+    payload["check_run"]["name"] = check_run_name
+    payload["check_run"]["pull_requests"] = [{"number": pr_number}]
+    payload.pop("requested_action", None)
+    return SimpleNamespace(event="check_run", data=payload)
+
+
 def make_config(**overrides):
     data = {
         "WEBHOOK_DISPATCH_ENABLED": False,
@@ -404,6 +418,63 @@ async def test_requested_action_from_self_app_enqueues_force_api_refresh(tmp_pat
         app_id=1234,
         check_run_name="merge-sentinel",
         identifier="refresh_from_api",
+    )
+    await _process_github_event(app, event, request)
+
+    assert len(enqueued) == 1
+    assert enqueued[0].force_api_refresh is True
+
+    with sqlite3.connect(str(db_path)) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
+        activity_rows = conn.execute(
+            """
+            SELECT activity_type, result, detail
+            FROM sentinel_activity_events
+            WHERE repo_id = ? AND pr_number = ? AND head_sha = ?
+            ORDER BY activity_id
+            """,
+            (500, 42, "a" * 40),
+        ).fetchall()
+    assert count == 1
+    assert (
+        "manual_refresh",
+        "enqueued",
+        "Force API refresh scheduled",
+    ) in activity_rows
+
+
+@pytest.mark.asyncio
+async def test_rerequested_from_self_app_enqueues_force_api_refresh(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    enqueued = []
+
+    class _Scheduler:
+        async def enqueue(self, trigger):
+            enqueued.append(trigger)
+
+    app = SimpleNamespace(
+        config=make_config(
+            PROJECTION_EVAL_ENABLED=True,
+            GITHUB_APP_ID=1234,
+            WEBHOOK_FILTER_SELF_APP_ID=True,
+            WEBHOOK_FILTER_APP_IDS=(),
+            PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+            PROJECTION_MANUAL_REFRESH_ACTION_IDENTIFIER="refresh_from_api",
+        ),
+        ctx=SimpleNamespace(
+            webhook_store=store,
+            projection_scheduler=_Scheduler(),
+            state_broadcaster=_RecordingBroadcaster(),
+        ),
+    )
+
+    request = make_request(delivery_id="delivery-rerequested-1")
+    event = make_rerequested_event(
+        app_id=1234,
+        check_run_name="merge-sentinel",
     )
     await _process_github_event(app, event, request)
 

@@ -100,13 +100,14 @@ def event_source_app_id(event: sansio.Event) -> int | None:
     return app.get("id")
 
 
-def is_check_run_requested_action_event(event: sansio.Event) -> bool:
-    return event.event == "check_run" and (
-        event.data.get("action") == "requested_action"
+def is_check_run_manual_refresh_event(event: sansio.Event) -> bool:
+    return event.event == "check_run" and event.data.get("action") in (
+        "requested_action",
+        "rerequested",
     )
 
 
-def _requested_action_pr_number(
+def _check_run_refresh_pr_number(
     app: Sanic,
     *,
     event: sansio.Event,
@@ -145,7 +146,7 @@ def record_manual_refresh_activity(
     detail: str,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    if not is_check_run_requested_action_event(event):
+    if not is_check_run_manual_refresh_event(event):
         return
     payload = event.data
     repo = payload.get("repository") or {}
@@ -159,7 +160,7 @@ def record_manual_refresh_activity(
             delivery_id,
         )
         return
-    pr_number = _requested_action_pr_number(
+    pr_number = _check_run_refresh_pr_number(
         app,
         event=event,
         repo_id=int(repo_id),
@@ -216,7 +217,8 @@ def is_projection_manual_refresh_requested(app: Sanic, event: sansio.Event) -> b
     if event.event != "check_run":
         return False
     payload = event.data
-    if payload.get("action") != "requested_action":
+    action = payload.get("action")
+    if action not in ("requested_action", "rerequested"):
         return False
 
     settings = app.ctx.settings
@@ -225,13 +227,16 @@ def is_projection_manual_refresh_requested(app: Sanic, event: sansio.Event) -> b
     github_app_id = settings.GITHUB_APP_ID
 
     check_run = payload.get("check_run") or {}
-    requested_action = payload.get("requested_action") or {}
-    if requested_action.get("identifier") != action_identifier:
-        return False
     if check_run.get("name") != check_run_name:
         return False
     source_app_id = (check_run.get("app") or {}).get("id")
-    return source_app_id == github_app_id
+    if source_app_id != github_app_id:
+        return False
+    if action == "requested_action":
+        requested_action = payload.get("requested_action") or {}
+        if requested_action.get("identifier") != action_identifier:
+            return False
+    return True
 
 
 def persist_webhook_event(
@@ -302,15 +307,20 @@ def projection_trigger_from_event(
         action=payload.get("action"),
         force_api_refresh=bool(
             event.event == "check_run"
-            and payload.get("action") == "requested_action"
-            and ((payload.get("requested_action") or {}).get("identifier"))
-            == manual_refresh_action_identifier
             and ((payload.get("check_run") or {}).get("name"))
             == projection_check_run_name
             and (
                 projection_app_id is None
                 or ((payload.get("check_run") or {}).get("app") or {}).get("id")
                 == projection_app_id
+            )
+            and (
+                payload.get("action") == "rerequested"
+                or (
+                    payload.get("action") == "requested_action"
+                    and ((payload.get("requested_action") or {}).get("identifier"))
+                    == manual_refresh_action_identifier
+                )
             )
         ),
     )
@@ -324,14 +334,15 @@ async def process_github_event(
     manual_refresh_requested = is_projection_manual_refresh_requested(app, event)
     source_app_id = event_source_app_id(event)
     excluded_app_ids = excluded_app_ids_for_event(app)
-    if is_check_run_requested_action_event(event):
+    if is_check_run_manual_refresh_event(event):
         payload = event.data
         check_run = payload.get("check_run") or {}
         requested_action = payload.get("requested_action") or {}
         settings = app.ctx.settings
         logger.info(
-            "Received check_run requested_action delivery=%s repo=%s sha=%s check_name=%s action_identifier=%s source_app_id=%s matches_manual_refresh=%s expected_identifier=%s expected_check_name=%s expected_app_id=%s",
+            "Received check_run refresh_request delivery=%s action=%s repo=%s sha=%s check_name=%s action_identifier=%s source_app_id=%s matches_manual_refresh=%s expected_identifier=%s expected_check_name=%s expected_app_id=%s",
             delivery_id,
+            payload.get("action"),
             (payload.get("repository") or {}).get("full_name"),
             check_run.get("head_sha"),
             check_run.get("name"),
@@ -348,10 +359,11 @@ async def process_github_event(
         and source_app_id is not None
         and source_app_id in excluded_app_ids
     ):
-        if is_check_run_requested_action_event(event):
+        if is_check_run_manual_refresh_event(event):
             logger.info(
-                "Skipping check_run requested_action delivery=%s because source app id=%s is excluded and event did not match manual refresh criteria",
+                "Skipping check_run refresh_request delivery=%s action=%s because source app id=%s is excluded and event did not match manual refresh criteria",
                 delivery_id,
+                event.data.get("action"),
                 source_app_id,
             )
             record_manual_refresh_activity(
@@ -453,7 +465,7 @@ async def process_github_event(
                         result="enqueued",
                         detail="Force API refresh scheduled",
                     )
-                elif is_check_run_requested_action_event(event):
+                elif is_check_run_manual_refresh_event(event):
                     record_manual_refresh_activity(
                         app,
                         event=event,
@@ -463,7 +475,7 @@ async def process_github_event(
                     )
             except Exception:  # noqa: BLE001
                 error_counter.labels(context="projection_schedule").inc()
-                if is_check_run_requested_action_event(event):
+                if is_check_run_manual_refresh_event(event):
                     record_manual_refresh_activity(
                         app,
                         event=event,
@@ -477,7 +489,7 @@ async def process_github_event(
                     trigger.head_sha,
                     exc_info=True,
                 )
-        elif is_check_run_requested_action_event(event):
+        elif is_check_run_manual_refresh_event(event):
             record_manual_refresh_activity(
                 app,
                 event=event,
