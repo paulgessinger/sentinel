@@ -260,7 +260,11 @@ class ProjectionEvaluator:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="triggered"
             ).inc()
-            check_rows, workflow_rows, status_rows = await self._load_head_rows_from_api(
+            (
+                check_rows,
+                workflow_rows,
+                status_rows,
+            ) = await self._load_head_rows_from_api(
                 api=api,
                 trigger=trigger,
             )
@@ -841,9 +845,7 @@ class ProjectionEvaluator:
                 kind="missing_refresh", result="skip_no_pr_updated_at"
             ).inc()
             return False
-        pr_age_seconds = (
-            datetime.now(timezone.utc) - pr_updated_at
-        ).total_seconds()
+        pr_age_seconds = (datetime.now(timezone.utc) - pr_updated_at).total_seconds()
         if pr_age_seconds < self.auto_refresh_on_missing_stale_seconds:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_recent_pr"

@@ -83,6 +83,7 @@ def make_pull_request_payload(
     *,
     action: str = "synchronize",
     state: str = "open",
+    draft: bool | None = None,
     merged: bool | None = None,
 ) -> dict:
     pull_request = {
@@ -94,6 +95,8 @@ def make_pull_request_payload(
         "head": {"sha": head_sha},
         "base": {"ref": "main"},
     }
+    if draft is not None:
+        pull_request["draft"] = draft
     if merged is not None:
         pull_request["merged"] = merged
 
@@ -292,27 +295,36 @@ def test_pull_request_projection_updates_head_sha(tmp_path):
     store.persist_event(
         delivery_id="pr-1",
         event="pull_request",
-        payload=make_pull_request_payload(head_sha="c" * 40, title="Initial title"),
+        payload=make_pull_request_payload(
+            head_sha="c" * 40, title="Initial title", draft=False
+        ),
         payload_json="{}",
     )
     store.persist_event(
         delivery_id="pr-2",
         event="pull_request",
-        payload=make_pull_request_payload(head_sha="d" * 40, title="Updated title"),
+        payload=make_pull_request_payload(
+            head_sha="d" * 40, title="Updated title", draft=True
+        ),
         payload_json="{}",
     )
 
     with sqlite3.connect(str(db_path)) as conn:
         row = conn.execute(
             """
-            SELECT repo_full_name, pr_title, head_sha, last_delivery_id
+            SELECT repo_full_name, pr_title, pr_draft, head_sha, last_delivery_id
             FROM pr_heads_current
             WHERE repo_id = ? AND pr_number = ?
             """,
             (103, 42),
         ).fetchone()
 
-    assert row == ("org/repo", "Updated title", "d" * 40, "pr-2")
+    assert row is not None
+    assert row[0] == "org/repo"
+    assert row[1] == "Updated title"
+    assert bool(row[2]) is True
+    assert row[3] == "d" * 40
+    assert row[4] == "pr-2"
 
 
 def test_check_suite_projection_upserts(tmp_path):
@@ -678,6 +690,7 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
                 "id": 20,
                 "number": 2,
                 "title": "Repo B PR",
+                "draft": True,
                 "state": "open",
                 "updated_at": "2026-02-18T11:00:00Z",
                 "head": {"sha": "b" * 40},
@@ -723,6 +736,7 @@ def test_dashboard_rows_join_pagination_and_filter(tmp_path):
     assert len(page1) == 1
     assert page1[0]["repo_full_name"] == "org/repo-b"
     assert page1[0]["pr_title"] == "Repo B PR"
+    assert page1[0]["pr_is_draft"] is True
     assert page1[0]["output_summary"] is not None
 
     page2 = store.list_pr_dashboard_rows(

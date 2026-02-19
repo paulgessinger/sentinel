@@ -7,6 +7,7 @@ from sanic import Request, Sanic
 from sentinel.storage import WebhookStore
 from sentinel.state_dashboard import (
     StateUpdateBroadcaster,
+    _pr_draft_chip_class,
     _pr_state_chip_class,
     _publish_result_display,
     _conclusion_chip_class,
@@ -76,6 +77,7 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
                 "id": 1001,
                 "number": 42,
                 "title": "Add dashboard",
+                "draft": True,
                 "state": "open",
                 "updated_at": "2026-02-18T12:00:00Z",
                 "head": {"sha": "a" * 40},
@@ -134,6 +136,8 @@ def test_state_dashboard_context_includes_links_and_pagination(tmp_path):
     assert row["row_update_signature"] != ""
     assert row["pr_state_display"] == "open"
     assert row["pr_state_class"] == ""
+    assert row["pr_is_draft"] is True
+    assert row["pr_draft_class"] == "chip-bg-amber"
     assert (
         row["check_run_url"]
         == "https://github.com/org/repo/runs/321?check_suite_focus=true"
@@ -269,6 +273,8 @@ def test_chip_classes_for_status_and_conclusion():
     assert _status_chip_class("failure") == "chip-bg-red"
     assert _conclusion_chip_class("success") == "chip-bg-green"
     assert _conclusion_chip_class("failure") == "chip-bg-red"
+    assert _pr_draft_chip_class(True) == "chip-bg-amber"
+    assert _pr_draft_chip_class(False) == ""
     assert _pr_state_chip_class("merged") == "chip-bg-green"
     assert _pr_state_chip_class("closed") == "chip-bg-red"
     assert _pr_state_chip_class("closed (not merged)") == "chip-bg-red"
@@ -287,6 +293,7 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
             "id": 1001,
             "number": 42,
             "title": "Add dashboard",
+            "draft": True,
             "state": "open",
             "updated_at": "2026-02-18T12:00:00Z",
             "head": {"sha": "a" * 40},
@@ -371,6 +378,8 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
     context = _state_pr_detail_context(cast(Sanic, app), repo_id=10, pr_number=42)
     assert context is not None
     assert context["row"]["pr_url"] == "https://github.com/org/repo/pull/42"
+    assert context["row"]["pr_is_draft"] is True
+    assert context["row"]["pr_draft_class"] == "chip-bg-amber"
     assert context["row"]["publish_result_display"] == "completed/success (dry-run)"
     assert "\u2705" in context["row"]["rendered_output_summary"]
     assert "rendered-check-table" in context["row"]["rendered_output_text"]

@@ -20,4 +20,4 @@ def test_migrate_webhook_db_runs_from_packaged_scripts(tmp_path, monkeypatch):
 
     assert "webhook_events" in tables
     assert "pr_heads_current" in tables
-    assert revision == "0004_add_pr_title_to_pr_heads_current"
+    assert revision == "0005_add_pr_draft_to_pr_heads_current"

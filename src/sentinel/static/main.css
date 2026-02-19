@@ -26,6 +26,9 @@
     --color-chip-red-bg: #f8d9d9;
     --color-chip-red-border: #c35b5b;
     --color-chip-red-fg: #5d1616;
+    --color-chip-amber-bg: #fff1d4;
+    --color-chip-amber-border: #b57f22;
+    --color-chip-amber-fg: #5f4100;
     --color-error: #b93535;
     --color-code-bg: #f6f8fb;
     --color-code-border: #cfd5df;
@@ -62,6 +65,9 @@
         --color-chip-red-bg: #6f2525;
         --color-chip-red-border: #a94444;
         --color-chip-red-fg: #ffecec;
+        --color-chip-amber-bg: #5a4518;
+        --color-chip-amber-border: #9d7a25;
+        --color-chip-amber-fg: #ffe9b5;
         --color-error: #d38787;
         --color-code-bg: #191919;
         --color-code-border: #333;
@@ -273,6 +279,12 @@ a {
     background: var(--color-chip-red-bg);
     border-color: var(--color-chip-red-border);
     color: var(--color-chip-red-fg);
+}
+
+.chip-bg-amber {
+    background: var(--color-chip-amber-bg);
+    border-color: var(--color-chip-amber-border);
+    color: var(--color-chip-amber-fg);
 }
 
 .muted {

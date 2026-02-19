@@ -10,6 +10,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 from sanic.log import logger
 from sqlalchemy import (
+    Boolean,
     bindparam,
     Column,
     Engine,
@@ -168,6 +169,7 @@ pr_heads_current = Table(
     Column("pr_id", Integer, nullable=False),
     Column("pr_number", Integer, primary_key=True),
     Column("pr_title", String),
+    Column("pr_draft", Boolean),
     Column("state", String, nullable=False),
     Column("head_sha", String, nullable=False),
     Column("base_ref", String, nullable=False),
@@ -1016,6 +1018,7 @@ class WebhookStore:
             pr_heads_current.c.pr_number.label("pr_number"),
             pr_heads_current.c.pr_id.label("pr_id"),
             pr_heads_current.c.pr_title.label("pr_title"),
+            pr_heads_current.c.pr_draft.label("pr_is_draft"),
             pr_heads_current.c.state.label("pr_state"),
             pr_heads_current.c.head_sha.label("head_sha"),
             pr_heads_current.c.base_ref.label("base_ref"),
@@ -1045,6 +1048,7 @@ class WebhookStore:
     def _normalize_pr_dashboard_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         payload_json = row.pop("pr_event_payload_json", None)
         pr_merged: bool | None = None
+        pr_is_draft = row.get("pr_is_draft")
 
         if payload_json is not None:
             try:
@@ -1053,10 +1057,15 @@ class WebhookStore:
                 merged_value = (payload.get("pull_request") or {}).get("merged")
                 if merged_value is not None:
                     pr_merged = bool(merged_value)
+                if pr_is_draft is None:
+                    draft_value = (payload.get("pull_request") or {}).get("draft")
+                    if draft_value is not None:
+                        pr_is_draft = bool(draft_value)
             except Exception:  # noqa: BLE001
                 pr_merged = None
 
         row["pr_merged"] = pr_merged
+        row["pr_is_draft"] = bool(pr_is_draft) if pr_is_draft is not None else False
         return row
 
     @staticmethod
@@ -1385,6 +1394,7 @@ class WebhookStore:
             "pr_id": pr["id"],
             "pr_number": pr["number"],
             "pr_title": pr.get("title"),
+            "pr_draft": pr.get("draft"),
             "state": pr["state"],
             "head_sha": pr["head"]["sha"],
             "base_ref": pr["base"]["ref"],
@@ -1401,6 +1411,7 @@ class WebhookStore:
                 "repo_full_name",
                 "pr_id",
                 "pr_title",
+                "pr_draft",
                 "state",
                 "head_sha",
                 "base_ref",

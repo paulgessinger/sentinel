@@ -501,9 +501,7 @@ def create_app():
         if config.INDEX_REDIRECT_URL:
             return response.redirect(config.INDEX_REDIRECT_URL)
         return response.html(
-            await request.app.ext.template(
-                "index.html.j2", {"app": app}
-            ).render()
+            await request.app.ext.template("index.html.j2", {"app": app}).render()
         )
 
     @app.get("/status")

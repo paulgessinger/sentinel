@@ -155,11 +155,18 @@ def _pr_state_chip_class(pr_state_display: str) -> str:
     return ""
 
 
+def _pr_draft_chip_class(is_draft: bool) -> str:
+    if is_draft:
+        return "chip-bg-amber"
+    return ""
+
+
 def _row_update_signature(row: Dict[str, Any]) -> str:
     values = (
         row.get("pr_updated_at"),
         row.get("pr_state"),
         row.get("pr_merged"),
+        row.get("pr_is_draft"),
         row.get("head_sha"),
         row.get("sentinel_status"),
         row.get("sentinel_conclusion"),
@@ -213,6 +220,7 @@ def _state_dashboard_context(
             row.get("pr_state"),
             row.get("pr_merged"),
         )
+        pr_is_draft = bool(row.get("pr_is_draft"))
         pr_title_raw = row.get("pr_title") or (
             f"PR #{pr_number}" if pr_number is not None else "PR"
         )
@@ -224,6 +232,8 @@ def _state_dashboard_context(
                 "row_update_signature": _row_update_signature(row),
                 "pr_state_display": pr_state_display,
                 "pr_state_class": _pr_state_chip_class(pr_state_display),
+                "pr_is_draft": pr_is_draft,
+                "pr_draft_class": _pr_draft_chip_class(pr_is_draft),
                 "pr_url": _github_pr_url(repo_full_name, pr_number),
                 "commit_url": _github_commit_url(repo_full_name, head_sha),
                 "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
@@ -338,6 +348,7 @@ def _state_pr_detail_context(
         row.get("pr_state"),
         row.get("pr_merged"),
     )
+    pr_is_draft = bool(row.get("pr_is_draft"))
     return {
         "row": {
             **row,
@@ -347,6 +358,8 @@ def _state_pr_detail_context(
             "check_run_url": _github_check_run_url(repo_full_name, check_run_id),
             "pr_state_display": pr_state_display,
             "pr_state_class": _pr_state_chip_class(pr_state_display),
+            "pr_is_draft": pr_is_draft,
+            "pr_draft_class": _pr_draft_chip_class(pr_is_draft),
             "sentinel_status_class": _status_chip_class(row.get("sentinel_status")),
             "sentinel_conclusion_class": _conclusion_chip_class(
                 row.get("sentinel_conclusion")
