@@ -2,6 +2,7 @@ from pathlib import Path
 
 from sentinel.metric import (
     api_call_count,
+    _normalize_api_endpoint,
     record_api_call,
     sqlite_db_total_size_bytes,
     view_response_latency_seconds,
@@ -22,11 +23,22 @@ def test_sqlite_db_total_size_bytes_includes_wal_and_shm(tmp_path):
 
 
 def test_record_api_call_tracks_endpoint_label():
-    endpoint = "/repos/org/repo/pulls/42"
-    before = api_call_count.labels(endpoint=endpoint)._value.get()
-    record_api_call(endpoint=endpoint)
-    after = api_call_count.labels(endpoint=endpoint)._value.get()
+    before = api_call_count.labels(endpoint="pulls")._value.get()
+    record_api_call(endpoint="/repos/org/repo/pulls/42")
+    after = api_call_count.labels(endpoint="pulls")._value.get()
     assert after == before + 1
+
+
+def test_normalize_api_endpoint_examples():
+    assert _normalize_api_endpoint("installation_token") == "installation_token"
+    assert (
+        _normalize_api_endpoint("/app/installations/123/access_tokens")
+        == "installation_token"
+    )
+    assert _normalize_api_endpoint("/repos/org/repo/contents/.merge-sentinel.yml") == (
+        "contents/xxx"
+    )
+    assert _normalize_api_endpoint("/repos/org/repo/pulls/123") == "pulls"
 
 
 def test_observe_view_response_latency_tracks_path_method_status():

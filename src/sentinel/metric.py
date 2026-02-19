@@ -1,4 +1,6 @@
 from pathlib import Path
+import re
+from urllib.parse import urlparse
 
 from prometheus_client import Counter, Gauge, Histogram
 
@@ -142,7 +144,7 @@ def configure_webhook_db_size_metric(db_path: str) -> None:
 def record_api_call(endpoint: str, count: int = 1) -> None:
     if count <= 0:
         return
-    api_call_count.labels(endpoint=endpoint).inc(count)
+    api_call_count.labels(endpoint=_normalize_api_endpoint(endpoint)).inc(count)
 
 
 def observe_view_response_latency(
@@ -159,3 +161,47 @@ def observe_view_response_latency(
         method=method,
         status=str(status),
     ).observe(seconds)
+
+
+def _normalize_api_endpoint(endpoint: str) -> str:
+    value = endpoint.strip()
+    if not value:
+        return "unknown"
+
+    # Allow explicit semantic names to pass through.
+    if "/" not in value and " " not in value and ":" not in value:
+        return value
+
+    parsed = urlparse(value)
+    path = parsed.path or value.split("?", 1)[0]
+    path = path.rstrip("/") or "/"
+
+    if path == "/app":
+        return "app"
+    if "/app/installations/" in path and path.endswith("/access_tokens"):
+        return "installation_token"
+    if "/contents/" in path:
+        return "contents/xxx"
+    if "/pulls" in path:
+        return "pulls"
+    if "/commits/" in path and path.endswith("/check-runs"):
+        return "commits/check-runs"
+    if "/check-runs" in path:
+        return "check-runs"
+    if "/commits/" in path and path.endswith("/check-suites"):
+        return "commits/check-suites"
+    if "/check-suites" in path:
+        return "check-suites"
+    if "/actions/jobs/" in path:
+        return "actions/jobs"
+    if "/actions/runs" in path:
+        return "actions/runs"
+    if "/commits/" in path and path.endswith("/status"):
+        return "commits/status"
+    if path.startswith("/repos/"):
+        return "repos"
+
+    # Fallback: collapse obvious high-cardinality tokens.
+    collapsed = re.sub(r"/[0-9]+", "/:id", path)
+    collapsed = re.sub(r"/[0-9a-f]{40}", "/:sha", collapsed)
+    return collapsed

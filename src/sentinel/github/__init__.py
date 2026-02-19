@@ -149,9 +149,7 @@ async def get_access_token(gh: gh_aiohttp.GitHubAPI, installation_id: int) -> st
         app_id=str(app_config.GITHUB_APP_ID),
         private_key=app_config.GITHUB_PRIVATE_KEY,
     )
-    record_api_call(
-        endpoint=f"/app/installations/{installation_id}/access_tokens",
-    )
+    record_api_call(endpoint="installation_token")
 
     token = access_token_response["token"]
     return token
