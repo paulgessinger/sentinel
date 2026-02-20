@@ -449,6 +449,45 @@ def test_retention_prunes_old_events_only(tmp_path):
     assert projected == 1
 
 
+def test_scheduled_maintenance_runs_auto_vacuum_after_prune(tmp_path, monkeypatch):
+    db_path = tmp_path / "webhooks.sqlite3"
+    retention_seconds = 60 * 60
+    store = _make_store(db_path, WEBHOOK_DB_RETENTION_SECONDS=retention_seconds)
+    store.initialize()
+
+    old_received_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=retention_seconds * 2)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO webhook_events (
+                delivery_id, received_at, event, payload_json
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                "old-event",
+                old_received_at,
+                "status",
+                store.encode_payload_json("{}"),
+            ),
+        )
+        conn.commit()
+
+    captured: list[int] = []
+
+    def _capture_auto_vacuum(pruned_total: int) -> None:
+        captured.append(pruned_total)
+
+    monkeypatch.setattr(store, "_maybe_auto_vacuum", _capture_auto_vacuum)
+
+    pruned_total = store.run_scheduled_maintenance()
+
+    assert pruned_total == 1
+    assert captured == [1]
+
+
 def test_prune_old_projections_uses_completed_and_active_windows(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
     store = _make_store(db_path)

@@ -594,10 +594,7 @@ def create_app():
             run_webhook_db_migrations(settings.WEBHOOK_DB_PATH, revision="head")
 
         app.ctx.webhook_store.initialize()
-        app.ctx.webhook_store.prune_old_events()
-        app.ctx.webhook_store.prune_old_activity_events()
-        if settings.WEBHOOK_PROJECTION_PRUNE_ENABLED:
-            app.ctx.webhook_store.prune_old_projections()
+        app.ctx.webhook_store.run_scheduled_maintenance()
 
         if projection_eval_enabled(app):
 

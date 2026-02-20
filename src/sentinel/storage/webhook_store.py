@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import threading
+import time
 from typing import Any, Dict, Mapping, Protocol, Sequence
 
 from sanic.log import logger
@@ -293,6 +294,8 @@ class PersistResult:
 class WebhookStoreSettings(Protocol):
     WEBHOOK_DB_PATH: Path
     WEBHOOK_DB_RETENTION_SECONDS: int
+    WEBHOOK_DB_AUTO_VACUUM_ENABLED: bool
+    WEBHOOK_DB_AUTO_VACUUM_MIN_INTERVAL_SECONDS: int
     WEBHOOK_ACTIVITY_RETENTION_SECONDS: int
     WEBHOOK_PROJECTION_PRUNE_ENABLED: bool
     WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS: int
@@ -311,6 +314,7 @@ class WebhookStore:
         self.settings = settings
         self.prune_every = max(1, prune_every)
         self._persisted_since_prune = 0
+        self._last_auto_vacuum_monotonic = 0.0
         self._counter_lock = threading.Lock()
         self.engine = self._build_engine(self.settings.WEBHOOK_DB_PATH)
 
@@ -418,10 +422,7 @@ class WebhookStore:
 
         pruned_rows = 0
         if self._should_prune():
-            pruned_rows = self.prune_old_events()
-            self.prune_old_activity_events()
-            if self.settings.WEBHOOK_PROJECTION_PRUNE_ENABLED:
-                self.prune_old_projections()
+            pruned_rows = self.run_scheduled_maintenance()
 
         return PersistResult(
             inserted=True,
@@ -472,6 +473,20 @@ class WebhookStore:
                 table="sentinel_activity_events", kind="all"
             ).inc(count)
         return count
+
+    def run_scheduled_maintenance(self) -> int:
+        if not self.settings.WEBHOOK_DB_ENABLED:
+            return 0
+
+        pruned_events = self.prune_old_events()
+        pruned_activity = self.prune_old_activity_events()
+        pruned_projection_rows = 0
+        if self.settings.WEBHOOK_PROJECTION_PRUNE_ENABLED:
+            pruned_projection_rows = sum(self.prune_old_projections().values())
+
+        pruned_total = pruned_events + pruned_activity + pruned_projection_rows
+        self._maybe_auto_vacuum(pruned_total)
+        return pruned_total
 
     def migrate_event_payloads_to_zstd(self, batch_size: int = 500) -> Dict[str, int]:
         if batch_size < 1:
@@ -1768,6 +1783,38 @@ class WebhookStore:
                 return False
             self._persisted_since_prune = 0
             return True
+
+    def _maybe_auto_vacuum(self, pruned_total: int) -> None:
+        if (
+            not self.settings.WEBHOOK_DB_AUTO_VACUUM_ENABLED
+            or pruned_total <= 0
+            or not self.settings.WEBHOOK_DB_ENABLED
+        ):
+            return
+
+        min_interval = max(0, self.settings.WEBHOOK_DB_AUTO_VACUUM_MIN_INTERVAL_SECONDS)
+        now = time.monotonic()
+        with self._counter_lock:
+            if (now - self._last_auto_vacuum_monotonic) < min_interval:
+                return
+            self._last_auto_vacuum_monotonic = now
+
+        try:
+            with self.engine.connect() as conn:
+                conn.execution_options(isolation_level="AUTOCOMMIT").exec_driver_sql(
+                    "VACUUM"
+                )
+            logger.info(
+                "Ran automatic SQLite VACUUM for %s after pruning %d rows",
+                self.settings.WEBHOOK_DB_PATH,
+                pruned_total,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Automatic SQLite VACUUM failed for %s",
+                self.settings.WEBHOOK_DB_PATH,
+                exc_info=True,
+            )
 
     @staticmethod
     def payload_to_json(payload: Mapping[str, Any]) -> str:

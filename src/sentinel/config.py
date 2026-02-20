@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # Event retention in seconds (preferred), with days fallback for compatibility.
     WEBHOOK_DB_RETENTION_SECONDS: int
     WEBHOOK_DB_RETENTION_DAYS: float = 30
+    # Run SQLite VACUUM during scheduled cleanup when rows were pruned.
+    WEBHOOK_DB_AUTO_VACUUM_ENABLED: bool = True
+    # Minimum delay between automatic VACUUM runs.
+    WEBHOOK_DB_AUTO_VACUUM_MIN_INTERVAL_SECONDS: int = 3600
     # Retention window for internal projection activity events shown in PR detail logs.
     WEBHOOK_ACTIVITY_RETENTION_SECONDS: int
     # Event types that should be persisted/projected into SQLite.
