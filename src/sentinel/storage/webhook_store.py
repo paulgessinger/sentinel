@@ -998,6 +998,7 @@ class WebhookStore:
             webhook_events.c.received_at,
             webhook_events.c.event,
             webhook_events.c.action,
+            webhook_events.c.head_sha,
             webhook_events.c.event_detail,
             webhook_events.c.projection_error,
         )
@@ -1020,15 +1021,23 @@ class WebhookStore:
                 .all()
             ]
 
-            head_rows: list[dict[str, Any]] = []
+            related_heads = {
+                str(row.get("head_sha"))
+                for row in pr_rows
+                if isinstance(row.get("head_sha"), str) and row.get("head_sha")
+            }
             if head_sha:
+                related_heads.add(head_sha)
+
+            head_rows: list[dict[str, Any]] = []
+            if related_heads:
                 head_rows = [
                     dict(row)
                     for row in conn.execute(
                         webhook_select.where(
                             and_(
                                 webhook_events.c.repo_id == repo_id,
-                                webhook_events.c.head_sha == head_sha,
+                                webhook_events.c.head_sha.in_(tuple(related_heads)),
                                 webhook_events.c.event.in_(
                                     (
                                         "check_run",
@@ -1065,10 +1074,6 @@ class WebhookStore:
                 .order_by(sentinel_activity_events.c.recorded_at.desc())
                 .limit(target_limit)
             )
-            if head_sha:
-                activity_stmt = activity_stmt.where(
-                    sentinel_activity_events.c.head_sha == head_sha
-                )
             activity_rows = conn.execute(activity_stmt).mappings().all()
 
         events = [

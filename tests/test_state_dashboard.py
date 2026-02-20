@@ -453,6 +453,135 @@ def test_state_pr_detail_context_renders_output_and_events(tmp_path):
     )
 
 
+def test_state_pr_detail_context_includes_previous_head_events(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+
+    old_head_sha = "a" * 40
+    new_head_sha = "b" * 40
+
+    pr_open_payload = {
+        "action": "opened",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "pull_request": {
+            "id": 1001,
+            "number": 42,
+            "title": "Add dashboard",
+            "state": "open",
+            "updated_at": "2026-02-18T11:00:00Z",
+            "head": {"sha": old_head_sha},
+            "base": {"ref": "main"},
+        },
+    }
+    store.persist_event(
+        delivery_id="pr-open",
+        event="pull_request",
+        payload=pr_open_payload,
+        payload_json=store.payload_to_json(pr_open_payload),
+    )
+    old_check_run_payload = {
+        "action": "completed",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "check_run": {
+            "id": 111,
+            "head_sha": old_head_sha,
+            "name": "Builds / tests",
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"id": 99, "slug": "ci"},
+            "check_suite": {"id": 70},
+        },
+    }
+    store.persist_event(
+        delivery_id="cr-old",
+        event="check_run",
+        payload=old_check_run_payload,
+        payload_json=store.payload_to_json(old_check_run_payload),
+    )
+
+    pr_sync_payload = {
+        "action": "synchronize",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "pull_request": {
+            "id": 1001,
+            "number": 42,
+            "title": "Add dashboard",
+            "state": "open",
+            "updated_at": "2026-02-18T12:00:00Z",
+            "head": {"sha": new_head_sha},
+            "base": {"ref": "main"},
+        },
+    }
+    store.persist_event(
+        delivery_id="pr-sync",
+        event="pull_request",
+        payload=pr_sync_payload,
+        payload_json=store.payload_to_json(pr_sync_payload),
+    )
+    new_check_run_payload = {
+        "action": "completed",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "check_run": {
+            "id": 222,
+            "head_sha": new_head_sha,
+            "name": "Builds / tests",
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"id": 99, "slug": "ci"},
+            "check_suite": {"id": 77},
+        },
+    }
+    store.persist_event(
+        delivery_id="cr-new",
+        event="check_run",
+        payload=new_check_run_payload,
+        payload_json=store.payload_to_json(new_check_run_payload),
+    )
+
+    store.upsert_sentinel_check_run(
+        repo_id=10,
+        repo_full_name="org/repo",
+        check_run_id=321,
+        head_sha=new_head_sha,
+        name="merge-sentinel",
+        status="completed",
+        conclusion="success",
+        app_id=2877723,
+        started_at="2026-02-18T11:59:00Z",
+        completed_at="2026-02-18T12:00:00Z",
+        output_title="All good",
+        output_summary="summary",
+        output_text="details",
+        output_checks_json="[]",
+        output_summary_hash="h1",
+        output_text_hash="h2",
+        last_eval_at="2026-02-18T12:00:01Z",
+        last_publish_at="2026-02-18T12:00:02Z",
+        last_publish_result="dry_run",
+        last_publish_error=None,
+        last_delivery_id="d1",
+    )
+
+    settings = SimpleNamespace(
+        GITHUB_APP_ID=2877723,
+        PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+        PROJECTION_PUBLISH_ENABLED=True,
+    )
+    app = SimpleNamespace(
+        config=settings,
+        ctx=SimpleNamespace(webhook_store=store, settings=settings),
+    )
+
+    context = _state_pr_detail_context(cast(Sanic, app), repo_id=10, pr_number=42)
+    assert context is not None
+    delivery_ids = {event["delivery_id"] for event in context["events"]}
+    assert {"cr-old", "cr-new", "pr-open", "pr-sync"} <= delivery_ids
+
+
 def test_state_event_detail_context_renders_payload_and_back_link(tmp_path):
     store = _make_store(tmp_path / "webhooks.sqlite3")
     store.initialize()

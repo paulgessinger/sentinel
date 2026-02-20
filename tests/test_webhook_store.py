@@ -1032,6 +1032,96 @@ def test_pr_related_events_include_projection_activity(tmp_path):
     assert events[0].payload["status"] == "completed"
 
 
+def test_pr_related_events_include_previous_head_history(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    old_head_sha = "a" * 40
+    new_head_sha = "b" * 40
+
+    old_pr_payload = make_pull_request_payload(
+        head_sha=old_head_sha, title="Tracked PR"
+    )
+    store.persist_event(
+        delivery_id="pr-open",
+        event="pull_request",
+        payload=old_pr_payload,
+        payload_json=store.payload_to_json(old_pr_payload),
+    )
+
+    old_check_run = make_check_run_payload()
+    old_check_run["repository"] = {"id": 103, "full_name": "org/repo"}
+    old_check_run["check_run"]["head_sha"] = old_head_sha
+    store.persist_event(
+        delivery_id="cr-old",
+        event="check_run",
+        payload=old_check_run,
+        payload_json=store.payload_to_json(old_check_run),
+    )
+
+    new_pr_payload = make_pull_request_payload(
+        head_sha=new_head_sha,
+        title="Tracked PR",
+        action="synchronize",
+    )
+    store.persist_event(
+        delivery_id="pr-sync",
+        event="pull_request",
+        payload=new_pr_payload,
+        payload_json=store.payload_to_json(new_pr_payload),
+    )
+
+    new_check_run = make_check_run_payload()
+    new_check_run["repository"] = {"id": 103, "full_name": "org/repo"}
+    new_check_run["check_run"]["head_sha"] = new_head_sha
+    store.persist_event(
+        delivery_id="cr-new",
+        event="check_run",
+        payload=new_check_run,
+        payload_json=store.payload_to_json(new_check_run),
+    )
+
+    store.record_projection_activity_event(
+        repo_id=103,
+        repo_full_name="org/repo",
+        pr_number=42,
+        head_sha=old_head_sha,
+        delivery_id="act-old",
+        activity_type="publish",
+        result="dry_run",
+        detail="Old head activity",
+        recorded_at="2030-01-01T00:00:00.000000Z",
+    )
+    store.record_projection_activity_event(
+        repo_id=103,
+        repo_full_name="org/repo",
+        pr_number=42,
+        head_sha=new_head_sha,
+        delivery_id="act-new",
+        activity_type="publish",
+        result="dry_run",
+        detail="New head activity",
+        recorded_at="2030-01-01T00:00:01.000000Z",
+    )
+
+    events = store.list_pr_related_events(
+        repo_id=103,
+        pr_number=42,
+        head_sha=new_head_sha,
+        limit=50,
+    )
+    delivery_ids = {event.delivery_id for event in events}
+    assert {
+        "pr-open",
+        "pr-sync",
+        "cr-old",
+        "cr-new",
+        "act-old",
+        "act-new",
+    } <= delivery_ids
+
+
 def test_pr_related_events_do_not_require_payload_decode(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
     store = _make_store(db_path)
