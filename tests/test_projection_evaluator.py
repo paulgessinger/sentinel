@@ -280,6 +280,7 @@ class _EvaluatorConfig:
     PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS: int = 300
     PROJECTION_CONFIG_CACHE_SECONDS: int = 300
     PROJECTION_PR_FILES_CACHE_SECONDS: int = 86400
+    STATE_BASE_URL: str | None = None
 
 
 def _make_evaluator(
@@ -288,12 +289,14 @@ def _make_evaluator(
     api_factory,
     publish_enabled: bool = False,
     stale_seconds: int = 1800,
+    state_base_url: str | None = None,
 ) -> ProjectionEvaluator:
     return ProjectionEvaluator(
         store=store,
         config=_EvaluatorConfig(
             PROJECTION_PUBLISH_ENABLED=publish_enabled,
             PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS=stale_seconds,
+            STATE_BASE_URL=state_base_url,
         ),
         api_factory=api_factory,
     )
@@ -376,6 +379,55 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
 
     assert ("config_fetch", "loaded") in activity_rows
     assert ("publish", "dry_run") in activity_rows
+
+
+@pytest.mark.asyncio
+async def test_projection_uses_absolute_dashboard_link_when_configured(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    await _seed(store)
+
+    api = _FakeAPI(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n",
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(
+        store=store,
+        api_factory=api_factory,
+        state_base_url="https://sentinel.example.com",
+    )
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-abs-link-1",
+            event="check_run",
+        )
+    )
+
+    assert result.result == "dry_run"
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        row = conn.execute(
+            """
+            SELECT output_summary, output_text
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ?
+            LIMIT 1
+            """,
+            (11, "a" * 40, "merge-sentinel"),
+        ).fetchone()
+
+    assert row is not None
+    output_summary, output_text = row
+    assert "https://sentinel.example.com/state/pr/11/42" in output_summary
+    assert "https://sentinel.example.com/state/pr/11/42" in output_text
 
 
 @pytest.mark.asyncio

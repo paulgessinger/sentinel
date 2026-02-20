@@ -8,6 +8,7 @@ import io
 import json
 import time
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Protocol
+from urllib.parse import urljoin
 
 from sanic.log import logger
 import yaml
@@ -82,6 +83,7 @@ class ProjectionEvaluatorConfig(Protocol):
     PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS: int
     PROJECTION_CONFIG_CACHE_SECONDS: int
     PROJECTION_PR_FILES_CACHE_SECONDS: int
+    STATE_BASE_URL: str | None
 
 
 class ProjectionEvaluator:
@@ -358,7 +360,7 @@ class ProjectionEvaluator:
             title = f"Pending: {pending_count} | Successful: {success_count}"
 
         summary_parts: List[str] = []
-        dashboard_pr_detail_path = f"/state/pr/{repo_id}/{pr_number}"
+        dashboard_pr_detail_url = self._dashboard_pr_detail_url(repo_id, pr_number)
         if failures:
             summary_parts.append(
                 ":red_circle: failed: "
@@ -367,13 +369,13 @@ class ProjectionEvaluator:
         summary_parts.append(f":yellow_circle: pending: {pending_count}")
         summary_parts.append(f":green_circle: successful: {success_count}")
         summary_parts.append(
-            f":link: dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_path})"
+            f":link: dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_url})"
         )
 
         text_lines = [
             "# Checks",
             "",
-            f"Dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_path})",
+            f"Dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_url})",
             "",
             "| Check | Status | Required? |",
             "| --- | --- | --- |",
@@ -816,14 +818,14 @@ class ProjectionEvaluator:
             return EvaluationResult(result="no_pr")
 
         title = "Waiting briefly for checks after PR update"
-        dashboard_pr_detail_path = f"/state/pr/{repo_id}/{pr_number}"
+        dashboard_pr_detail_url = self._dashboard_pr_detail_url(repo_id, pr_number)
         output_summary = (
             ":yellow_circle: Delaying full evaluation briefly after PR update\n"
-            f":link: dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_path})"
+            f":link: dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_url})"
         )
         output_text = (
             "# Checks\n\n"
-            f"Dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_path})\n\n"
+            f"Dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_url})\n\n"
             "Waiting briefly for additional check runs/statuses to arrive after "
             "pull request update before full evaluation."
         )
@@ -1680,6 +1682,14 @@ class ProjectionEvaluator:
         if not vals:
             return None
         return max(vals)
+
+    def _dashboard_pr_detail_url(self, repo_id: int, pr_number: int) -> str:
+        path = f"/state/pr/{repo_id}/{pr_number}"
+        base_url = self.config.STATE_BASE_URL
+        if not base_url:
+            return path
+        normalized_base = base_url if base_url.endswith("/") else f"{base_url}/"
+        return urljoin(normalized_base, path.lstrip("/"))
 
     def _record_activity(
         self,

@@ -138,6 +138,9 @@ class Settings(BaseSettings):
     # When enabled, delivery ids are shown as hashes and raw payload/installation
     # details are hidden in the webhook detail page.
     STATE_REDACT_WEBHOOK_DETAILS: bool = False
+    # Optional absolute base URL used when embedding dashboard links in GitHub
+    # check output (for example: https://merge-sentinel.example.com).
+    STATE_BASE_URL: str | None = None
 
     @field_validator("OVERRIDE_LOGGING", mode="before")
     @classmethod
