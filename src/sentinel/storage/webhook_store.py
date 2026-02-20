@@ -26,6 +26,7 @@ from sqlalchemy import (
     delete,
     event as sa_event,
     or_,
+    literal,
     select,
     func,
     update,
@@ -1021,39 +1022,53 @@ class WebhookStore:
                 .all()
             ]
 
-            related_heads = {
-                str(row.get("head_sha"))
-                for row in pr_rows
-                if isinstance(row.get("head_sha"), str) and row.get("head_sha")
-            }
+            related_heads_query = select(
+                webhook_events.c.head_sha.label("head_sha")
+            ).where(
+                and_(
+                    webhook_events.c.repo_id == repo_id,
+                    webhook_events.c.event == "pull_request",
+                    webhook_events.c.pr_number == pr_number,
+                    webhook_events.c.head_sha.is_not(None),
+                )
+            )
             if head_sha:
-                related_heads.add(head_sha)
+                related_heads_query = related_heads_query.union_all(
+                    select(literal(head_sha).label("head_sha"))
+                )
+            related_heads_raw = related_heads_query.subquery("related_heads_raw")
+            related_heads = select(
+                func.distinct(related_heads_raw.c.head_sha).label("head_sha")
+            ).subquery("related_heads")
 
-            head_rows: list[dict[str, Any]] = []
-            if related_heads:
-                head_rows = [
-                    dict(row)
-                    for row in conn.execute(
-                        webhook_select.where(
-                            and_(
-                                webhook_events.c.repo_id == repo_id,
-                                webhook_events.c.head_sha.in_(tuple(related_heads)),
-                                webhook_events.c.event.in_(
-                                    (
-                                        "check_run",
-                                        "check_suite",
-                                        "workflow_run",
-                                        "status",
-                                    )
-                                ),
-                            )
+            head_rows = [
+                dict(row)
+                for row in conn.execute(
+                    webhook_select.select_from(
+                        webhook_events.join(
+                            related_heads,
+                            webhook_events.c.head_sha == related_heads.c.head_sha,
                         )
-                        .order_by(webhook_events.c.received_at.desc())
-                        .limit(target_limit)
                     )
-                    .mappings()
-                    .all()
-                ]
+                    .where(
+                        and_(
+                            webhook_events.c.repo_id == repo_id,
+                            webhook_events.c.event.in_(
+                                (
+                                    "check_run",
+                                    "check_suite",
+                                    "workflow_run",
+                                    "status",
+                                )
+                            ),
+                        )
+                    )
+                    .order_by(webhook_events.c.received_at.desc())
+                    .limit(target_limit)
+                )
+                .mappings()
+                .all()
+            ]
 
             activity_stmt = (
                 select(
