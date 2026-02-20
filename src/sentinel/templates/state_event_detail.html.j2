@@ -33,7 +33,11 @@
         <div><strong>Action:</strong> {{ event.action or "-" }}</div>
         <div><strong>Detail:</strong> {{ event.detail or "-" }}</div>
         <div><strong>Repository:</strong> {{ event.repo_full_name or "-" }}</div>
+        {% if show_webhook_delivery_details %}
         <div><strong>Installation:</strong> {{ event.installation_id or "-" }}</div>
+        {% else %}
+        <div><strong>Installation:</strong> hidden</div>
+        {% endif %}
     </section>
 
     {% if event.projection_error %}
@@ -45,7 +49,11 @@
 
     <section class="detail-section">
         <h2>Payload</h2>
+        {% if show_webhook_delivery_details %}
         <pre>{{ event.payload_pretty }}</pre>
+        {% else %}
+        <p class="muted">Hidden by STATE_REDACT_WEBHOOK_DETAILS</p>
+        {% endif %}
     </section>
 </main>
 {% endblock %}

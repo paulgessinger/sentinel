@@ -498,3 +498,131 @@ def test_state_event_detail_context_renders_payload_and_back_link(tmp_path):
     assert context["event"]["event"] == "pull_request"
     assert '"number": 42' in context["event"]["payload_pretty"]
     assert context["event"]["pr_detail_url"] == "/state/pr/10/42"
+
+
+def test_state_event_detail_context_redacts_webhook_details(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+
+    payload = {
+        "action": "opened",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "pull_request": {
+            "id": 1001,
+            "number": 42,
+            "title": "Add dashboard",
+            "state": "open",
+            "head": {"sha": "a" * 40},
+            "base": {"ref": "main"},
+        },
+    }
+    store.persist_event(
+        delivery_id="delivery-abc",
+        event="pull_request",
+        payload=payload,
+        payload_json=store.payload_to_json(payload),
+    )
+
+    settings = SimpleNamespace(
+        GITHUB_APP_ID=2877723,
+        PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+        PROJECTION_PUBLISH_ENABLED=True,
+        STATE_REDACT_WEBHOOK_DETAILS=True,
+    )
+    app = SimpleNamespace(
+        config=settings,
+        ctx=SimpleNamespace(webhook_store=store, settings=settings),
+    )
+
+    context = _state_event_detail_context(
+        cast(Sanic, app),
+        delivery_id="delivery-abc",
+        repo_id=10,
+        pr_number=42,
+    )
+    assert context is not None
+    assert context["event"]["delivery_id"].startswith("sha256:")
+    assert context["event"]["delivery_id"] != "delivery-abc"
+    assert context["event"]["installation_id"] is None
+    assert context["event"]["payload_pretty"] is None
+    assert context["show_webhook_delivery_details"] is False
+
+
+def test_state_pr_detail_context_redacts_delivery_ids_in_event_list(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+
+    pr_payload = {
+        "action": "synchronize",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+        "pull_request": {
+            "id": 1001,
+            "number": 42,
+            "title": "Add dashboard",
+            "state": "open",
+            "updated_at": "2026-02-18T12:00:00Z",
+            "head": {"sha": "a" * 40},
+            "base": {"ref": "main"},
+        },
+    }
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=pr_payload,
+        payload_json=store.payload_to_json(pr_payload),
+    )
+    status_payload = {
+        "id": 9001,
+        "sha": "a" * 40,
+        "context": "lint",
+        "state": "success",
+        "installation": {"id": 1},
+        "repository": {"id": 10, "full_name": "org/repo"},
+    }
+    store.persist_event(
+        delivery_id="status-1",
+        event="status",
+        payload=status_payload,
+        payload_json=store.payload_to_json(status_payload),
+    )
+
+    store.upsert_sentinel_check_run(
+        repo_id=10,
+        repo_full_name="org/repo",
+        check_run_id=321,
+        head_sha="a" * 40,
+        name="merge-sentinel",
+        status="completed",
+        conclusion="success",
+        app_id=2877723,
+        started_at="2026-02-18T11:59:00Z",
+        completed_at="2026-02-18T12:00:00Z",
+        output_title="All good",
+        output_summary="summary",
+        output_text="text",
+        output_checks_json='[{"name":"lint","status":"success","required":true}]',
+        output_summary_hash="h1",
+        output_text_hash="h2",
+        last_eval_at="2026-02-18T12:00:01Z",
+        last_publish_at="2026-02-18T12:00:02Z",
+        last_publish_result="published",
+        last_publish_error=None,
+        last_delivery_id="d1",
+    )
+
+    settings = SimpleNamespace(
+        GITHUB_APP_ID=2877723,
+        PROJECTION_CHECK_RUN_NAME="merge-sentinel",
+        PROJECTION_PUBLISH_ENABLED=True,
+        STATE_REDACT_WEBHOOK_DETAILS=True,
+    )
+    app = SimpleNamespace(
+        config=settings,
+        ctx=SimpleNamespace(webhook_store=store, settings=settings),
+    )
+
+    context = _state_pr_detail_context(cast(Sanic, app), repo_id=10, pr_number=42)
+    assert context is not None
+    assert context["events"][0]["delivery_id"].startswith("sha256:")

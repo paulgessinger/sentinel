@@ -134,6 +134,11 @@ class Settings(BaseSettings):
     # Optional URL to redirect the index page (/) to.
     INDEX_REDIRECT_URL: str | None = None
 
+    # Hide sensitive webhook delivery details in dashboard views.
+    # When enabled, delivery ids are shown as hashes and raw payload/installation
+    # details are hidden in the webhook detail page.
+    STATE_REDACT_WEBHOOK_DETAILS: bool = False
+
     @field_validator("OVERRIDE_LOGGING", mode="before")
     @classmethod
     def _parse_log_level(cls, value: Any) -> int:

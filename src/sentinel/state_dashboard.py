@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from math import ceil
 from typing import Any, Dict
@@ -306,6 +307,13 @@ def _render_markdown_inline(text: str | None) -> str:
     return MARKDOWN_RENDERER.renderInline(emojized)
 
 
+def _delivery_id_display(delivery_id: str, *, redact: bool) -> str:
+    if not redact:
+        return delivery_id
+    digest = hashlib.sha256(delivery_id.encode("utf-8")).hexdigest()
+    return f"sha256:{digest[:16]}"
+
+
 def _check_status_display(status: str | None) -> Dict[str, Any]:
     normalized = (status or "unknown").strip().lower()
     if normalized == "success":
@@ -406,6 +414,9 @@ def _state_pr_detail_context(
     pr_number: int,
 ) -> Dict[str, Any] | None:
     settings = app.ctx.settings
+    redact_webhook_details = bool(
+        getattr(settings, "STATE_REDACT_WEBHOOK_DETAILS", False)
+    )
     row = app.ctx.webhook_store.get_pr_dashboard_row(
         app_id=settings.GITHUB_APP_ID,
         check_name=settings.PROJECTION_CHECK_RUN_NAME,
@@ -431,6 +442,10 @@ def _state_pr_detail_context(
     for event in events:
         event.details_url = None
         delivery_id = event.delivery_id
+        delivery_id_display = _delivery_id_display(
+            delivery_id, redact=redact_webhook_details
+        )
+        event.delivery_id = delivery_id_display
         if delivery_id and not delivery_id.startswith("activity-"):
             event.details_url = (
                 f"/state/event/{delivery_id}?repo_id={repo_id}&pr_number={pr_number}"
@@ -479,11 +494,20 @@ def _state_event_detail_context(
     repo_id: int | None = None,
     pr_number: int | None = None,
 ) -> Dict[str, Any] | None:
+    redact_webhook_details = bool(
+        getattr(app.ctx.settings, "STATE_REDACT_WEBHOOK_DETAILS", False)
+    )
     event = app.ctx.webhook_store.get_webhook_event(delivery_id)
     if event is None:
         return None
 
-    event.payload_pretty = json.dumps(event.payload, indent=2, sort_keys=True)
+    if redact_webhook_details:
+        event.delivery_id = _delivery_id_display(delivery_id, redact=True)
+        event.installation_id = None
+        event.payload = {}
+        event.payload_pretty = None
+    else:
+        event.payload_pretty = json.dumps(event.payload, indent=2, sort_keys=True)
     if repo_id is not None and pr_number is not None:
         event.pr_detail_url = f"/state/pr/{repo_id}/{pr_number}"
     else:
@@ -492,6 +516,7 @@ def _state_event_detail_context(
     event_row = event.model_dump(mode="json")
     return {
         "event": event_row,
+        "show_webhook_delivery_details": not redact_webhook_details,
     }
 
 
