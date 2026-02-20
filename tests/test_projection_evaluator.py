@@ -345,16 +345,16 @@ async def test_projection_dry_run_persists_sentinel_row(tmp_path):
     assert row == (
         "completed",
         "success",
-        "All 1 required jobs successful",
-        ":white_check_mark: successful required checks: Builds / tests",
-        "# Checks\n\n| Check | Status | Required? |\n| --- | --- | --- |\n| Builds / tests | success | yes |",
+        "Pending: 0 | Successful: 1",
+        ":yellow_circle: pending: 0\n:green_circle: successful: 1\n:link: dashboard detail: [PR #42](/state/pr/11/42)",
+        "# Checks\n\nDashboard detail: [PR #42](/state/pr/11/42)\n\n| Check | Status | Required? |\n| --- | --- | --- |\n| Builds / tests | :green_circle: success | yes |",
         hashlib.sha256(
-            ":white_check_mark: successful required checks: Builds / tests".encode(
+            ":yellow_circle: pending: 0\n:green_circle: successful: 1\n:link: dashboard detail: [PR #42](/state/pr/11/42)".encode(
                 "utf-8"
             )
         ).hexdigest(),
         hashlib.sha256(
-            "# Checks\n\n| Check | Status | Required? |\n| --- | --- | --- |\n| Builds / tests | success | yes |".encode(
+            "# Checks\n\nDashboard detail: [PR #42](/state/pr/11/42)\n\n| Check | Status | Required? |\n| --- | --- | --- |\n| Builds / tests | :green_circle: success | yes |".encode(
                 "utf-8"
             )
         ).hexdigest(),
@@ -1030,7 +1030,7 @@ async def test_auto_refresh_on_missing_pattern_for_stale_pr(tmp_path):
 
     assert row is not None
     assert row[0] == "success"
-    assert "Builds / tests" in row[1]
+    assert ":green_circle: successful:" in row[1]
 
     with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
         refresh_rows = conn.execute(

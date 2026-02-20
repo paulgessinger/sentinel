@@ -323,6 +323,14 @@ class ProjectionEvaluator:
         failures = computed.failures
         in_progress = computed.in_progress
         required_successes = computed.required_successes
+        pending_count = sum(
+            1
+            for item in computed.result_items.values()
+            if item.status in ("pending", "missing")
+        )
+        success_count = sum(
+            1 for item in computed.result_items.values() if item.status == "success"
+        )
         logger.debug(
             "Projection eval aggregate repo=%s sha=%s items=%d failures=%d required_pending=%d required_success=%d",
             trigger.repo_full_name,
@@ -337,50 +345,58 @@ class ProjectionEvaluator:
             new_status = "completed"
             new_conclusion = "failure"
             title = (
-                "1 job has failed"
-                if len(failures) == 1
-                else f"{len(failures)} jobs have failed"
+                f"Failed: {len(failures)} | Pending: {pending_count} | "
+                f"Successful: {success_count}"
             )
         elif in_progress:
             new_status = "in_progress"
             new_conclusion = None
-            title = (
-                "Waiting for 1 job"
-                if len(in_progress) == 1
-                else f"Waiting for {len(in_progress)} jobs"
-            )
-            if len(in_progress) <= 3:
-                title += ": " + ", ".join(sorted(item.name for item in in_progress))
+            title = f"Pending: {pending_count} | Successful: {success_count}"
         else:
             new_status = "completed"
             new_conclusion = "success"
-            title = f"All {len(required_successes)} required jobs successful"
+            title = f"Pending: {pending_count} | Successful: {success_count}"
 
         summary_parts: List[str] = []
+        dashboard_pr_detail_path = f"/state/pr/{repo_id}/{pr_number}"
         if failures:
             summary_parts.append(
-                ":x: failed: " + ", ".join(sorted(item.name for item in failures))
+                ":red_circle: failed: "
+                + ", ".join(sorted(item.name for item in failures))
             )
-        if in_progress:
-            summary_parts.append(
-                ":yellow_circle: waiting for: "
-                + ", ".join(sorted(item.name for item in in_progress))
-            )
-        if required_successes:
-            summary_parts.append(
-                ":white_check_mark: successful required checks: "
-                + ", ".join(sorted(item.name for item in required_successes))
-            )
+        summary_parts.append(f":yellow_circle: pending: {pending_count}")
+        summary_parts.append(f":green_circle: successful: {success_count}")
+        summary_parts.append(
+            f":link: dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_path})"
+        )
 
         text_lines = [
             "# Checks",
+            "",
+            f"Dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_path})",
             "",
             "| Check | Status | Required? |",
             "| --- | --- | --- |",
         ]
         for item in sorted(computed.result_items.values(), key=lambda item: item.name):
+            check_name_display = item.name
+            check_row = computed.check_by_name.get(item.name)
+            if (
+                check_row is not None
+                and check_row.html_url is not None
+                and check_row.html_url.startswith(("https://", "http://"))
+            ):
+                check_name_display = f"[{item.name}]({check_row.html_url})"
+            if item.status == "failure":
+                status_display = ":red_circle: failure"
+            elif item.status == "pending":
+                status_display = ":yellow_circle: pending"
+            elif item.status == "success":
+                status_display = ":green_circle: success"
+            else:
+                status_display = f":white_circle: {item.status}"
             text_lines.append(
-                f"| {item.name} | {item.status} | {'yes' if item.required else 'no'} |"
+                f"| {check_name_display} | {status_display} | {'yes' if item.required else 'no'} |"
             )
         output_text = "\n".join(text_lines)
         output_summary = "\n".join(summary_parts)
@@ -800,11 +816,14 @@ class ProjectionEvaluator:
             return EvaluationResult(result="no_pr")
 
         title = "Waiting briefly for checks after PR update"
+        dashboard_pr_detail_path = f"/state/pr/{repo_id}/{pr_number}"
         output_summary = (
-            ":yellow_circle: Delaying full evaluation briefly after PR update"
+            ":yellow_circle: Delaying full evaluation briefly after PR update\n"
+            f":link: dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_path})"
         )
         output_text = (
             "# Checks\n\n"
+            f"Dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_path})\n\n"
             "Waiting briefly for additional check runs/statuses to arrive after "
             "pull request update before full evaluation."
         )
