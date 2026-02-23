@@ -960,7 +960,6 @@ def test_pr_detail_row_and_related_events_are_filtered_and_sorted(tmp_path):
     events = store.list_pr_related_events(
         repo_id=103,
         pr_number=42,
-        head_sha=head_sha,
         limit=10,
     )
     assert [event.delivery_id for event in events] == ["status-1", "cr-1", "pr-1"]
@@ -1023,7 +1022,6 @@ def test_pr_related_events_include_projection_activity(tmp_path):
     events = store.list_pr_related_events(
         repo_id=103,
         pr_number=42,
-        head_sha=head_sha,
         limit=10,
     )
     assert events[0].event == "sentinel"
@@ -1108,7 +1106,6 @@ def test_pr_related_events_include_previous_head_history(tmp_path):
     events = store.list_pr_related_events(
         repo_id=103,
         pr_number=42,
-        head_sha=new_head_sha,
         limit=50,
     )
     delivery_ids = {event.delivery_id for event in events}
@@ -1155,12 +1152,58 @@ def test_pr_related_events_do_not_require_payload_decode(tmp_path):
     events = store.list_pr_related_events(
         repo_id=103,
         pr_number=42,
-        head_sha=head_sha,
         limit=10,
     )
     assert [event.delivery_id for event in events] == ["cr-1", "pr-1"]
     assert events[0].detail is not None
     assert "tests" in events[0].detail
+
+
+def test_pr_related_events_include_head_sha_matches_without_pr_number(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    head_sha = "a" * 40
+    pr_payload = make_pull_request_payload(head_sha=head_sha, title="Tracked PR")
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=pr_payload,
+        payload_json=store.payload_to_json(pr_payload),
+    )
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO webhook_events (
+                delivery_id, received_at, event, action, repo_id, repo_full_name,
+                head_sha, pr_number, event_detail, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "status-unlinked",
+                now,
+                "status",
+                None,
+                103,
+                "org/repo",
+                head_sha,
+                None,
+                "lint: success",
+                store.encode_payload_json("{}"),
+            ),
+        )
+        conn.commit()
+
+    events = store.list_pr_related_events(
+        repo_id=103,
+        pr_number=42,
+        limit=20,
+    )
+    delivery_ids = {event.delivery_id for event in events}
+    assert "status-unlinked" in delivery_ids
 
 
 def test_prune_old_activity_events(tmp_path):

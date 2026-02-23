@@ -29,6 +29,7 @@ from sqlalchemy import (
     literal,
     select,
     func,
+    union_all,
     update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -351,6 +352,7 @@ class WebhookStore:
         now = utcnow_iso()
         action = payload.get("action")
         repo = payload.get("repository") or {}
+        repo_id = repo.get("id")
         installation = payload.get("installation") or {}
         head_sha, pr_number, event_detail = self._event_refs(
             event_name=event,
@@ -363,7 +365,7 @@ class WebhookStore:
             event=event,
             action=action,
             installation_id=installation.get("id"),
-            repo_id=repo.get("id"),
+            repo_id=repo_id,
             repo_full_name=repo.get("full_name"),
             head_sha=head_sha,
             pr_number=pr_number,
@@ -378,6 +380,14 @@ class WebhookStore:
 
         try:
             with self.engine.begin() as conn:
+                if pr_number is None:
+                    pr_number = self._lookup_pr_number(
+                        conn=conn,
+                        repo_id=repo_id,
+                        head_sha=head_sha,
+                    )
+                    if pr_number is not None:
+                        insert_event = insert_event.values(pr_number=pr_number)
                 insert_result = conn.execute(insert_event)
                 if (insert_result.rowcount or 0) == 0:
                     webhook_persist_total.labels(event=event, result="duplicate").inc()
@@ -990,106 +1000,73 @@ class WebhookStore:
         *,
         repo_id: int,
         pr_number: int,
-        head_sha: str | None,
         limit: int = 200,
     ) -> list[RelatedEventRow]:
         target_limit = min(1000, max(1, int(limit)))
-        webhook_select = select(
-            webhook_events.c.delivery_id,
-            webhook_events.c.received_at,
-            webhook_events.c.event,
-            webhook_events.c.action,
-            webhook_events.c.head_sha,
-            webhook_events.c.event_detail,
-            webhook_events.c.projection_error,
-        )
-
         with self.engine.begin() as conn:
-            pr_rows = [
-                dict(row)
-                for row in conn.execute(
-                    webhook_select.where(
-                        and_(
-                            webhook_events.c.repo_id == repo_id,
-                            webhook_events.c.event == "pull_request",
-                            webhook_events.c.pr_number == pr_number,
-                        )
+            current_head_sha = conn.execute(
+                select(pr_heads_current.c.head_sha)
+                .where(
+                    and_(
+                        pr_heads_current.c.repo_id == repo_id,
+                        pr_heads_current.c.pr_number == pr_number,
                     )
-                    .order_by(webhook_events.c.received_at.desc())
-                    .limit(target_limit)
                 )
-                .mappings()
-                .all()
-            ]
+                .limit(1)
+            ).scalar_one_or_none()
 
-            related_heads_query = select(
-                webhook_events.c.head_sha.label("head_sha")
+            webhook_match_clauses = [webhook_events.c.pr_number == pr_number]
+            if isinstance(current_head_sha, str) and current_head_sha:
+                webhook_match_clauses.append(
+                    and_(
+                        webhook_events.c.event != "pull_request",
+                        webhook_events.c.head_sha == current_head_sha,
+                    )
+                )
+
+            webhook_stmt = select(
+                webhook_events.c.delivery_id,
+                webhook_events.c.received_at,
+                webhook_events.c.event,
+                webhook_events.c.action,
+                literal(None).label("activity_id"),
+                literal(None).label("result"),
+                webhook_events.c.event_detail,
+                literal(None).label("metadata_json"),
+                literal(False).label("is_activity"),
+                webhook_events.c.projection_error,
             ).where(
                 and_(
                     webhook_events.c.repo_id == repo_id,
-                    webhook_events.c.event == "pull_request",
-                    webhook_events.c.pr_number == pr_number,
-                    webhook_events.c.head_sha.is_not(None),
+                    or_(*webhook_match_clauses),
                 )
             )
-            if head_sha:
-                related_heads_query = related_heads_query.union_all(
-                    select(literal(head_sha).label("head_sha"))
-                )
-            related_heads_raw = related_heads_query.subquery("related_heads_raw")
-            related_heads = select(
-                func.distinct(related_heads_raw.c.head_sha).label("head_sha")
-            ).subquery("related_heads")
 
-            head_rows = [
-                dict(row)
-                for row in conn.execute(
-                    webhook_select.select_from(
-                        webhook_events.join(
-                            related_heads,
-                            webhook_events.c.head_sha == related_heads.c.head_sha,
-                        )
-                    )
-                    .where(
-                        and_(
-                            webhook_events.c.repo_id == repo_id,
-                            webhook_events.c.event.in_(
-                                (
-                                    "check_run",
-                                    "check_suite",
-                                    "workflow_run",
-                                    "status",
-                                )
-                            ),
-                        )
-                    )
-                    .order_by(webhook_events.c.received_at.desc())
-                    .limit(target_limit)
+            activity_stmt = select(
+                sentinel_activity_events.c.delivery_id,
+                sentinel_activity_events.c.recorded_at.label("received_at"),
+                literal("sentinel").label("event"),
+                sentinel_activity_events.c.activity_type.label("action"),
+                sentinel_activity_events.c.activity_id,
+                sentinel_activity_events.c.result,
+                sentinel_activity_events.c.detail.label("event_detail"),
+                sentinel_activity_events.c.metadata_json,
+                literal(True).label("is_activity"),
+                literal(None).label("projection_error"),
+            ).where(
+                and_(
+                    sentinel_activity_events.c.repo_id == repo_id,
+                    sentinel_activity_events.c.pr_number == pr_number,
                 )
-                .mappings()
-                .all()
-            ]
+            )
 
-            activity_stmt = (
-                select(
-                    sentinel_activity_events.c.activity_id,
-                    sentinel_activity_events.c.recorded_at,
-                    sentinel_activity_events.c.activity_type,
-                    sentinel_activity_events.c.result,
-                    sentinel_activity_events.c.detail,
-                    sentinel_activity_events.c.delivery_id,
-                    sentinel_activity_events.c.metadata_json,
-                )
-                .where(
-                    and_(
-                        sentinel_activity_events.c.repo_id == repo_id,
-                        sentinel_activity_events.c.pr_number == pr_number,
-                    )
-                )
-                .order_by(sentinel_activity_events.c.recorded_at.desc())
+            merged_events = union_all(webhook_stmt, activity_stmt).subquery("events")
+            events_stmt = (
+                select(merged_events)
+                .order_by(merged_events.c.received_at.desc())
                 .limit(target_limit)
             )
-            activity_rows = conn.execute(activity_stmt).mappings().all()
+            rows = [dict(row) for row in conn.execute(events_stmt).mappings().all()]
 
         events = [
             RelatedEventRow(
@@ -1098,12 +1075,19 @@ class WebhookStore:
                 event=str(row.get("event") or "unknown"),
                 action=row.get("action"),
                 projection_error=row.get("projection_error"),
-                detail=self._event_detail_from_stored_row(row),
+                detail=(
+                    row.get("event_detail")
+                    if row.get("is_activity")
+                    else self._event_detail_from_stored_row(row)
+                ),
+                is_activity=bool(row.get("is_activity")),
             )
-            for row in [*pr_rows, *head_rows]
+            for row in rows
         ]
 
-        for row in activity_rows:
+        for event, row in zip(events, rows):
+            if not event.is_activity:
+                continue
             metadata: Dict[str, Any] = {}
             metadata_blob = row.get("metadata_json")
             if metadata_blob:
@@ -1113,40 +1097,19 @@ class WebhookStore:
                     metadata = {}
             detail_parts = []
             result = row.get("result")
-            detail = row.get("detail")
+            detail = row.get("event_detail")
             if result:
                 detail_parts.append(str(result))
             if detail:
                 detail_parts.append(str(detail))
-            formatted_detail = ": ".join(detail_parts) if detail_parts else "activity"
             activity_id = row.get("activity_id")
-            events.append(
-                RelatedEventRow(
-                    delivery_id=str(row.get("delivery_id"))
-                    if row.get("delivery_id")
-                    else (
-                        f"activity-{activity_id}" if activity_id is not None else "-"
-                    ),
-                    received_at=row.get("recorded_at"),
-                    event="sentinel",
-                    action=row.get("activity_type") or "activity",
-                    projection_error=None,
-                    detail=formatted_detail,
-                    payload=metadata,
-                    is_activity=True,
-                )
+            event.delivery_id = (
+                str(row.get("delivery_id"))
+                if row.get("delivery_id")
+                else (f"activity-{activity_id}" if activity_id is not None else "-")
             )
-
-        events.sort(
-            key=lambda item: (
-                item.received_at
-                if item.received_at is not None
-                else datetime.min.replace(tzinfo=timezone.utc)
-            ),
-            reverse=True,
-        )
-        if len(events) > target_limit:
-            events = events[:target_limit]
+            event.detail = ": ".join(detail_parts) if detail_parts else "activity"
+            event.payload = metadata
 
         return events
 
@@ -1361,16 +1324,43 @@ class WebhookStore:
             head_sha_value = check_run.get("head_sha")
             if isinstance(head_sha_value, str):
                 head_sha = head_sha_value
+            pull_requests = check_run.get("pull_requests")
+            if isinstance(pull_requests, list):
+                for pull_request in pull_requests:
+                    if not isinstance(pull_request, Mapping):
+                        continue
+                    number = pull_request.get("number")
+                    if isinstance(number, int):
+                        pr_number = number
+                        break
         elif event_name == "check_suite":
             check_suite = payload.get("check_suite") or {}
             head_sha_value = check_suite.get("head_sha")
             if isinstance(head_sha_value, str):
                 head_sha = head_sha_value
+            pull_requests = check_suite.get("pull_requests")
+            if isinstance(pull_requests, list):
+                for pull_request in pull_requests:
+                    if not isinstance(pull_request, Mapping):
+                        continue
+                    number = pull_request.get("number")
+                    if isinstance(number, int):
+                        pr_number = number
+                        break
         elif event_name == "workflow_run":
             workflow_run = payload.get("workflow_run") or {}
             head_sha_value = workflow_run.get("head_sha")
             if isinstance(head_sha_value, str):
                 head_sha = head_sha_value
+            pull_requests = workflow_run.get("pull_requests")
+            if isinstance(pull_requests, list):
+                for pull_request in pull_requests:
+                    if not isinstance(pull_request, Mapping):
+                        continue
+                    number = pull_request.get("number")
+                    if isinstance(number, int):
+                        pr_number = number
+                        break
         elif event_name == "status":
             sha_value = payload.get("sha")
             if isinstance(sha_value, str):
@@ -1384,6 +1374,50 @@ class WebhookStore:
                 payload=payload,
             ),
         )
+
+    @staticmethod
+    def _lookup_pr_number(
+        *,
+        conn: Connection,
+        repo_id: Any,
+        head_sha: str | None,
+    ) -> int | None:
+        if not isinstance(repo_id, int) or not head_sha:
+            return None
+
+        current_stmt = (
+            select(pr_heads_current.c.pr_number)
+            .where(
+                and_(
+                    pr_heads_current.c.repo_id == repo_id,
+                    pr_heads_current.c.head_sha == head_sha,
+                )
+            )
+            .order_by(pr_heads_current.c.updated_at.desc())
+            .limit(1)
+        )
+        current_row = conn.execute(current_stmt).first()
+        if current_row is not None and isinstance(current_row[0], int):
+            return current_row[0]
+
+        historical_stmt = (
+            select(webhook_events.c.pr_number)
+            .where(
+                and_(
+                    webhook_events.c.repo_id == repo_id,
+                    webhook_events.c.event == "pull_request",
+                    webhook_events.c.head_sha == head_sha,
+                    webhook_events.c.pr_number.is_not(None),
+                )
+            )
+            .order_by(webhook_events.c.received_at.desc())
+            .limit(1)
+        )
+        historical_row = conn.execute(historical_stmt).first()
+        if historical_row is not None and isinstance(historical_row[0], int):
+            return historical_row[0]
+
+        return None
 
     @staticmethod
     def _event_detail_from_stored_row(row: Mapping[str, Any]) -> str:

@@ -436,7 +436,6 @@ def _state_pr_detail_context(
     events = app.ctx.webhook_store.list_pr_related_events(
         repo_id=repo_id,
         pr_number=pr_number,
-        head_sha=head_sha,
         limit=250,
     )
     for event in events:
