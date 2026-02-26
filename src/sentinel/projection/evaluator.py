@@ -1235,15 +1235,9 @@ class ProjectionEvaluator:
             if workflow_name:
                 name = f"{workflow_name} / {name}"
             existing = check_by_name.get(name)
-            if existing is None:
-                check_by_name[name] = row
-                continue
-            row_completed = row.completed_at
-            existing_completed = existing.completed_at
-            if row_completed is None or existing_completed is None:
-                check_by_name[name] = row
-                continue
-            if row_completed > existing_completed:
+            if existing is None or self._check_row_recency_key(
+                row
+            ) > self._check_row_recency_key(existing):
                 check_by_name[name] = row
 
         result_items: Dict[str, _ResultItem] = {}
@@ -1326,6 +1320,19 @@ class ProjectionEvaluator:
             in_progress=in_progress,
             required_successes=required_successes,
             missing_pattern_failures=missing_pattern_failures,
+        )
+
+    @staticmethod
+    def _check_row_recency_key(
+        row: CheckRunRow,
+    ) -> tuple[datetime, int, datetime, datetime, int]:
+        epoch = datetime.min.replace(tzinfo=timezone.utc)
+        return (
+            row.last_seen_at or epoch,
+            1 if row.status in ("queued", "in_progress", "pending") else 0,
+            row.completed_at or epoch,
+            row.started_at or epoch,
+            row.check_run_id or 0,
         )
 
     @staticmethod

@@ -792,7 +792,17 @@ class WebhookStore:
     ) -> Dict[str, int]:
         now = utcnow_iso()
         resolved_delivery_id = delivery_id or "api-refresh"
-        counts = {"check_runs": 0, "workflow_runs": 0, "commit_statuses": 0}
+        counts = {
+            "check_runs": 0,
+            "workflow_runs": 0,
+            "commit_statuses": 0,
+            "pruned_check_runs": 0,
+            "pruned_workflow_runs": 0,
+            "pruned_commit_statuses": 0,
+        }
+        seen_check_run_ids: set[int] = set()
+        seen_workflow_run_ids: set[int] = set()
+        seen_status_contexts: set[str] = set()
 
         with self.engine.begin() as conn:
             for row in check_rows:
@@ -801,6 +811,7 @@ class WebhookStore:
                 status = row.status
                 if check_run_id is None or not name or not status:
                     continue
+                seen_check_run_ids.add(check_run_id)
                 values = row.model_dump(
                     mode="python",
                     include={
@@ -854,6 +865,7 @@ class WebhookStore:
                 name = row.name
                 if workflow_run_id is None or not name:
                     continue
+                seen_workflow_run_ids.add(workflow_run_id)
                 values = row.model_dump(
                     mode="python",
                     include={
@@ -912,6 +924,7 @@ class WebhookStore:
                 status_id = row.status_id
                 if status_id is None or not context or not state:
                     continue
+                seen_status_contexts.add(context)
                 values = row.model_dump(
                     mode="python",
                     include={
@@ -950,6 +963,54 @@ class WebhookStore:
                     ],
                 )
                 counts["commit_statuses"] += 1
+
+            check_prune_where = and_(
+                check_runs_current.c.repo_id == repo_id,
+                check_runs_current.c.head_sha == head_sha,
+            )
+            if seen_check_run_ids:
+                check_prune_where = and_(
+                    check_prune_where,
+                    check_runs_current.c.check_run_id.not_in(
+                        sorted(seen_check_run_ids)
+                    ),
+                )
+            check_pruned = conn.execute(
+                delete(check_runs_current).where(check_prune_where)
+            )
+            counts["pruned_check_runs"] = int(check_pruned.rowcount or 0)
+
+            workflow_prune_where = and_(
+                workflow_runs_current.c.repo_id == repo_id,
+                workflow_runs_current.c.head_sha == head_sha,
+            )
+            if seen_workflow_run_ids:
+                workflow_prune_where = and_(
+                    workflow_prune_where,
+                    workflow_runs_current.c.workflow_run_id.not_in(
+                        sorted(seen_workflow_run_ids)
+                    ),
+                )
+            workflow_pruned = conn.execute(
+                delete(workflow_runs_current).where(workflow_prune_where)
+            )
+            counts["pruned_workflow_runs"] = int(workflow_pruned.rowcount or 0)
+
+            status_prune_where = and_(
+                commit_status_current.c.repo_id == repo_id,
+                commit_status_current.c.sha == head_sha,
+            )
+            if seen_status_contexts:
+                status_prune_where = and_(
+                    status_prune_where,
+                    commit_status_current.c.context.not_in(
+                        sorted(seen_status_contexts)
+                    ),
+                )
+            status_pruned = conn.execute(
+                delete(commit_status_current).where(status_prune_where)
+            )
+            counts["pruned_commit_statuses"] = int(status_pruned.rowcount or 0)
 
         return counts
 

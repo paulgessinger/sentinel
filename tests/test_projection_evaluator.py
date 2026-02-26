@@ -20,6 +20,7 @@ from sentinel.github.model import (
 )
 from sentinel.projection import ProjectionEvaluator, ProjectionTrigger
 from sentinel.storage import WebhookStore
+from sentinel.storage.types import CheckRunRow
 
 
 def _make_store(db_path, **updates):
@@ -889,6 +890,86 @@ async def test_force_api_refresh_persists_projection_rows(tmp_path):
         config_yaml="rules:\n  - required_checks: ['Builds / tests']\n"
     )
 
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        conn.execute(
+            """
+            INSERT INTO check_runs_current (
+                repo_id, repo_full_name, check_run_id, head_sha, name, status, conclusion,
+                app_id, app_slug, check_suite_id, started_at, completed_at, first_seen_at,
+                last_seen_at, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                11,
+                "org/repo",
+                7999,
+                "a" * 40,
+                "obsolete-check",
+                "completed",
+                "failure",
+                1,
+                "ci",
+                9999,
+                "2026-02-17T09:00:00Z",
+                "2026-02-17T09:01:00Z",
+                "2026-02-17T09:01:00Z",
+                "2026-02-17T09:01:00Z",
+                "d-stale-check",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO workflow_runs_current (
+                repo_id, repo_full_name, workflow_run_id, name, event, status, conclusion,
+                head_sha, run_number, workflow_id, check_suite_id, app_id, app_slug,
+                created_at, updated_at, first_seen_at, last_seen_at, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                11,
+                "org/repo",
+                8999,
+                "obsolete-workflow",
+                "pull_request",
+                "completed",
+                "failure",
+                "a" * 40,
+                9,
+                129,
+                9999,
+                1,
+                "github-actions",
+                "2026-02-17T09:00:00Z",
+                "2026-02-17T09:01:00Z",
+                "2026-02-17T09:01:00Z",
+                "2026-02-17T09:01:00Z",
+                "d-stale-workflow",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO commit_status_current (
+                repo_id, repo_full_name, sha, context, status_id, state, created_at,
+                updated_at, url, first_seen_at, last_seen_at, last_delivery_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                11,
+                "org/repo",
+                "a" * 40,
+                "obsolete-status",
+                9899,
+                "failure",
+                "2026-02-17T09:00:00Z",
+                "2026-02-17T09:01:00Z",
+                "https://api.github.com/repos/org/repo/statuses/9899",
+                "2026-02-17T09:01:00Z",
+                "2026-02-17T09:01:00Z",
+                "d-stale-status",
+            ),
+        )
+        conn.commit()
+
     async def api_factory(_installation: int):
         return api
 
@@ -922,6 +1003,50 @@ async def test_force_api_refresh_persists_projection_rows(tmp_path):
     assert len(status_rows) == 1
     assert status_rows[0].context == "lint"
     assert status_rows[0].last_delivery_id == "d-api-1"
+
+
+def test_evaluate_rows_prefers_newer_active_check_run_for_same_name(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+
+    async def api_factory(_installation: int):  # pragma: no cover
+        raise AssertionError("api_factory should not be called in this test")
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+    older_failure = CheckRunRow(
+        check_run_id=7001,
+        name="tests",
+        status="completed",
+        conclusion="failure",
+        completed_at=datetime(2026, 2, 17, 10, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 2, 17, 10, 1, tzinfo=timezone.utc),
+    )
+    newer_pending = CheckRunRow(
+        check_run_id=7002,
+        name="tests",
+        status="in_progress",
+        started_at=datetime(2026, 2, 17, 10, 2, tzinfo=timezone.utc),
+        completed_at=None,
+        last_seen_at=datetime(2026, 2, 17, 10, 2, tzinfo=timezone.utc),
+    )
+
+    forward = evaluator._evaluate_rows(
+        check_rows=[older_failure, newer_pending],
+        workflow_rows=[],
+        status_rows=[],
+        rules=[],
+    )
+    reverse = evaluator._evaluate_rows(
+        check_rows=[newer_pending, older_failure],
+        workflow_rows=[],
+        status_rows=[],
+        rules=[],
+    )
+
+    assert forward.check_by_name["tests"].check_run_id == 7002
+    assert reverse.check_by_name["tests"].check_run_id == 7002
+    assert forward.result_items["tests"].status == "pending"
+    assert reverse.result_items["tests"].status == "pending"
 
 
 @pytest.mark.asyncio
