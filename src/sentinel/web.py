@@ -586,7 +586,6 @@ def create_app():
                 record_api_call(endpoint="/app")
 
         app.ctx.webhook_store.initialize()
-        app.ctx.webhook_store.run_scheduled_maintenance()
 
         if projection_eval_enabled(app):
 
