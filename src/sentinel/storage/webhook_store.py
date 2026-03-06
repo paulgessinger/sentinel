@@ -1820,6 +1820,19 @@ class WebhookStore:
                 "last_delivery_id",
             ],
         )
+        # Backfill pr_number on any webhook_events rows for this (repo_id, head_sha)
+        # that arrived before the pull_request event and missed the lookup at ingestion.
+        conn.execute(
+            update(webhook_events)
+            .where(
+                and_(
+                    webhook_events.c.repo_id == values["repo_id"],
+                    webhook_events.c.head_sha == values["head_sha"],
+                    webhook_events.c.pr_number.is_(None),
+                )
+            )
+            .values(pr_number=values["pr_number"])
+        )
 
     def _project_workflow_run(
         self,
