@@ -40,7 +40,6 @@ from sentinel.projection import (
     ProjectionTrigger,
 )
 from sentinel.state_dashboard import StateUpdateBroadcaster, register_state_routes
-from sentinel.db_migrations import migrate_webhook_db as run_webhook_db_migrations
 from sentinel.storage import WebhookStore
 
 
@@ -585,13 +584,6 @@ def create_app():
                 )
                 app.ctx.app_info = await gh.getitem("/app", jwt=jwt)
                 record_api_call(endpoint="/app")
-
-        if app.ctx.settings.WEBHOOK_DB_ENABLED:
-            logger.info(
-                "Running webhook DB migrations to head for %s",
-                settings.WEBHOOK_DB_PATH,
-            )
-            run_webhook_db_migrations(settings.WEBHOOK_DB_PATH, revision="head")
 
         app.ctx.webhook_store.initialize()
         app.ctx.webhook_store.run_scheduled_maintenance()

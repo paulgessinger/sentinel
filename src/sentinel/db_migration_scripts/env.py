@@ -28,11 +28,20 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    from sqlalchemy import event as sa_event
+
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+
+    @sa_event.listens_for(connectable, "connect")
+    def set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
 
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
