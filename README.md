@@ -1,5 +1,11 @@
 sentinel!
 
+## Documentation
+
+- [Job matching: `.merge-sentinel.yml` rules](docs/rule-matching.md) — how per-repository
+  rules select branches/paths and mark CI jobs as required, and how those are aggregated
+  into the `merge-sentinel` check run.
+
 ## Webhook SQLite mirror (PoC)
 
 The webhook service can persist selected webhook deliveries into SQLite and maintain

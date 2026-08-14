@@ -1,18 +1,23 @@
+# Start the dev server with hot-reload using .env.dev
 run:
-    dotenvx run -f .env.dev -- uv run sanic sentinel.web:create_app --factory --port 8080 --host 0.0.0.0 --reload --dev
+   dotenvx run -f .env.dev -- uv run sanic sentinel.web:create_app --factory --port 8080 --host 0.0.0.0 --reload --dev
 
+# Run the test suite
 test:
     uv run pytest
 
+# Remove local disk cache files
 clean:
     @rm -rf cache/files cache/*
 
 image_url := "ghcr.io/paulgessinger/sentinel"
 sha := "sha-" + `git rev-parse --short HEAD`
 
+# Build multi-arch Docker image (amd64 + arm64) tagged with current git SHA
 image_build:
     docker build --platform linux/amd64,linux/arm64 -t {{image_url}}:{{sha}} .
 
+# Build image, tag as latest, and push both SHA and latest tags to the registry
 image: image_build
     docker tag {{image_url}}:{{sha}} {{image_url}}:latest
     docker push {{image_url}}:{{sha}}
@@ -25,21 +30,27 @@ oc_namespace := "merge-sentinel"
 apply:
     oc apply -f deploy/ -n {{oc_namespace}}
 
+# Apply configmap manifest to the remote OpenShift cluster via lxplus SSH
 apply_config_remote:
     cat deploy/configmap.yaml | ssh lxplus oc apply -f - -n {{oc_namespace}}
 
+# Watch rollout status of the web deployment
 rollout:
     oc rollout status deployment/merge-sentinel-web -n {{oc_namespace}}
 
+# Restart the web deployment pods in the local cluster
 restart:
     oc rollout restart deployment/merge-sentinel-web -n {{oc_namespace}}
 
+# Restart the web deployment pods via lxplus SSH
 restart_remote:
     ssh lxplus oc rollout restart deployment/merge-sentinel-web -n {{oc_namespace}}
 
+# Update the web and migrate container images to the current git SHA in the local cluster
 update_image:
     oc set image deployment/merge-sentinel-web web={{image_url}}:{{sha}} migrate={{image_url}}:{{sha}} -n {{oc_namespace}}
 
+# Update container images to the current git SHA via lxplus SSH
 update_image_remote:
     ssh lxplus oc set image deployment/merge-sentinel-web web={{image_url}}:{{sha}} migrate={{image_url}}:{{sha}} -n {{oc_namespace}}
 
@@ -47,19 +58,24 @@ update_image_remote:
 deploy: image update_image
     oc rollout status deployment/merge-sentinel-web -n {{oc_namespace}}
 
+# Build image and deploy to the remote cluster via lxplus SSH
 deploy_remote: image update_image_remote
     ssh lxplus oc rollout status deployment/merge-sentinel-web -n {{oc_namespace}}
 
+# Run the image locally with dev env vars, mounting the cache volume
 docker: image_build
     docker run --rm -it --env-file .env.dev -e DISKCACHE_DIR=/cache -v$PWD/cache:/cache -p8080:8080 {{image_url}}:{{sha}}
 
+# Forward GitHub webhook events from smee.io to the local dev server
 smee:
     smee -u https://smee.io/k8smrd9B27JqKRBg -t http://localhost:8080/webhook
 
+# Forward GitHub webhook events from smee.io to the production endpoint
 smee-remote:
     smee -u https://smee.io/k8smrd9B27JqKRBg -t https://merge-sentinel.app.cern.ch/webhook
 
 
+# Run ruff linter (with auto-fix), ruff formatter, and ty type checker
 lint:
     uv run ruff check --fix .
     uv run ruff format .
