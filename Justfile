@@ -30,9 +30,9 @@ oc_namespace := "merge-sentinel"
 apply:
     oc apply -f deploy/ -n {{oc_namespace}}
 
-# Apply configmap manifest to the remote OpenShift cluster via lxplus SSH
-apply_config_remote:
-    cat deploy/configmap.yaml | ssh lxplus oc apply -f - -n {{oc_namespace}}
+# Apply only the configmap manifest (pods need a restart to pick up new values)
+apply_config:
+    oc apply -f deploy/configmap.yaml -n {{oc_namespace}}
 
 # Watch rollout status of the web deployment
 rollout:
@@ -42,25 +42,13 @@ rollout:
 restart:
     oc rollout restart deployment/merge-sentinel-web -n {{oc_namespace}}
 
-# Restart the web deployment pods via lxplus SSH
-restart_remote:
-    ssh lxplus oc rollout restart deployment/merge-sentinel-web -n {{oc_namespace}}
-
 # Update the web and migrate container images to the current git SHA in the local cluster
 update_image:
     oc set image deployment/merge-sentinel-web web={{image_url}}:{{sha}} migrate={{image_url}}:{{sha}} -n {{oc_namespace}}
 
-# Update container images to the current git SHA via lxplus SSH
-update_image_remote:
-    ssh lxplus oc set image deployment/merge-sentinel-web web={{image_url}}:{{sha}} migrate={{image_url}}:{{sha}} -n {{oc_namespace}}
-
 # Build image, apply manifests, roll out new version
 deploy: image update_image
     oc rollout status deployment/merge-sentinel-web -n {{oc_namespace}}
-
-# Build image and deploy to the remote cluster via lxplus SSH
-deploy_remote: image update_image_remote
-    ssh lxplus oc rollout status deployment/merge-sentinel-web -n {{oc_namespace}}
 
 # Run the image locally with dev env vars, mounting the cache volume
 docker: image_build
