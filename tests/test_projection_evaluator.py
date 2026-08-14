@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from pathlib import Path
 import sqlite3
+from typing import Literal
 
 import pytest
 
@@ -16,7 +17,9 @@ from sentinel.github.model import (
     CommitSha,
     CommitStatus,
     PartialCheckSuite,
+    PrConnection,
     PrFile,
+    PullRequest,
     Repository,
 )
 from sentinel.projection import ProjectionEvaluator, ProjectionTrigger
@@ -1548,3 +1551,213 @@ async def test_merge_group_path_rules_use_compare_api(tmp_path):
         ).fetchone()
 
     assert row == ("completed", "success")
+
+
+def _api_pull_request(
+    *,
+    number: int = 42,
+    head_sha: str = "a" * 40,
+    state: Literal["open", "closed"] = "open",
+    draft: bool = False,
+    title: str = "Fork PR",
+):
+    repo = Repository(
+        id=11,
+        name="repo",
+        full_name="org/repo",
+        url="https://api.github.com/repos/org/repo",
+        html_url="https://github.com/org/repo",
+        private=False,
+    )
+    return PullRequest(
+        url=f"https://api.github.com/repos/org/repo/pulls/{number}",
+        id=5001,
+        number=number,
+        state=state,
+        title=title,
+        draft=draft,
+        merged_at=None,
+        created_at=datetime(2026, 2, 17, 9, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 2, 17, 10, 2, tzinfo=timezone.utc),
+        base=PrConnection(ref="main", sha=CommitSha("b" * 40), repo=repo, label="main"),
+        head=PrConnection(
+            ref="feature", sha=CommitSha(head_sha), repo=repo, label="fork:feature"
+        ),
+        html_url=f"https://github.com/org/repo/pull/{number}",
+    )
+
+
+class _FakeAPIPullsForCommit(_FakeAPIRefresh):
+    def __init__(self, *, config_yaml: str, pulls=None):
+        super().__init__(config_yaml=config_yaml)
+        self._pulls = pulls if pulls is not None else [_api_pull_request()]
+        self.pulls_for_commit_calls = []
+
+    async def get_pulls_for_commit(self, repo_url: str, sha: str):
+        self.pulls_for_commit_calls.append((repo_url, sha))
+        for pull in self._pulls:
+            yield pull
+
+
+@pytest.mark.asyncio
+async def test_force_api_refresh_recovers_missing_pr_projection(tmp_path):
+    """A manual refresh repairs pr_heads_current when no PR webhook has arrived."""
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    # Deliberately no pull_request event: this is the post-rebuild state.
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=_check_run_payload(),
+        payload_json="{}",
+    )
+    assert store.get_open_pr_candidates(11, "a" * 40) == []
+
+    api = _FakeAPIPullsForCommit(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n"
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-refresh-1",
+            event="check_run",
+            force_api_refresh=True,
+        )
+    )
+
+    assert result.result != "no_pr"
+    assert api.pulls_for_commit_calls == [("/repos/org/repo", "a" * 40)]
+
+    recovered = store.get_open_pr_candidates(11, "a" * 40)
+    assert [row.pr_number for row in recovered] == [42]
+    assert recovered[0].base_ref == "main"
+    assert bool(recovered[0].pr_draft) is False
+
+
+@pytest.mark.asyncio
+async def test_missing_pr_projection_does_not_hit_api_without_force_refresh(tmp_path):
+    """no_pr is a normal high-volume outcome and must never spend an API call."""
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=_check_run_payload(),
+        payload_json="{}",
+    )
+
+    class _NoApiExpected(_FakeAPI):
+        async def get_pulls_for_commit(self, _repo_url, _sha):
+            raise AssertionError("must not call the API on a plain no_pr evaluation")
+            yield  # noqa: B018
+
+    api = _NoApiExpected(config_yaml="rules:\n  - required_checks: ['tests']\n")
+
+    async def api_factory(_installation: int):
+        raise AssertionError("must not build an API client on a plain no_pr evaluation")
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-plain-1",
+            event="check_run",
+        )
+    )
+
+    assert result.result == "no_pr"
+    assert api.get_content_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_force_api_refresh_ignores_closed_and_mismatched_pulls(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=_check_run_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPIPullsForCommit(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n",
+        pulls=[
+            _api_pull_request(number=7, state="closed"),
+            _api_pull_request(number=8, head_sha="c" * 40),
+        ],
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-refresh-2",
+            event="check_run",
+            force_api_refresh=True,
+        )
+    )
+
+    assert result.result == "no_pr"
+    assert store.get_open_pr_candidates(11, "a" * 40) == []
+
+
+@pytest.mark.asyncio
+async def test_backfilled_draft_pr_still_suppresses_publish(tmp_path):
+    """Draft state must survive the API backfill or drafts would get published."""
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    store.persist_event(
+        delivery_id="cr-1",
+        event="check_run",
+        payload=_check_run_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPIPullsForCommit(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n",
+        pulls=[_api_pull_request(draft=True)],
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
+    )
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha="a" * 40,
+            installation_id=321,
+            delivery_id="d-refresh-3",
+            event="check_run",
+            force_api_refresh=True,
+        )
+    )
+
+    assert result.result == "skipped_draft"
+    assert api.post_calls == []
+    assert bool(store.get_open_pr_candidates(11, "a" * 40)[0].pr_draft) is True

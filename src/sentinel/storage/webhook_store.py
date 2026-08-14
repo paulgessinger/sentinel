@@ -872,6 +872,68 @@ class WebhookStore:
             rows = conn.execute(stmt).mappings().all()
         return [CommitStatusRow.model_validate(row) for row in rows]
 
+    def upsert_pr_heads_from_api(
+        self,
+        *,
+        rows: Sequence[PullRequestHeadRow],
+        delivery_id: str | None = None,
+    ) -> int:
+        """Write PR head projections read from the API.
+
+        `pr_heads_current` is otherwise only ever written by `pull_request`
+        webhooks, so a PR that receives no further events after the table is lost
+        would never be projected again. This repairs that.
+        """
+        if not rows:
+            return 0
+
+        now = utcnow_iso()
+        resolved_delivery_id = delivery_id or "api-backfill"
+        written = 0
+        with self.engine.begin() as conn:
+            for row in rows:
+                if row.repo_id is None or row.pr_number is None or not row.head_sha:
+                    continue
+                self._upsert(
+                    conn=conn,
+                    table=pr_heads_current,
+                    values={
+                        "repo_id": int(row.repo_id),
+                        "repo_full_name": row.repo_full_name,
+                        "pr_id": row.pr_id,
+                        "pr_number": int(row.pr_number),
+                        "pr_title": row.pr_title,
+                        "pr_draft": row.pr_draft,
+                        "state": row.state or "open",
+                        "head_sha": row.head_sha,
+                        "base_ref": row.base_ref or "",
+                        "action": row.action or "api_backfill",
+                        "updated_at": (
+                            self._dt_to_iso(row.updated_at) if row.updated_at else now
+                        ),
+                        "last_delivery_id": resolved_delivery_id,
+                    },
+                    conflict_columns=["repo_id", "pr_number"],
+                    update_columns=[
+                        "repo_full_name",
+                        "pr_id",
+                        "pr_title",
+                        "pr_draft",
+                        "state",
+                        "head_sha",
+                        "base_ref",
+                        "action",
+                        "updated_at",
+                        "last_delivery_id",
+                    ],
+                )
+                written += 1
+        return written
+
+    @staticmethod
+    def _dt_to_iso(value: datetime) -> str:
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
     def upsert_head_snapshot_from_api(
         self,
         *,

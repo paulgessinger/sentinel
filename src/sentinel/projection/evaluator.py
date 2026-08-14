@@ -32,6 +32,7 @@ from sentinel.storage import WebhookStore
 from sentinel.storage.types import (
     CheckRunRow,
     CommitStatusRow,
+    PullRequestHeadRow,
     WorkflowRunRow,
 )
 from sentinel.storage.webhook_store import utcnow_iso
@@ -178,7 +179,7 @@ class ProjectionEvaluator:
         repo_id = trigger.repo_id
         head_sha = trigger.head_sha
 
-        target = self._resolve_target(trigger)
+        target = await self._resolve_target(trigger, allow_api_fallback=True)
         if target is None:
             logger.info(
                 "Projection eval skip repo=%s sha=%s reason=no_open_pr",
@@ -421,7 +422,7 @@ class ProjectionEvaluator:
             app_id=self.config.GITHUB_APP_ID,
         )
 
-        if self._resolve_target(trigger, log_ambiguous=False) is None:
+        if await self._resolve_target(trigger, log_ambiguous=False) is None:
             logger.info(
                 "Projection eval skip repo=%s sha=%s reason=no_open_pr_before_publish",
                 trigger.repo_full_name,
@@ -812,7 +813,7 @@ class ProjectionEvaluator:
         head_sha = trigger.head_sha
         pr_number = target.pr_number
 
-        if self._resolve_target(trigger, log_ambiguous=False) is None:
+        if await self._resolve_target(trigger, log_ambiguous=False) is None:
             logger.info(
                 "Projection pre-delay skip repo=%s sha=%s reason=no_open_pr_before_publish",
                 trigger.repo_full_name,
@@ -1030,7 +1031,91 @@ class ProjectionEvaluator:
             error=publish_error,
         )
 
-    def _resolve_target(
+    async def _resolve_target(
+        self,
+        trigger: ProjectionTrigger,
+        *,
+        log_ambiguous: bool = True,
+        allow_api_fallback: bool = False,
+    ) -> _EvalTarget | None:
+        target = self._resolve_target_from_projections(
+            trigger, log_ambiguous=log_ambiguous
+        )
+        if target is not None:
+            return target
+
+        # Only a manual refresh may pay for an API read here. `no_pr` is a normal,
+        # high-volume outcome (pushes with no PR, tags, non-PR commits), so falling
+        # back on every miss would spend rate limit on routine traffic.
+        if not (allow_api_fallback and trigger.force_api_refresh):
+            return None
+
+        if not await self._backfill_pr_heads_from_api(trigger):
+            return None
+        return self._resolve_target_from_projections(
+            trigger, log_ambiguous=log_ambiguous
+        )
+
+    async def _backfill_pr_heads_from_api(self, trigger: ProjectionTrigger) -> bool:
+        """Project the PRs associated with this head SHA, read from the API.
+
+        Recovers the case where `pr_heads_current` has no row because no
+        `pull_request` webhook has arrived since the projection was lost, which the
+        manual refresh could not otherwise repair.
+        """
+        try:
+            api = await self.api_factory(trigger.installation_id)
+            pulls = [
+                pull
+                async for pull in api.get_pulls_for_commit(
+                    f"/repos/{trigger.repo_full_name}", trigger.head_sha
+                )
+            ]
+        except Exception:  # noqa: BLE001
+            sentinel_projection_fallback_total.labels(
+                kind="pr_head_refresh", result="error"
+            ).inc()
+            logger.error(
+                "PR head API fallback failed repo=%s sha=%s",
+                trigger.repo_full_name,
+                trigger.head_sha,
+                exc_info=True,
+            )
+            return False
+
+        rows = [
+            PullRequestHeadRow.from_github_pull_request(pull)
+            for pull in pulls
+            if pull.state == "open" and str(pull.head.sha) == trigger.head_sha
+        ]
+        if not rows:
+            sentinel_projection_fallback_total.labels(
+                kind="pr_head_refresh", result="no_match"
+            ).inc()
+            logger.info(
+                "PR head API fallback found no open PR repo=%s sha=%s candidates=%d",
+                trigger.repo_full_name,
+                trigger.head_sha,
+                len(pulls),
+            )
+            return False
+
+        written = self.store.upsert_pr_heads_from_api(
+            rows=rows, delivery_id=trigger.delivery_id
+        )
+        sentinel_projection_fallback_total.labels(
+            kind="pr_head_refresh", result="persisted"
+        ).inc()
+        logger.info(
+            "PR head API fallback projected %d PR(s) repo=%s sha=%s prs=%s",
+            written,
+            trigger.repo_full_name,
+            trigger.head_sha,
+            [row.pr_number for row in rows],
+        )
+        return written > 0
+
+    def _resolve_target_from_projections(
         self, trigger: ProjectionTrigger, *, log_ambiguous: bool = True
     ) -> _EvalTarget | None:
         repo_id = trigger.repo_id

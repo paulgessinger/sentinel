@@ -86,6 +86,8 @@ class PullRequest(PartialPullRequest):
     base: PrConnection
     head: PrConnection
     html_url: str | None
+    title: str | None = None
+    draft: bool | None = None
 
     def __str__(self) -> str:
         name = self.base.repo.name

@@ -42,6 +42,14 @@ rollout:
 restart:
     oc rollout restart deployment/merge-sentinel-web -n {{oc_namespace}}
 
+# Project all open PRs of a repo into pr_heads_current on the prod DB.
+# Run after rebuilding the database, otherwise PRs with no further webhook activity
+# stay invisible to evaluation. Pass --dry-run to preview.
+# Usage: just backfill_prs acts-project/acts <installation-id> [--dry-run]
+backfill_prs repo installation *flags:
+    oc exec -n {{oc_namespace}} deployment/merge-sentinel-web -c web -- \
+        sentinel backfill-pull-requests {{repo}} {{installation}} {{flags}}
+
 # Update the web and migrate container images to the current git SHA in the local cluster
 update_image:
     oc set image deployment/merge-sentinel-web web={{image_url}}:{{sha}} migrate={{image_url}}:{{sha}} -n {{oc_namespace}}

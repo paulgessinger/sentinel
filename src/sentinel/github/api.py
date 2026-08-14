@@ -219,8 +219,22 @@ class API:
         return Repository.model_validate(await self.gh.getitem(repo_url))
 
     async def get_pulls(self, repo_url: str) -> AsyncIterator[PullRequest]:
-        url = f"{repo_url}/pulls"
+        url = f"{repo_url}/pulls?per_page=100"
         self.record_api_calls(endpoint=url)
+        async for item in self.gh.getiter(url):
+            yield PullRequest.model_validate(item)
+
+    async def get_pulls_for_commit(
+        self, repo_url: str, sha: str
+    ) -> AsyncIterator[PullRequest]:
+        """Yield pull requests associated with a commit.
+
+        Unlike the `pull_requests` array on check_run payloads, this covers pull
+        requests opened from a fork.
+        """
+        url = f"{repo_url}/commits/{sha}/pulls?per_page=100"
+        self.record_api_calls(endpoint=url)
+        logger.debug("Get pulls for commit %s", url)
         async for item in self.gh.getiter(url):
             yield PullRequest.model_validate(item)
 

@@ -21,6 +21,7 @@ from sentinel.cache import QueueItem, get_cache
 from sentinel.github.model import PullRequest
 from sentinel.metric import worker_error_count, record_api_call
 from sentinel.storage import WebhookStore
+from sentinel.storage.types import PullRequestHeadRow
 
 
 logging.basicConfig(
@@ -242,6 +243,64 @@ def prune_webhook_db(
     typer.echo(
         f"Pruned {pruned} webhook_events older than {retention_seconds}s in {db_path}"
     )
+
+
+@app.command("backfill-pull-requests")
+def backfill_pull_requests(
+    repo: Annotated[str, typer.Argument(help="Repository in owner/name format")],
+    installation: Annotated[int, typer.Argument(help="GitHub App installation ID")],
+    path: Annotated[
+        Path,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = DEFAULT_WEBHOOK_DB_PATH,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="List what would be projected, write nothing"),
+    ] = False,
+):
+    """Project all open pull requests of a repository into pr_heads_current.
+
+    `pr_heads_current` is normally only written by `pull_request` webhooks, so an
+    open PR that receives no further events stays invisible to evaluation if the
+    projection was lost. Run this once after rebuilding the database.
+    """
+    db_path = path
+    if not db_path.exists():
+        typer.echo(f"Database does not exist: {db_path}")
+        raise typer.Exit(code=1)
+
+    async def handle() -> int:
+        async with installation_client(installation) as gh:
+            api = API(gh, installation)
+            pulls = [pull async for pull in api.get_pulls(f"/repos/{repo}")]
+
+        rows = [
+            PullRequestHeadRow.from_github_pull_request(pull)
+            for pull in pulls
+            if pull.state == "open"
+        ]
+        typer.echo(f"Found {len(rows)} open pull request(s) for {repo}")
+        if dry_run:
+            for row in rows:
+                typer.echo(
+                    f"  would project PR #{row.pr_number} head={row.head_sha} "
+                    f"base={row.base_ref} draft={bool(row.pr_draft)}"
+                )
+            return 0
+
+        store = WebhookStore(settings=_store_settings(db_path))
+        return store.upsert_pr_heads_from_api(rows=rows, delivery_id="cli-backfill")
+
+    try:
+        written = asyncio.run(handle())
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"Backfill failed for {repo}: {exc}")
+        raise typer.Exit(code=1)
+
+    if dry_run:
+        typer.echo("Dry run, nothing written")
+    else:
+        typer.echo(f"Projected {written} pull request head(s) into {db_path}")
 
 
 @app.command("prune-webhook-projections")

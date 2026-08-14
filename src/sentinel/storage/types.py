@@ -8,7 +8,7 @@ import pydantic
 from pydantic import BeforeValidator, PlainSerializer
 
 if TYPE_CHECKING:
-    from sentinel.github.model import ActionsRun, CheckRun, CommitStatus
+    from sentinel.github.model import ActionsRun, CheckRun, CommitStatus, PullRequest
 
 
 def _parse_utc_datetime(value: Any) -> datetime:
@@ -155,6 +155,25 @@ class PullRequestHeadRow(StorageModel):
     action: str | None = None
     updated_at: UTCDateTime | None = None
     last_delivery_id: str | None = None
+
+    @classmethod
+    def from_github_pull_request(cls, pull_request: PullRequest) -> PullRequestHeadRow:
+        # base.repo is always the target repository, which keeps fork pull requests
+        # keyed under the repo the checks and the sentinel check run belong to.
+        repo = pull_request.base.repo
+        return cls(
+            repo_id=repo.id,
+            repo_full_name=repo.full_name,
+            pr_id=pull_request.id,
+            pr_number=pull_request.number,
+            pr_title=pull_request.title,
+            pr_draft=pull_request.draft,
+            state=pull_request.state,
+            head_sha=str(pull_request.head.sha),
+            base_ref=pull_request.base.ref,
+            action="api_backfill",
+            updated_at=pull_request.updated_at,
+        )
 
 
 class MergeGroupHeadRow(StorageModel):
