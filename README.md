@@ -26,7 +26,7 @@ and fragment refresh endpoint `/state/table`. PR detail pages are available at
 - `WEBHOOK_DB_ENABLED` (default: `true`)
 - `WEBHOOK_DB_PATH` (default: `${DISKCACHE_DIR}/webhooks.sqlite3`)
 - `WEBHOOK_DB_RETENTION_SECONDS` (default: `2592000`)
-- `WEBHOOK_DB_EVENTS` (default: `check_run,check_suite,workflow_run,status,pull_request`)
+- `WEBHOOK_DB_EVENTS` (default: `check_run,check_suite,workflow_run,status,pull_request,merge_group`)
 - `WEBHOOK_DISPATCH_ENABLED` (default: `false`)
 - `WEBHOOK_PROJECTION_PRUNE_ENABLED` (default: `true`)
 - `WEBHOOK_PROJECTION_COMPLETED_RETENTION_SECONDS` (default: `604800`)
@@ -66,6 +66,8 @@ and fragment refresh endpoint `/state/table`. PR detail pages are available at
   `(repo_id, sha, context)`
 - `pr_heads_current`: latest PR head state (including `repo_full_name` and `pr_title`) keyed by
   `(repo_id, pr_number)`
+- `merge_group_heads_current`: latest GitHub merge queue entry state (base ref/SHA and the
+  batched PR numbers) keyed by `(repo_id, head_sha)`
 - `sentinel_check_run_state`: internal cache of computed/published sentinel check-run
   state (including `output_title`, `output_summary`, `output_text`) keyed by
   `(repo_id, head_sha, check_name)`

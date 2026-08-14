@@ -71,6 +71,8 @@ def webhook_display_name(event: sansio.Event) -> str:
         return event.data["context"]
     if event.event == "pull_request":
         return event.data["action"]
+    if event.event == "merge_group":
+        return event.data.get("action", "merge_group")
     return "unknown"
 
 
@@ -290,6 +292,12 @@ def projection_trigger_from_event(
         head_sha = payload.get("sha")
     elif event.event == "pull_request":
         head_sha = ((payload.get("pull_request") or {}).get("head") or {}).get("sha")
+    elif event.event == "merge_group":
+        # A destroyed queue entry has nothing left to evaluate; the projection row is
+        # still updated by persistence so later events for the SHA resolve as inactive.
+        if payload.get("action") != "checks_requested":
+            return None
+        head_sha = (payload.get("merge_group") or {}).get("head_sha")
     else:
         return None
 

@@ -498,3 +498,90 @@ async def test_rerequested_from_self_app_enqueues_force_api_refresh(tmp_path):
         "enqueued",
         "Force API refresh scheduled",
     ) in activity_rows
+
+
+def make_merge_group_event(action: str = "checks_requested"):
+    payload = {
+        "action": action,
+        "installation": {"id": 99},
+        "repository": {
+            "id": 500,
+            "name": "repo",
+            "full_name": "org/repo",
+            "url": "https://repo",
+            "html_url": "https://github.com/org/repo",
+            "private": False,
+        },
+        "merge_group": {
+            "head_sha": "c" * 40,
+            "head_ref": f"refs/heads/gh-readonly-queue/main/pr-42-{'d' * 40}",
+            "base_sha": "d" * 40,
+            "base_ref": "refs/heads/main",
+        },
+    }
+    return SimpleNamespace(event="merge_group", data=payload)
+
+
+@pytest.mark.asyncio
+async def test_merge_group_checks_requested_persists_and_enqueues(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    enqueued = []
+
+    class _Scheduler:
+        async def enqueue(self, trigger):
+            enqueued.append(trigger)
+
+    app = SimpleNamespace(
+        config=make_config(PROJECTION_EVAL_ENABLED=True),
+        ctx=SimpleNamespace(
+            webhook_store=store,
+            projection_scheduler=_Scheduler(),
+            state_broadcaster=_RecordingBroadcaster(),
+        ),
+    )
+
+    await _process_github_event(app, make_merge_group_event(), make_request("mg-1"))
+
+    assert len(enqueued) == 1
+    assert enqueued[0].repo_id == 500
+    assert enqueued[0].head_sha == "c" * 40
+    assert enqueued[0].event == "merge_group"
+
+    candidate = store.get_merge_group_candidate(500, "c" * 40)
+    assert candidate is not None
+    assert candidate.base_ref == "main"
+    assert candidate.pr_numbers == [42]
+
+
+@pytest.mark.asyncio
+async def test_merge_group_destroyed_persists_without_enqueue(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    enqueued = []
+
+    class _Scheduler:
+        async def enqueue(self, trigger):
+            enqueued.append(trigger)
+
+    app = SimpleNamespace(
+        config=make_config(PROJECTION_EVAL_ENABLED=True),
+        ctx=SimpleNamespace(
+            webhook_store=store,
+            projection_scheduler=_Scheduler(),
+            state_broadcaster=_RecordingBroadcaster(),
+        ),
+    )
+
+    await _process_github_event(app, make_merge_group_event(), make_request("mg-1"))
+    enqueued.clear()
+    await _process_github_event(
+        app, make_merge_group_event(action="destroyed"), make_request("mg-2")
+    )
+
+    assert enqueued == []
+    assert store.get_merge_group_candidate(500, "c" * 40) is None

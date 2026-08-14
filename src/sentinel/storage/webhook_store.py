@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Any, Dict, Mapping, Protocol, Sequence
@@ -44,6 +45,7 @@ from sentinel.metric import (
 from sentinel.storage.types import (
     CheckRunRow,
     CommitStatusRow,
+    MergeGroupHeadRow,
     PRDashboardRow,
     PullRequestHeadRow,
     RelatedEventRow,
@@ -51,7 +53,6 @@ from sentinel.storage.types import (
     WebhookEventRow,
     WorkflowRunRow,
 )
-
 
 metadata = MetaData()
 
@@ -212,6 +213,22 @@ pr_heads_current = Table(
     Column("last_delivery_id", String, nullable=False),
 )
 
+merge_group_heads_current = Table(
+    "merge_group_heads_current",
+    metadata,
+    Column("repo_id", Integer, primary_key=True),
+    Column("head_sha", String, primary_key=True),
+    Column("repo_full_name", String),
+    Column("head_ref", String),
+    Column("base_sha", String),
+    Column("base_ref", String, nullable=False),
+    Column("pr_numbers_json", String),
+    Column("state", String, nullable=False),
+    Column("action", String),
+    Column("updated_at", String, nullable=False),
+    Column("last_delivery_id", String, nullable=False),
+)
+
 Index(
     "idx_webhook_events_event_received_at",
     webhook_events.c.event,
@@ -282,6 +299,43 @@ Index(
 
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+# Merge queue branches are named refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha>.
+_MERGE_GROUP_PR_REF_PATTERN = re.compile(r"/pr-(\d+)-")
+
+
+def normalize_branch_ref(ref: str | None) -> str:
+    """Reduce a fully qualified branch ref to the bare branch name."""
+    if not ref:
+        return ""
+    prefix = "refs/heads/"
+    return ref[len(prefix) :] if ref.startswith(prefix) else ref
+
+
+def merge_group_pr_numbers(merge_group: Mapping[str, Any]) -> list[int]:
+    """Collect the pull request numbers batched into a merge group entry.
+
+    GitHub does not guarantee a ``pull_requests`` array on the ``merge_group``
+    payload, so the queue branch name is used as the reliable source and the
+    array is only consulted opportunistically.
+    """
+    numbers: list[int] = []
+    pull_requests = merge_group.get("pull_requests")
+    if isinstance(pull_requests, list):
+        for pull_request in pull_requests:
+            if not isinstance(pull_request, Mapping):
+                continue
+            number = pull_request.get("number")
+            if isinstance(number, int) and number not in numbers:
+                numbers.append(number)
+    head_ref = merge_group.get("head_ref")
+    if isinstance(head_ref, str):
+        for match in _MERGE_GROUP_PR_REF_PATTERN.finditer(head_ref):
+            number = int(match.group(1))
+            if number not in numbers:
+                numbers.append(number)
+    return numbers
 
 
 @dataclass(frozen=True)
@@ -689,6 +743,29 @@ class WebhookStore:
                 ),
             ),
             (
+                "merge_group_heads_current",
+                "completed",
+                delete(merge_group_heads_current).where(
+                    and_(
+                        or_(
+                            merge_group_heads_current.c.state.is_(None),
+                            merge_group_heads_current.c.state != "checks_requested",
+                        ),
+                        merge_group_heads_current.c.updated_at < completed_cutoff,
+                    )
+                ),
+            ),
+            (
+                "merge_group_heads_current",
+                "active",
+                delete(merge_group_heads_current).where(
+                    and_(
+                        merge_group_heads_current.c.state == "checks_requested",
+                        merge_group_heads_current.c.updated_at < active_cutoff,
+                    )
+                ),
+            ),
+            (
                 "sentinel_check_run_state",
                 "completed",
                 delete(sentinel_check_run_state).where(
@@ -741,6 +818,22 @@ class WebhookStore:
         with self.engine.begin() as conn:
             rows = conn.execute(stmt).mappings().all()
         return [PullRequestHeadRow.model_validate(row) for row in rows]
+
+    def get_merge_group_candidate(
+        self, repo_id: int, head_sha: str
+    ) -> MergeGroupHeadRow | None:
+        stmt = select(merge_group_heads_current).where(
+            and_(
+                merge_group_heads_current.c.repo_id == repo_id,
+                merge_group_heads_current.c.head_sha == head_sha,
+                merge_group_heads_current.c.state == "checks_requested",
+            )
+        )
+        with self.engine.begin() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row is None:
+            return None
+        return MergeGroupHeadRow.model_validate(row)
 
     def get_check_runs_for_head(self, repo_id: int, head_sha: str) -> list[CheckRunRow]:
         stmt = select(check_runs_current).where(
@@ -1426,6 +1519,14 @@ class WebhookStore:
             sha_value = payload.get("sha")
             if isinstance(sha_value, str):
                 head_sha = sha_value
+        elif event_name == "merge_group":
+            merge_group = payload.get("merge_group") or {}
+            head_sha_value = merge_group.get("head_sha")
+            if isinstance(head_sha_value, str):
+                head_sha = head_sha_value
+            numbers = merge_group_pr_numbers(merge_group)
+            if numbers:
+                pr_number = numbers[0]
 
         return (
             head_sha,
@@ -1477,6 +1578,29 @@ class WebhookStore:
         historical_row = conn.execute(historical_stmt).first()
         if historical_row is not None and isinstance(historical_row[0], int):
             return historical_row[0]
+
+        # Checks running against a merge queue entry carry a synthetic head SHA that
+        # never appears in pr_heads_current; fall back to the queued PR number.
+        merge_group_stmt = (
+            select(merge_group_heads_current.c.pr_numbers_json)
+            .where(
+                and_(
+                    merge_group_heads_current.c.repo_id == repo_id,
+                    merge_group_heads_current.c.head_sha == head_sha,
+                )
+            )
+            .limit(1)
+        )
+        merge_group_row = conn.execute(merge_group_stmt).first()
+        if merge_group_row is not None and merge_group_row[0]:
+            try:
+                numbers = json.loads(merge_group_row[0])
+            except ValueError:
+                numbers = []
+            if isinstance(numbers, list):
+                for number in numbers:
+                    if isinstance(number, int):
+                        return number
 
         return None
 
@@ -1534,6 +1658,16 @@ class WebhookStore:
             context = payload.get("context") or "status"
             state = payload.get("state")
             return f"{context}: {state}" if state else str(context)
+        if event_name == "merge_group":
+            merge_group = payload.get("merge_group") or {}
+            base_ref = normalize_branch_ref(merge_group.get("base_ref"))
+            numbers = merge_group_pr_numbers(merge_group)
+            label = ", ".join(f"#{number}" for number in numbers)
+            detail = f"merge group -> {base_ref}" if base_ref else "merge group"
+            if label:
+                detail = f"{detail} ({label})"
+            action = payload.get("action")
+            return f"{detail}: {action}" if action else detail
         return event_name
 
     def upsert_sentinel_check_run(
@@ -1638,6 +1772,9 @@ class WebhookStore:
         if event == "pull_request":
             self._project_pull_request(conn, payload, now, delivery_id)
             return "pull_request"
+        if event == "merge_group":
+            self._project_merge_group(conn, payload, now, delivery_id)
+            return "merge_group"
 
         webhook_project_total.labels(projection=event, result="skipped").inc()
         return event
@@ -1833,6 +1970,62 @@ class WebhookStore:
             )
             .values(pr_number=values["pr_number"])
         )
+
+    def _project_merge_group(
+        self,
+        conn: Connection,
+        payload: Mapping[str, Any],
+        now: str,
+        delivery_id: str,
+    ) -> None:
+        repo = payload["repository"]
+        merge_group = payload["merge_group"]
+        action = payload.get("action")
+        pr_numbers = merge_group_pr_numbers(merge_group)
+        values = {
+            "repo_id": repo["id"],
+            "repo_full_name": repo.get("full_name"),
+            "head_sha": merge_group["head_sha"],
+            "head_ref": merge_group.get("head_ref"),
+            "base_sha": merge_group.get("base_sha"),
+            "base_ref": normalize_branch_ref(merge_group.get("base_ref")),
+            "pr_numbers_json": json.dumps(pr_numbers),
+            "state": "destroyed" if action == "destroyed" else "checks_requested",
+            "action": action,
+            "updated_at": now,
+            "last_delivery_id": delivery_id,
+        }
+        self._upsert(
+            conn=conn,
+            table=merge_group_heads_current,
+            values=values,
+            conflict_columns=["repo_id", "head_sha"],
+            update_columns=[
+                "repo_full_name",
+                "head_ref",
+                "base_sha",
+                "base_ref",
+                "pr_numbers_json",
+                "state",
+                "action",
+                "updated_at",
+                "last_delivery_id",
+            ],
+        )
+        # Backfill pr_number on webhook_events rows for the merge group head SHA that
+        # arrived before this event, mirroring the pull_request projection behavior.
+        if pr_numbers:
+            conn.execute(
+                update(webhook_events)
+                .where(
+                    and_(
+                        webhook_events.c.repo_id == values["repo_id"],
+                        webhook_events.c.head_sha == values["head_sha"],
+                        webhook_events.c.pr_number.is_(None),
+                    )
+                )
+                .values(pr_number=pr_numbers[0])
+            )
 
     def _project_workflow_run(
         self,

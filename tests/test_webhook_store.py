@@ -142,6 +142,7 @@ def test_initialize_schema(tmp_path):
     assert "pr_heads_current" in tables
     assert "sentinel_check_run_state" in tables
     assert "sentinel_activity_events" in tables
+    assert "merge_group_heads_current" in tables
 
 
 def test_duplicate_delivery_id_is_ignored(tmp_path):
@@ -339,6 +340,97 @@ def test_pull_request_projection_updates_head_sha(tmp_path):
     assert bool(row[2]) is True
     assert row[3] == "d" * 40
     assert row[4] == "pr-2"
+
+
+def make_merge_group_payload(
+    *,
+    action: str = "checks_requested",
+    head_sha: str = "e" * 40,
+    pr_number: int = 42,
+) -> dict:
+    return {
+        "action": action,
+        "installation": {"id": 13},
+        "repository": {"id": 103, "full_name": "org/repo"},
+        "merge_group": {
+            "head_sha": head_sha,
+            "head_ref": f"refs/heads/gh-readonly-queue/main/pr-{pr_number}-{'f' * 40}",
+            "base_sha": "b" * 40,
+            "base_ref": "refs/heads/main",
+        },
+    }
+
+
+def test_merge_group_projection_records_candidate(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    store.persist_event(
+        delivery_id="mg-1",
+        event="merge_group",
+        payload=make_merge_group_payload(),
+        payload_json="{}",
+    )
+
+    candidate = store.get_merge_group_candidate(103, "e" * 40)
+
+    assert candidate is not None
+    assert candidate.base_ref == "main"
+    assert candidate.base_sha == "b" * 40
+    assert candidate.pr_numbers == [42]
+    assert candidate.state == "checks_requested"
+
+
+def test_merge_group_destroyed_clears_candidate(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    store.persist_event(
+        delivery_id="mg-1",
+        event="merge_group",
+        payload=make_merge_group_payload(),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="mg-2",
+        event="merge_group",
+        payload=make_merge_group_payload(action="destroyed"),
+        payload_json="{}",
+    )
+
+    assert store.get_merge_group_candidate(103, "e" * 40) is None
+
+
+def test_merge_group_head_sha_resolves_pr_number_for_later_events(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    store.persist_event(
+        delivery_id="mg-1",
+        event="merge_group",
+        payload=make_merge_group_payload(),
+        payload_json="{}",
+    )
+    check_run_payload = make_check_run_payload()
+    check_run_payload["repository"] = {"id": 103, "full_name": "org/repo"}
+    check_run_payload["check_run"]["head_sha"] = "e" * 40
+    store.persist_event(
+        delivery_id="cr-mg-1",
+        event="check_run",
+        payload=check_run_payload,
+        payload_json="{}",
+    )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = dict(
+            conn.execute("SELECT delivery_id, pr_number FROM webhook_events").fetchall()
+        )
+
+    assert rows["mg-1"] == 42
+    assert rows["cr-mg-1"] == 42
 
 
 def test_check_suite_projection_upserts(tmp_path):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from typing import Annotated, Any, TYPE_CHECKING
 
 import pydantic
@@ -154,6 +155,32 @@ class PullRequestHeadRow(StorageModel):
     action: str | None = None
     updated_at: UTCDateTime | None = None
     last_delivery_id: str | None = None
+
+
+class MergeGroupHeadRow(StorageModel):
+    repo_id: int | None
+    repo_full_name: str | None
+    head_sha: str | None = None
+    head_ref: str | None = None
+    base_sha: str | None = None
+    base_ref: str | None = None
+    pr_numbers_json: str | None = None
+    state: str | None = None
+    action: str | None = None
+    updated_at: UTCDateTime | None = None
+    last_delivery_id: str | None = None
+
+    @property
+    def pr_numbers(self) -> list[int]:
+        if not self.pr_numbers_json:
+            return []
+        try:
+            decoded = json.loads(self.pr_numbers_json)
+        except ValueError:
+            return []
+        if not isinstance(decoded, list):
+            return []
+        return [number for number in decoded if isinstance(number, int)]
 
 
 class SentinelCheckRunStateRow(StorageModel):

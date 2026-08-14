@@ -16,6 +16,7 @@ from sentinel.github.model import (
     CommitSha,
     CommitStatus,
     PartialCheckSuite,
+    PrFile,
     Repository,
 )
 from sentinel.projection import ProjectionEvaluator, ProjectionTrigger
@@ -1299,3 +1300,251 @@ async def test_auto_refresh_on_stale_running_check(tmp_path):
             (11, 42, "a" * 40),
         ).fetchall()
     assert ("triggered",) in refresh_rows
+
+
+MERGE_GROUP_SHA = "9" * 40
+MERGE_GROUP_BASE_SHA = "8" * 40
+
+
+def _merge_group_payload(
+    *,
+    action: str = "checks_requested",
+    head_sha: str = MERGE_GROUP_SHA,
+) -> dict:
+    return {
+        "action": action,
+        "installation": {"id": 321},
+        "repository": {"id": 11, "full_name": "org/repo"},
+        "merge_group": {
+            "head_sha": head_sha,
+            "head_ref": f"refs/heads/gh-readonly-queue/main/pr-42-{MERGE_GROUP_BASE_SHA}",
+            "base_sha": MERGE_GROUP_BASE_SHA,
+            "base_ref": "refs/heads/main",
+        },
+    }
+
+
+def _merge_group_check_run_payload(*, name: str = "tests") -> dict:
+    return {
+        "action": "completed",
+        "installation": {"id": 321},
+        "repository": {"id": 11, "full_name": "org/repo"},
+        "check_run": {
+            "id": 7101,
+            "head_sha": MERGE_GROUP_SHA,
+            "name": name,
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-02-17T10:00:00Z",
+            "completed_at": "2026-02-17T10:01:00Z",
+            "app": {"id": 1, "slug": "ci"},
+            "check_suite": {"id": 9911},
+        },
+    }
+
+
+async def _seed_merge_group(store: WebhookStore) -> None:
+    store.persist_event(
+        delivery_id="mg-1",
+        event="merge_group",
+        payload=_merge_group_payload(),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="mg-cr-1",
+        event="check_run",
+        payload=_merge_group_check_run_payload(),
+        payload_json="{}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_merge_group_head_sha_is_evaluated_and_published(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    await _seed_merge_group(store)
+
+    api = _FakeAPI(
+        config_yaml="rules:\n  - branch_filter: ['main']\n    required_checks: ['tests']\n",
+        post_id=95001,
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
+    )
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha=MERGE_GROUP_SHA,
+            installation_id=321,
+            delivery_id="mg-d-1",
+            event="merge_group",
+            action="checks_requested",
+        )
+    )
+
+    assert result.result == "published"
+    assert len(api.post_calls) == 1
+    posted_check_run = api.post_calls[0][1]
+    assert posted_check_run.head_sha == MERGE_GROUP_SHA
+    assert posted_check_run.status == "completed"
+    assert posted_check_run.conclusion == "success"
+    assert "merge queue (#42)" in posted_check_run.output.text
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        rows = conn.execute(
+            """
+            SELECT check_run_id, status, conclusion, last_publish_result
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ?
+            """,
+            (11, MERGE_GROUP_SHA, "merge-sentinel"),
+        ).fetchall()
+
+    assert rows == [(95001, "completed", "success", "published")]
+
+
+@pytest.mark.asyncio
+async def test_merge_group_missing_required_check_stays_pending(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    store.persist_event(
+        delivery_id="mg-1",
+        event="merge_group",
+        payload=_merge_group_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPI(
+        config_yaml="rules:\n  - branch_filter: ['main']\n    required_checks: ['tests']\n",
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha=MERGE_GROUP_SHA,
+            installation_id=321,
+            delivery_id="mg-d-2",
+            event="merge_group",
+            action="checks_requested",
+        )
+    )
+
+    assert result.result == "dry_run"
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        row = conn.execute(
+            """
+            SELECT status, conclusion
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ?
+            """,
+            (11, MERGE_GROUP_SHA, "merge-sentinel"),
+        ).fetchone()
+
+    assert row == ("in_progress", None)
+
+
+@pytest.mark.asyncio
+async def test_destroyed_merge_group_is_not_evaluated(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    await _seed_merge_group(store)
+    store.persist_event(
+        delivery_id="mg-2",
+        event="merge_group",
+        payload=_merge_group_payload(action="destroyed"),
+        payload_json="{}",
+    )
+
+    api = _FakeAPI(config_yaml="rules:\n  - required_checks: ['tests']\n")
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha=MERGE_GROUP_SHA,
+            installation_id=321,
+            delivery_id="mg-d-3",
+            event="merge_group",
+            action="checks_requested",
+        )
+    )
+
+    assert result.result == "no_pr"
+    assert api.post_calls == []
+
+
+@pytest.mark.asyncio
+async def test_merge_group_path_rules_use_compare_api(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    await _seed_merge_group(store)
+
+    class _FakeAPICompare(_FakeAPI):
+        def __init__(self, *, config_yaml: str):
+            super().__init__(config_yaml=config_yaml)
+            self.compare_calls = []
+
+        async def get_compare_files(self, repo_url: str, base: str, head: str):
+            self.compare_calls.append((repo_url, base, head))
+            yield PrFile(sha=None, filename="src/main.py", status="modified")
+
+    api = _FakeAPICompare(
+        config_yaml=(
+            "rules:\n"
+            "  - branch_filter: ['main']\n"
+            "    paths: ['src/**']\n"
+            "    required_checks: ['tests']\n"
+        ),
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+
+    result = await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha=MERGE_GROUP_SHA,
+            installation_id=321,
+            delivery_id="mg-d-4",
+            event="merge_group",
+            action="checks_requested",
+        )
+    )
+
+    assert result.result == "dry_run"
+    assert api.compare_calls == [
+        ("/repos/org/repo", MERGE_GROUP_BASE_SHA, MERGE_GROUP_SHA)
+    ]
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        row = conn.execute(
+            """
+            SELECT status, conclusion
+            FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ?
+            """,
+            (11, MERGE_GROUP_SHA, "merge-sentinel"),
+        ).fetchone()
+
+    assert row == ("completed", "success")
