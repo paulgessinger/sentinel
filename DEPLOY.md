@@ -41,12 +41,53 @@ the deployment. OpenShift will auto-assign a hostname for the Route; retrieve it
 oc get route merge-sentinel -n merge-sentinel -o jsonpath='{.spec.host}'
 ```
 
-### 4. Configure the GitHub App webhook
+### 4. Configure the GitHub App
 
-In your GitHub App settings:
+**Repository permissions:**
+
+| Permission | Level | Needed for |
+| --- | --- | --- |
+| Actions | Read | workflow run state |
+| Checks | Read & write | reading CI checks and publishing `merge-sentinel` |
+| Contents | Read | `.merge-sentinel.yml` and the compare endpoint used by path rules |
+| Merge queues | Read | receiving `merge_group` webhook events |
+| Metadata | Read | mandatory baseline |
+| Pull requests | Read | PR head/base state and changed files |
+| Statuses | Read | commit status contexts |
+
+**Webhook:**
+
 1. Set the webhook URL to `https://<route-hostname>/webhook`
 2. Confirm the webhook secret matches what you passed above
-3. Subscribe to: `Check runs`, `Check suites`, `Pull requests`, `Statuses`
+3. Subscribe to: `Check runs`, `Check suites`, `Pull requests`, `Statuses`, `Merge group`
+
+Permission changes must be accepted by whoever administers each installation of
+the App, so batch them into a single approval rather than requesting them one at
+a time.
+
+---
+
+## Merge queue support
+
+Sentinel gates GitHub merge queue entries by publishing `merge-sentinel` onto the
+queue entry's synthetic merge commit. Three prerequisites, none of which activate
+on their own:
+
+1. **`Merge queues: Read` permission.** Without it the `Merge group` webhook event
+   cannot be delivered at all, regardless of the subscription setting or anything
+   in the code.
+2. **`Contents: Read` permission.** Path rules (`paths` / `paths_ignore`) resolve a
+   queue entry's changed files via
+   `GET /repos/{owner}/{repo}/compare/{base_sha}...{head_sha}`. A narrower
+   `single_file: read` scope covers only `.merge-sentinel.yml` and does **not**
+   cover the compare endpoint — the call returns `403` for every repo whose config
+   uses path rules.
+3. **`Merge group` webhook subscription**, plus `merge_group` present in
+   `WEBHOOK_DB_EVENTS` (already set in [deploy/configmap.yaml](deploy/configmap.yaml)).
+
+Both permissions are App-level and therefore apply to every repository the App
+serves, not only the ones using a merge queue. Repositories without a merge queue
+emit no `merge_group` events and are unaffected.
 
 ---
 
