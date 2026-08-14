@@ -32,7 +32,6 @@ from sentinel.storage import WebhookStore
 from sentinel.storage.types import (
     CheckRunRow,
     CommitStatusRow,
-    PullRequestHeadRow,
     WorkflowRunRow,
 )
 from sentinel.storage.webhook_store import utcnow_iso
@@ -53,6 +52,37 @@ class _RuleBaseRef:
 @dataclass(frozen=True)
 class _RulePullRequestLike:
     base: _RuleBaseRef
+
+
+@dataclass(frozen=True)
+class _EvalTarget:
+    """What a head SHA is being evaluated on behalf of.
+
+    Either an open pull request or a GitHub merge queue entry. Merge queue entries
+    run against a synthetic merge commit that never appears in ``pr_heads_current``,
+    so they are resolved from the merge group projection instead.
+    """
+
+    kind: str
+    base_ref: str
+    pr_number: int | None
+    pr_numbers: tuple[int, ...]
+    is_draft: bool
+    updated_at: datetime | None
+    base_sha: str | None = None
+
+    @property
+    def is_merge_group(self) -> bool:
+        return self.kind == "merge_group"
+
+    @property
+    def label(self) -> str:
+        if not self.is_merge_group:
+            return f"PR #{self.pr_number}"
+        if self.pr_numbers:
+            joined = ", ".join(f"#{number}" for number in self.pr_numbers)
+            return f"merge queue ({joined})"
+        return "merge queue"
 
 
 @dataclass(frozen=True)
@@ -148,8 +178,8 @@ class ProjectionEvaluator:
         repo_id = trigger.repo_id
         head_sha = trigger.head_sha
 
-        open_prs = self.store.get_open_pr_candidates(repo_id, head_sha)
-        if not open_prs:
+        target = self._resolve_target(trigger)
+        if target is None:
             logger.info(
                 "Projection eval skip repo=%s sha=%s reason=no_open_pr",
                 trigger.repo_full_name,
@@ -157,35 +187,12 @@ class ProjectionEvaluator:
             )
             sentinel_projection_eval_total.labels(result="no_pr").inc()
             return EvaluationResult(result="no_pr")
-
-        if len(open_prs) > 1:
-            logger.info(
-                "Projection eval ambiguous repo=%s sha=%s open_prs=%d using_pr=%s",
-                trigger.repo_full_name,
-                head_sha,
-                len(open_prs),
-                open_prs[0].pr_number,
-            )
-            sentinel_projection_eval_total.labels(result="ambiguous_pr").inc()
-        pr_row = open_prs[0]
-        if pr_row.pr_number is None:
-            raise ValueError("Projected PR row is missing pr_number")
-        pr_number = int(pr_row.pr_number)
-        if len(open_prs) > 1:
-            self._record_activity(
-                trigger=trigger,
-                pr_number=pr_number,
-                activity_type="pr_selection",
-                result="ambiguous",
-                detail="Multiple open PRs matched this head SHA",
-                metadata={"count": len(open_prs)},
-            )
+        pr_number = target.pr_number
 
         if trigger.pre_delay_pending:
             return await self._publish_pre_delay_pending(
                 trigger=trigger,
-                pr_row=pr_row,
-                pr_number=pr_number,
+                target=target,
             )
 
         api = await self.api_factory(trigger.installation_id)
@@ -222,10 +229,10 @@ class ProjectionEvaluator:
             has_path_rules,
         )
         if has_path_rules and self.config.PROJECTION_PATH_RULE_FALLBACK_ENABLED:
-            changed_files = await self._get_pr_files(
+            changed_files = await self._get_changed_files(
                 api=api,
                 trigger=trigger,
-                pr_number=pr_number,
+                target=target,
             )
             logger.debug(
                 "Projection eval path fallback repo=%s sha=%s pr=%s changed_files=%d",
@@ -235,7 +242,7 @@ class ProjectionEvaluator:
                 len(changed_files),
             )
 
-        pr_like = _RulePullRequestLike(base=_RuleBaseRef(ref=pr_row.base_ref or ""))
+        pr_like = _RulePullRequestLike(base=_RuleBaseRef(ref=target.base_ref))
         rules = determine_rules(changed_files, pr_like, config.rules)
         logger.debug(
             "Projection eval selected rules repo=%s sha=%s pr=%s selected=%d",
@@ -282,7 +289,7 @@ class ProjectionEvaluator:
         auto_refresh_kind: str | None = None
         if self._should_auto_refresh_on_missing(
             trigger=trigger,
-            pr_row=pr_row,
+            target=target,
             pr_number=pr_number,
             missing_pattern_failures=computed.missing_pattern_failures,
             explicit_failures=computed.explicit_failures,
@@ -360,7 +367,7 @@ class ProjectionEvaluator:
             title = f"Pending: {pending_count} | Successful: {success_count}"
 
         summary_parts: List[str] = []
-        dashboard_pr_detail_url = self._dashboard_pr_detail_url(repo_id, pr_number)
+        dashboard_detail_link = self._dashboard_detail_link(repo_id, target)
         if failures:
             summary_parts.append(
                 ":red_circle: failed: "
@@ -368,18 +375,18 @@ class ProjectionEvaluator:
             )
         summary_parts.append(f":yellow_circle: pending: {pending_count}")
         summary_parts.append(f":green_circle: successful: {success_count}")
-        summary_parts.append(
-            f":link: dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_url})"
-        )
+        if dashboard_detail_link is not None:
+            summary_parts.append(f":link: dashboard detail: {dashboard_detail_link}")
 
-        text_lines = [
-            "# Checks",
-            "",
-            f"Dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_url})",
-            "",
-            "| Check | Status | Required? |",
-            "| --- | --- | --- |",
-        ]
+        text_lines = ["# Checks", ""]
+        if dashboard_detail_link is not None:
+            text_lines.extend([f"Dashboard detail: {dashboard_detail_link}", ""])
+        text_lines.extend(
+            [
+                "| Check | Status | Required? |",
+                "| --- | --- | --- |",
+            ]
+        )
         for item in sorted(computed.result_items.values(), key=lambda item: item.name):
             check_name_display = item.name
             check_row = computed.check_by_name.get(item.name)
@@ -414,7 +421,7 @@ class ProjectionEvaluator:
             app_id=self.config.GITHUB_APP_ID,
         )
 
-        if not self.store.get_open_pr_candidates(repo_id, head_sha):
+        if self._resolve_target(trigger, log_ambiguous=False) is None:
             logger.info(
                 "Projection eval skip repo=%s sha=%s reason=no_open_pr_before_publish",
                 trigger.repo_full_name,
@@ -426,7 +433,11 @@ class ProjectionEvaluator:
                 pr_number=pr_number,
                 activity_type="publish",
                 result="skip_no_open_pr",
-                detail="PR closed before publish",
+                detail=(
+                    "Merge queue entry removed before publish"
+                    if target.is_merge_group
+                    else "PR closed before publish"
+                ),
             )
             return EvaluationResult(result="no_pr")
 
@@ -499,7 +510,7 @@ class ProjectionEvaluator:
             )
             sentinel_projection_publish_total.labels(result="unchanged").inc()
             unchanged_detail = f"{new_status}/{new_conclusion or '-'}"
-            if bool(pr_row.pr_draft):
+            if target.is_draft:
                 unchanged_detail = f"Draft PR, publish suppressed ({new_status}/{new_conclusion or '-'})"
             self._record_activity(
                 trigger=trigger,
@@ -545,7 +556,7 @@ class ProjectionEvaluator:
         publish_error: str | None = None
         publish_at: str | None = None
 
-        if self.config.PROJECTION_PUBLISH_ENABLED and bool(pr_row.pr_draft):
+        if self.config.PROJECTION_PUBLISH_ENABLED and target.is_draft:
             logger.info(
                 "Projection publish skipped (draft_pr) repo=%s sha=%s pr=%s status=%s conclusion=%s",
                 trigger.repo_full_name,
@@ -719,7 +730,7 @@ class ProjectionEvaluator:
                     exc_info=True,
                 )
         else:
-            is_draft_pr = bool(pr_row.pr_draft)
+            is_draft_pr = target.is_draft
             if is_draft_pr:
                 logger.info(
                     "Projection publish skipped (dry_run_draft) repo=%s sha=%s pr=%s status=%s conclusion=%s",
@@ -795,13 +806,13 @@ class ProjectionEvaluator:
         self,
         *,
         trigger: ProjectionTrigger,
-        pr_row: PullRequestHeadRow,
-        pr_number: int,
+        target: _EvalTarget,
     ) -> EvaluationResult:
         repo_id = trigger.repo_id
         head_sha = trigger.head_sha
+        pr_number = target.pr_number
 
-        if not self.store.get_open_pr_candidates(repo_id, head_sha):
+        if self._resolve_target(trigger, log_ambiguous=False) is None:
             logger.info(
                 "Projection pre-delay skip repo=%s sha=%s reason=no_open_pr_before_publish",
                 trigger.repo_full_name,
@@ -818,14 +829,24 @@ class ProjectionEvaluator:
             return EvaluationResult(result="no_pr")
 
         title = "Waiting briefly for checks after PR update"
-        dashboard_pr_detail_url = self._dashboard_pr_detail_url(repo_id, pr_number)
+        dashboard_detail_link = self._dashboard_detail_link(repo_id, target)
+        summary_link_line = (
+            f"\n:link: dashboard detail: {dashboard_detail_link}"
+            if dashboard_detail_link is not None
+            else ""
+        )
+        text_link_line = (
+            f"Dashboard detail: {dashboard_detail_link}\n\n"
+            if dashboard_detail_link is not None
+            else ""
+        )
         output_summary = (
-            ":yellow_circle: Delaying full evaluation briefly after PR update\n"
-            f":link: dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_url})"
+            ":yellow_circle: Delaying full evaluation briefly after PR update"
+            f"{summary_link_line}"
         )
         output_text = (
             "# Checks\n\n"
-            f"Dashboard detail: [PR #{pr_number}]({dashboard_pr_detail_url})\n\n"
+            f"{text_link_line}"
             "Waiting briefly for additional check runs/statuses to arrive after "
             "pull request update before full evaluation."
         )
@@ -903,7 +924,7 @@ class ProjectionEvaluator:
         publish_error: str | None = None
         publish_at: str | None = None
 
-        if self.config.PROJECTION_PUBLISH_ENABLED and bool(pr_row.pr_draft):
+        if self.config.PROJECTION_PUBLISH_ENABLED and target.is_draft:
             publish_result = "skipped_draft"
             sentinel_projection_publish_total.labels(result="skipped_draft").inc()
             self._record_activity(
@@ -972,7 +993,7 @@ class ProjectionEvaluator:
                 result="dry_run",
                 detail=(
                     "Draft PR, would not publish in_progress/- (dry-run)"
-                    if bool(pr_row.pr_draft)
+                    if target.is_draft
                     else "Would publish in_progress/-"
                 ),
             )
@@ -1009,8 +1030,70 @@ class ProjectionEvaluator:
             error=publish_error,
         )
 
+    def _resolve_target(
+        self, trigger: ProjectionTrigger, *, log_ambiguous: bool = True
+    ) -> _EvalTarget | None:
+        repo_id = trigger.repo_id
+        head_sha = trigger.head_sha
+
+        open_prs = self.store.get_open_pr_candidates(repo_id, head_sha)
+        if open_prs:
+            pr_row = open_prs[0]
+            if pr_row.pr_number is None:
+                raise ValueError("Projected PR row is missing pr_number")
+            pr_number = int(pr_row.pr_number)
+            if len(open_prs) > 1 and log_ambiguous:
+                logger.info(
+                    "Projection eval ambiguous repo=%s sha=%s open_prs=%d using_pr=%s",
+                    trigger.repo_full_name,
+                    head_sha,
+                    len(open_prs),
+                    pr_number,
+                )
+                sentinel_projection_eval_total.labels(result="ambiguous_pr").inc()
+                self._record_activity(
+                    trigger=trigger,
+                    pr_number=pr_number,
+                    activity_type="pr_selection",
+                    result="ambiguous",
+                    detail="Multiple open PRs matched this head SHA",
+                    metadata={"count": len(open_prs)},
+                )
+            return _EvalTarget(
+                kind="pull_request",
+                base_ref=pr_row.base_ref or "",
+                pr_number=pr_number,
+                pr_numbers=(pr_number,),
+                is_draft=bool(pr_row.pr_draft),
+                updated_at=pr_row.updated_at,
+            )
+
+        merge_group = self.store.get_merge_group_candidate(repo_id, head_sha)
+        if merge_group is None:
+            return None
+
+        pr_numbers = tuple(merge_group.pr_numbers)
+        if log_ambiguous:
+            logger.info(
+                "Projection eval target is merge queue entry repo=%s sha=%s base_ref=%s prs=%s",
+                trigger.repo_full_name,
+                head_sha,
+                merge_group.base_ref,
+                list(pr_numbers),
+            )
+        return _EvalTarget(
+            kind="merge_group",
+            base_ref=merge_group.base_ref or "",
+            # Queue entries are never draft, so publish suppression never applies.
+            pr_number=pr_numbers[0] if pr_numbers else None,
+            pr_numbers=pr_numbers,
+            is_draft=False,
+            updated_at=merge_group.updated_at,
+            base_sha=merge_group.base_sha,
+        )
+
     async def _get_repo_config(
-        self, api: API, trigger: ProjectionTrigger, *, pr_number: int
+        self, api: API, trigger: ProjectionTrigger, *, pr_number: int | None
     ) -> Config | None:
         now = time.monotonic()
         cached = self._config_cache.get(trigger.repo_id)
@@ -1091,14 +1174,19 @@ class ProjectionEvaluator:
         )
         return loaded
 
-    async def _get_pr_files(
+    async def _get_changed_files(
         self,
         *,
         api: API,
         trigger: ProjectionTrigger,
-        pr_number: int,
+        target: _EvalTarget,
     ) -> List[str]:
-        key = (trigger.repo_id, pr_number, trigger.head_sha)
+        pr_number = target.pr_number
+        key = (
+            trigger.repo_id,
+            pr_number if pr_number is not None else -1,
+            trigger.head_sha,
+        )
         now = time.monotonic()
         cached = self._pr_files_cache.get(key)
         if cached and cached[0] > now:
@@ -1130,8 +1218,27 @@ class ProjectionEvaluator:
             trigger.head_sha,
             pr_number,
         )
-        pull = await api.get_pull(f"/repos/{trigger.repo_full_name}", pr_number)
-        files = [f.filename async for f in api.get_pull_request_files(pull)]
+        if target.is_merge_group:
+            # A queue entry can batch several PRs, so compare the whole merge commit
+            # against the base it was built on instead of unioning per-PR file lists.
+            if not target.base_sha:
+                raise ValueError(
+                    "Merge group projection is missing base_sha, cannot resolve "
+                    "changed files for path rules"
+                )
+            files = [
+                f.filename
+                async for f in api.get_compare_files(
+                    f"/repos/{trigger.repo_full_name}",
+                    target.base_sha,
+                    trigger.head_sha,
+                )
+            ]
+        else:
+            if pr_number is None:
+                raise ValueError("Pull request target is missing pr_number")
+            pull = await api.get_pull(f"/repos/{trigger.repo_full_name}", pr_number)
+            files = [f.filename async for f in api.get_pull_request_files(pull)]
         self._pr_files_cache[key] = (
             now + self.config.PROJECTION_PR_FILES_CACHE_SECONDS,
             list(files),
@@ -1366,8 +1473,8 @@ class ProjectionEvaluator:
         self,
         *,
         trigger: ProjectionTrigger,
-        pr_row: PullRequestHeadRow,
-        pr_number: int,
+        target: _EvalTarget,
+        pr_number: int | None,
         missing_pattern_failures: list[str],
         explicit_failures: list[_ResultItem],
     ) -> bool:
@@ -1417,7 +1524,7 @@ class ProjectionEvaluator:
             )
             return False
 
-        pr_updated_at = pr_row.updated_at
+        pr_updated_at = target.updated_at
         if pr_updated_at is None:
             sentinel_projection_fallback_total.labels(
                 kind="missing_refresh", result="skip_no_pr_updated_at"
@@ -1477,7 +1584,7 @@ class ProjectionEvaluator:
         self,
         *,
         trigger: ProjectionTrigger,
-        pr_number: int,
+        pr_number: int | None,
         computed: _ComputedEvaluation,
     ) -> bool:
         if trigger.force_api_refresh:
@@ -1563,7 +1670,7 @@ class ProjectionEvaluator:
         return True
 
     async def _load_head_rows_from_api(
-        self, *, api: API, trigger: ProjectionTrigger, pr_number: int
+        self, *, api: API, trigger: ProjectionTrigger, pr_number: int | None
     ) -> tuple[list[CheckRunRow], list[WorkflowRunRow], list[CommitStatusRow]]:
         repo = await api.get_repository(f"/repos/{trigger.repo_full_name}")
         check_runs = [
@@ -1698,16 +1805,27 @@ class ProjectionEvaluator:
         normalized_base = base_url if base_url.endswith("/") else f"{base_url}/"
         return urljoin(normalized_base, path.lstrip("/"))
 
+    def _dashboard_detail_link(self, repo_id: int, target: _EvalTarget) -> str | None:
+        """Markdown link to the dashboard detail page, if one can be addressed."""
+        if target.pr_number is None:
+            return None
+        url = self._dashboard_pr_detail_url(repo_id, target.pr_number)
+        return f"[{target.label}]({url})"
+
     def _record_activity(
         self,
         *,
         trigger: ProjectionTrigger,
-        pr_number: int,
+        pr_number: int | None,
         activity_type: str,
         result: str | None,
         detail: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
+        # Activity events are keyed on a PR number; a merge queue entry whose PR
+        # numbers could not be derived simply records nothing.
+        if pr_number is None:
+            return
         try:
             self.store.record_projection_activity_event(
                 repo_id=trigger.repo_id,

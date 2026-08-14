@@ -25,6 +25,9 @@ class API:
 
     call_count: int
 
+    # The compare endpoint returns at most 300 entries in its `files` array.
+    _COMPARE_MAX_FILES = 300
+
     def __init__(self, gh: GitHubAPI, installation: int):
         self.gh = gh
         self.installation = installation
@@ -172,6 +175,33 @@ class API:
         self.record_api_calls(endpoint=url)
         logger.debug("Getting files for PR #%d %s", pr.number, url)
         async for item in self.gh.getiter(url):
+            yield PrFile.model_validate(item)
+
+    async def get_compare_files(
+        self, repo_url: str, base: str, head: str
+    ) -> AsyncIterator[PrFile]:
+        """Yield the files changed between two commits.
+
+        Used for merge queue entries, where the changed files of the whole batch are
+        not reachable through a single pull request.
+        """
+        url = f"{repo_url}/compare/{base}...{head}"
+        self.record_api_calls(endpoint=url)
+        logger.debug("Compare %s...%s: %s", base, head, url)
+        data = await self.gh.getitem(url)
+        files = data.get("files") or []
+        # GitHub caps the compare `files` array at 300 entries and does not paginate
+        # it, so a larger merge group yields an incomplete list for path rules.
+        if len(files) >= self._COMPARE_MAX_FILES:
+            logger.warning(
+                "Compare %s...%s returned %d files, at or above the API cap of %d; "
+                "the changed file list may be truncated",
+                base,
+                head,
+                len(files),
+                self._COMPARE_MAX_FILES,
+            )
+        for item in files:
             yield PrFile.model_validate(item)
 
     async def get_check_suite(self, repo_url: str, id: int) -> CheckSuite:

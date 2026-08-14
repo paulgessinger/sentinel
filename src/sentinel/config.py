@@ -83,6 +83,7 @@ class Settings(BaseSettings):
         "workflow_run",
         "status",
         "pull_request",
+        "merge_group",
     )
 
     # Enable legacy gidgethub router dispatch/queue path after persistence.
@@ -178,6 +179,7 @@ class Settings(BaseSettings):
                 "workflow_run",
                 "status",
                 "pull_request",
+                "merge_group",
             )
         if isinstance(value, str):
             return tuple(part.strip() for part in value.split(",") if part.strip())
