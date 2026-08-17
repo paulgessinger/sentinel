@@ -127,6 +127,26 @@ oc rollout undo deployment/merge-sentinel-web --to-revision=<N> -n merge-sentine
 
 ---
 
+## Reconciliation (missed webhooks)
+
+The running web server periodically sweeps for open PRs whose sentinel check
+looks stuck — missing, non-terminal, or not re-evaluated in
+`PROJECTION_RECONCILE_STALE_SECONDS` — and forces the same API-refresh path the
+"Re-evaluate now" check-run action uses. This recovers PRs stuck behind a webhook
+GitHub never delivered, or one dropped before it reached the projection scheduler.
+Controlled by `PROJECTION_RECONCILE_ENABLED` / `_INTERVAL_SECONDS` /
+`_STALE_SECONDS` in [deploy/configmap.yaml](deploy/configmap.yaml).
+
+To force a refresh for a specific repo right away instead of waiting for the next
+sweep:
+
+```bash
+just reconcile acts-project/acts --dry-run   # preview
+just reconcile acts-project/acts             # actually refresh
+```
+
+---
+
 ## Database migrations
 
 Migrations run automatically before the web server starts on every pod restart

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 import logging
 import logging.config
@@ -212,6 +213,60 @@ def webhook_dispatch_enabled(app: Sanic) -> bool:
 
 def projection_eval_enabled(app: Sanic) -> bool:
     return bool(app.ctx.settings.PROJECTION_EVAL_ENABLED)
+
+
+async def run_reconcile_sweep(app: Sanic) -> None:
+    """Force-refresh open PRs whose sentinel check looks stuck.
+
+    Covers PRs whose triggering webhook was dropped before it ever reached the
+    scheduler (a missed delivery, or an event that failed to persist), which
+    otherwise leaves the PR's check silently stuck until someone notices and
+    clicks "Re-evaluate now".
+    """
+    settings = app.ctx.settings
+    store = app.ctx.webhook_store
+    candidates = store.get_stale_open_pr_candidates(
+        app_id=settings.GITHUB_APP_ID,
+        check_name=settings.PROJECTION_CHECK_RUN_NAME,
+        stale_seconds=settings.PROJECTION_RECONCILE_STALE_SECONDS,
+    )
+    if not candidates:
+        return
+
+    logger.info("Reconcile sweep found %d stuck PR(s)", len(candidates))
+    for candidate in candidates:
+        if candidate.repo_id is None or candidate.head_sha is None:
+            continue
+        installation_id = store.get_latest_installation_id(candidate.repo_id)
+        if installation_id is None:
+            logger.warning(
+                "Reconcile sweep: no known installation for repo=%s pr=%s, skipping",
+                candidate.repo_full_name,
+                candidate.pr_number,
+            )
+            continue
+        trigger = ProjectionTrigger(
+            repo_id=candidate.repo_id,
+            repo_full_name=candidate.repo_full_name or "",
+            head_sha=candidate.head_sha,
+            installation_id=installation_id,
+            event="reconcile",
+            action="stale_sweep",
+            force_api_refresh=True,
+        )
+        await app.ctx.projection_scheduler.enqueue(trigger)
+
+
+async def reconcile_loop(app: Sanic) -> None:
+    interval = max(60, app.ctx.settings.PROJECTION_RECONCILE_INTERVAL_SECONDS)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await run_reconcile_sweep(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.error("Reconcile sweep failed", exc_info=True)
 
 
 def is_projection_manual_refresh_requested(app: Sanic, event: sansio.Event) -> bool:
@@ -633,6 +688,9 @@ def create_app():
                 ),
                 handler=projection_handler,
             )
+
+            if settings.PROJECTION_RECONCILE_ENABLED:
+                app.add_task(reconcile_loop(app))
 
     @app.listener("after_server_stop")
     async def shutdown(app):

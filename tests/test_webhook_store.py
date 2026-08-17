@@ -1338,3 +1338,120 @@ def test_prune_old_activity_events(tmp_path):
             "SELECT delivery_id FROM sentinel_activity_events ORDER BY activity_id"
         ).fetchall()
     assert rows == [("d-new",)]
+
+
+def test_get_stale_open_pr_candidates_finds_missing_and_non_terminal_checks(
+    tmp_path,
+):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    def open_pr(number, head_sha, *, delivery_id):
+        store.persist_event(
+            delivery_id=delivery_id,
+            event="pull_request",
+            payload={
+                "action": "opened",
+                "installation": {"id": 7},
+                "repository": {"id": 1, "full_name": "org/repo"},
+                "pull_request": {
+                    "id": 1000 + number,
+                    "number": number,
+                    "title": f"PR {number}",
+                    "state": "open",
+                    "updated_at": "2026-02-18T10:00:00Z",
+                    "head": {"sha": head_sha},
+                    "base": {"ref": "main"},
+                },
+            },
+            payload_json="{}",
+        )
+
+    # PR 1: no sentinel_check_run_state row at all -> never evaluated.
+    open_pr(1, "a" * 40, delivery_id="pr-1")
+
+    # PR 2: evaluated a long time ago and still non-terminal -> stuck.
+    open_pr(2, "b" * 40, delivery_id="pr-2")
+    store.upsert_sentinel_check_run(
+        repo_id=1,
+        repo_full_name="org/repo",
+        check_run_id=1,
+        head_sha="b" * 40,
+        name="merge-sentinel",
+        status="in_progress",
+        conclusion=None,
+        app_id=999,
+        started_at=None,
+        completed_at=None,
+        output_title=None,
+        output_summary=None,
+        output_text=None,
+        output_checks_json=None,
+        output_summary_hash=None,
+        output_text_hash=None,
+        last_eval_at="2020-01-01T00:00:00.000000Z",
+        last_publish_at=None,
+        last_publish_result="published",
+        last_publish_error=None,
+        last_delivery_id="eval-2",
+    )
+
+    # PR 3: completed and evaluated recently -> not stuck.
+    open_pr(3, "c" * 40, delivery_id="pr-3")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    store.upsert_sentinel_check_run(
+        repo_id=1,
+        repo_full_name="org/repo",
+        check_run_id=2,
+        head_sha="c" * 40,
+        name="merge-sentinel",
+        status="completed",
+        conclusion="success",
+        app_id=999,
+        started_at=None,
+        completed_at=None,
+        output_title=None,
+        output_summary=None,
+        output_text=None,
+        output_checks_json=None,
+        output_summary_hash=None,
+        output_text_hash=None,
+        last_eval_at=now,
+        last_publish_at=None,
+        last_publish_result="published",
+        last_publish_error=None,
+        last_delivery_id="eval-3",
+    )
+
+    candidates = store.get_stale_open_pr_candidates(
+        app_id=999,
+        check_name="merge-sentinel",
+        stale_seconds=1800,
+    )
+    stuck_pr_numbers = {candidate.pr_number for candidate in candidates}
+    assert stuck_pr_numbers == {1, 2}
+
+
+def test_get_latest_installation_id_returns_most_recent(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    store.persist_event(
+        delivery_id="ev-1",
+        event="pull_request",
+        payload=make_pull_request_payload(head_sha="a" * 40)
+        | {"installation": {"id": 11}},
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="ev-2",
+        event="pull_request",
+        payload=make_pull_request_payload(head_sha="b" * 40)
+        | {"installation": {"id": 22}},
+        payload_json="{}",
+    )
+
+    assert store.get_latest_installation_id(103) == 22
+    assert store.get_latest_installation_id(999) is None

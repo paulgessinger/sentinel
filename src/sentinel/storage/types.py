@@ -226,6 +226,15 @@ class SentinelCheckRunStateRow(StorageModel):
     last_delivery_id: str | None = None
 
 
+class StaleSentinelCandidateRow(StorageModel):
+    repo_id: int | None
+    repo_full_name: str | None
+    pr_number: int | None
+    head_sha: str | None
+    sentinel_status: str | None = None
+    last_eval_at: UTCDateTime | None = None
+
+
 class PRDashboardRow(StorageModel):
     repo_id: int | None
     repo_full_name: str | None

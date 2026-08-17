@@ -20,6 +20,7 @@ from sentinel.logger import get_log_handlers
 from sentinel.cache import QueueItem, get_cache
 from sentinel.github.model import PullRequest
 from sentinel.metric import worker_error_count, record_api_call
+from sentinel.projection import ProjectionEvaluator, ProjectionTrigger
 from sentinel.storage import WebhookStore
 from sentinel.storage.types import PullRequestHeadRow
 
@@ -121,6 +122,38 @@ async def installation_client(installation: int):
         )
 
         yield gh
+
+
+@asynccontextmanager
+async def installation_client_for_repo(repo: str):
+    """Like `installation_client`, but resolves the installation ID from a repo
+    via the GitHub App JWT instead of taking it as a known argument.
+    """
+    async with aiohttp.ClientSession(loop=asyncio.get_running_loop()) as session:
+        gh = gh_aiohttp.GitHubAPI(session, __name__)
+
+        jwt = get_jwt(
+            app_id=str(SETTINGS.GITHUB_APP_ID),
+            private_key=SETTINGS.GITHUB_PRIVATE_KEY,
+        )
+
+        await gh.getitem("/app", jwt=jwt)
+        record_api_call(endpoint="/app")
+
+        installation_data = await gh.getitem(f"/repos/{repo}/installation", jwt=jwt)
+        record_api_call(endpoint=f"/repos/{repo}/installation")
+        installation_id = int(installation_data["id"])
+
+        token = await get_access_token(gh, installation_id)
+
+        gh = gh_aiohttp.GitHubAPI(
+            session,
+            __name__,
+            oauth_token=token,
+            cache=httpcache,
+        )
+
+        yield gh, installation_id
 
 
 @app.command()
@@ -301,6 +334,98 @@ def backfill_pull_requests(
         typer.echo("Dry run, nothing written")
     else:
         typer.echo(f"Projected {written} pull request head(s) into {db_path}")
+
+
+@app.command("reconcile")
+def reconcile(
+    repo: Annotated[str, typer.Argument(help="Repository in owner/name format")],
+    path: Annotated[
+        Path,
+        typer.Option("--path", help="Path to webhook SQLite database file"),
+    ] = DEFAULT_WEBHOOK_DB_PATH,
+    stale_seconds: Annotated[
+        int,
+        typer.Option(
+            "--stale-seconds",
+            help="Treat a PR's sentinel check as stuck if it hasn't been "
+            "re-evaluated in this many seconds",
+        ),
+    ] = SETTINGS.PROJECTION_RECONCILE_STALE_SECONDS,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="List stuck PRs without refreshing them"),
+    ] = False,
+):
+    """Force-refresh sentinel evaluation for open PRs whose check looks stuck.
+
+    Finds open pull requests whose sentinel check is missing, non-terminal, or
+    hasn't been re-evaluated in `--stale-seconds`, and re-evaluates them the same
+    way the "Re-evaluate now" check-run action does: a fresh API read followed by
+    publish. Meant to run on a schedule to recover PRs stuck behind a webhook
+    GitHub never delivered or that got dropped before persistence.
+    """
+    db_path = path
+    if not db_path.exists():
+        typer.echo(f"Database does not exist: {db_path}")
+        raise typer.Exit(code=1)
+
+    store = WebhookStore(settings=_store_settings(db_path))
+    candidates = store.get_stale_open_pr_candidates(
+        app_id=SETTINGS.GITHUB_APP_ID,
+        check_name=SETTINGS.PROJECTION_CHECK_RUN_NAME,
+        stale_seconds=stale_seconds,
+        repo_full_name=repo,
+    )
+
+    typer.echo(f"Found {len(candidates)} stuck open pull request(s) for {repo}")
+    for candidate in candidates:
+        typer.echo(
+            f"  PR #{candidate.pr_number} head={candidate.head_sha} "
+            f"sentinel_status={candidate.sentinel_status or 'unknown'} "
+            f"last_eval_at={candidate.last_eval_at or 'never'}"
+        )
+
+    if not candidates:
+        return
+    if dry_run:
+        typer.echo("Dry run, nothing refreshed")
+        return
+
+    async def handle() -> None:
+        async with installation_client_for_repo(repo) as (gh, installation_id):
+
+            async def api_factory(_installation_id: int) -> API:
+                return API(gh, _installation_id)
+
+            evaluator = ProjectionEvaluator(
+                store=store,
+                config=SETTINGS,
+                api_factory=api_factory,
+            )
+
+            for candidate in candidates:
+                if candidate.repo_id is None or candidate.head_sha is None:
+                    continue
+                trigger = ProjectionTrigger(
+                    repo_id=candidate.repo_id,
+                    repo_full_name=candidate.repo_full_name or repo,
+                    head_sha=candidate.head_sha,
+                    installation_id=installation_id,
+                    event="reconcile",
+                    action="stale_sweep",
+                    force_api_refresh=True,
+                )
+                result = await evaluator.evaluate_and_publish(trigger)
+                typer.echo(
+                    f"  PR #{candidate.pr_number} head={candidate.head_sha} "
+                    f"-> {result.result}"
+                )
+
+    try:
+        asyncio.run(handle())
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"Reconcile failed for {repo}: {exc}")
+        raise typer.Exit(code=1)
 
 
 @app.command("prune-webhook-projections")

@@ -50,6 +50,14 @@ backfill_prs repo installation *flags:
     oc exec -n {{oc_namespace}} deployment/merge-sentinel-web -c web -- \
         sentinel backfill-pull-requests {{repo}} {{installation}} {{flags}}
 
+# Force-refresh open PRs whose sentinel check looks stuck (missed webhook, etc.).
+# The running server already sweeps for this periodically (PROJECTION_RECONCILE_*
+# in deploy/configmap.yaml); use this to kick a repo on demand. Pass --dry-run to preview.
+# Usage: just reconcile acts-project/acts [--dry-run]
+reconcile repo *flags:
+    oc exec -n {{oc_namespace}} deployment/merge-sentinel-web -c web -- \
+        sentinel reconcile {{repo}} {{flags}}
+
 # Update the web and migrate container images to the current git SHA in the local cluster
 update_image:
     oc set image deployment/merge-sentinel-web web={{image_url}}:{{sha}} migrate={{image_url}}:{{sha}} -n {{oc_namespace}}

@@ -135,6 +135,13 @@ class Settings(BaseSettings):
     PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS: int = 1800
     # Cooldown per (repo_id, head_sha) between automatic missing-pattern refreshes.
     PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS: int = 300
+    # Minimum time since a PR's sentinel check was last evaluated before
+    # reconciliation treats it as stuck and forces an API refresh.
+    PROJECTION_RECONCILE_STALE_SECONDS: int = 1800
+    # Run a periodic in-process sweep for PRs stuck behind a dropped webhook.
+    PROJECTION_RECONCILE_ENABLED: bool = True
+    # Interval between reconciliation sweeps.
+    PROJECTION_RECONCILE_INTERVAL_SECONDS: int = 900
 
     # Optional URL to redirect the index page (/) to.
     INDEX_REDIRECT_URL: str | None = None
