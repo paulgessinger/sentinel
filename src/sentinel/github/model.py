@@ -51,11 +51,16 @@ class Content(Model):
         return base64.b64decode(self.content).decode()
 
 
-class Repository(Model):
+class PartialRepository(Model):
+    """Repository reference embedded in a check run's pull requests."""
+
     id: int
     name: str
-    full_name: str | None
     url: str
+
+
+class Repository(PartialRepository):
+    full_name: str | None
     html_url: str | None
     private: bool | None
 
@@ -63,11 +68,12 @@ class Repository(Model):
 class PartialPrConnection(Model):
     ref: str
     sha: CommitSha
-    repo: Repository
+    repo: PartialRepository
 
 
 class PrConnection(PartialPrConnection):
     label: str
+    repo: Repository
 
 
 class PartialPullRequest(Model):
