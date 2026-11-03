@@ -4,7 +4,9 @@
 
 - OpenShift cluster with `oc` CLI configured and logged in
 - A GitHub App with a private key, app ID, and webhook secret
-- Docker with buildx for multi-platform builds
+- Permission to create OpenShift builds and push to the project's internal image
+  registry (the same binary BuildConfig pattern used by Cheerenkov)
+- A clean, committed checkout; Docker is only needed for optional local builds
 
 ---
 
@@ -34,8 +36,11 @@ This secret is never committed to the repo. Re-run the command if credentials ro
 just deploy
 ```
 
-This builds and pushes the image, applies all files in `deploy/`, and rolls out
-the deployment. OpenShift will auto-assign a hostname for the Route; retrieve it with:
+This uploads a Git archive of the committed Dockerfile, lockfile, package metadata,
+and source to the cluster. OpenShift builds it and pushes it to the project's
+ImageStream. The deployment then uses the completed build's immutable digest for
+both the migration and web containers. OpenShift will auto-assign a hostname for
+the Route; retrieve it with:
 
 ```bash
 oc get route merge-sentinel -n merge-sentinel -o jsonpath='{.spec.host}'
@@ -97,8 +102,15 @@ emit no `merge_group` events and are unaffected.
 just deploy
 ```
 
-Builds and pushes a new image tagged with the current commit SHA, applies any
-manifest changes, then does a rolling update. Blocks until the new pod is ready.
+Builds inside OpenShift, records a full commit SHA image tag, applies runtime
+manifests, and rolls out the exact build digest. Blocks until the new pod is ready.
+The build uses the cluster node's architecture; this is not a multi-platform build.
+Uncommitted changes are rejected rather than silently omitted from the image.
+
+To build without changing the running deployment, use `just image_cluster`. It
+prints the immutable image reference on success. Inspect build logs with
+`oc logs -n merge-sentinel build/<build-name>`. Local Docker recipes (`just image`
+and `just docker`) remain available but are no longer used by `just deploy`.
 
 ---
 
@@ -109,6 +121,10 @@ To apply changes to files in `deploy/` without building a new image:
 ```bash
 just apply
 ```
+
+This applies the manifest's mutable ImageStream `latest` reference. Use
+`just apply_config` for configuration-only changes, or `just deploy` to keep the
+runtime pinned to an exact build digest.
 
 ---
 

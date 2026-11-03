@@ -62,9 +62,13 @@ reconcile repo *flags:
 update_image:
     oc set image deployment/merge-sentinel-web web={{image_url}}:{{sha}} migrate={{image_url}}:{{sha}} -n {{oc_namespace}}
 
-# Build image, apply manifests, roll out new version
-deploy: image update_image
-    oc rollout status deployment/merge-sentinel-web -n {{oc_namespace}}
+# Build a committed snapshot in OpenShift and print its immutable image reference
+image_cluster:
+    OC_NAMESPACE={{oc_namespace}} bash scripts/cluster_image.sh
+
+# Build in OpenShift, apply manifests, and roll out the exact resulting digest
+deploy:
+    OC_NAMESPACE={{oc_namespace}} bash scripts/cluster_image.sh --deploy
 
 # Run the image locally with dev env vars, mounting the cache volume
 docker: image_build
