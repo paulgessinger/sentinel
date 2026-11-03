@@ -557,7 +557,7 @@ async def test_merge_group_checks_requested_persists_and_enqueues(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_merge_group_destroyed_persists_without_enqueue(tmp_path):
+async def test_merge_group_destroyed_enqueues_finalize(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
     store = _make_store(db_path)
     store.initialize()
@@ -583,5 +583,11 @@ async def test_merge_group_destroyed_persists_without_enqueue(tmp_path):
         app, make_merge_group_event(action="destroyed"), make_request("mg-2")
     )
 
-    assert enqueued == []
+    # The queue entry is gone, so no later event can resolve the target: the
+    # destroyed event is the last chance to close out the in_progress check run.
+    assert len(enqueued) == 1
+    assert enqueued[0].head_sha == "c" * 40
+    assert enqueued[0].action == "destroyed"
+    assert enqueued[0].finalize_abandoned is True
+    assert enqueued[0].force_api_refresh is False
     assert store.get_merge_group_candidate(500, "c" * 40) is None

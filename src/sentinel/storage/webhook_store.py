@@ -878,6 +878,68 @@ class WebhookStore:
             rows = conn.execute(stmt).mappings().all()
         return [StaleSentinelCandidateRow.model_validate(row) for row in rows]
 
+    def get_stale_merge_group_candidates(
+        self,
+        *,
+        app_id: int,
+        check_name: str,
+        stale_seconds: int,
+        repo_full_name: str | None = None,
+    ) -> list[StaleSentinelCandidateRow]:
+        """Live merge queue entries whose sentinel check is missing or stale.
+
+        The merge queue evicts an entry whose required checks go quiet, and unlike
+        a pull request an entry has no second chance, so this sweeps the queue
+        projection on the same signal `get_stale_open_pr_candidates` uses for PRs.
+        """
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=max(0, stale_seconds))
+        ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        join_condition = and_(
+            sentinel_check_run_state.c.repo_id == merge_group_heads_current.c.repo_id,
+            sentinel_check_run_state.c.head_sha == merge_group_heads_current.c.head_sha,
+            sentinel_check_run_state.c.check_name == check_name,
+            sentinel_check_run_state.c.app_id == app_id,
+        )
+        stmt = (
+            select(
+                merge_group_heads_current.c.repo_id.label("repo_id"),
+                merge_group_heads_current.c.repo_full_name.label("repo_full_name"),
+                literal(None).label("pr_number"),
+                merge_group_heads_current.c.head_sha.label("head_sha"),
+                sentinel_check_run_state.c.status.label("sentinel_status"),
+                sentinel_check_run_state.c.last_eval_at.label("last_eval_at"),
+            )
+            .select_from(
+                merge_group_heads_current.outerjoin(
+                    sentinel_check_run_state, join_condition
+                )
+            )
+            .where(
+                and_(
+                    merge_group_heads_current.c.state == "checks_requested",
+                    or_(
+                        sentinel_check_run_state.c.status.is_(None),
+                        sentinel_check_run_state.c.status != "completed",
+                    ),
+                    or_(
+                        sentinel_check_run_state.c.last_eval_at.is_(None),
+                        sentinel_check_run_state.c.last_eval_at < cutoff,
+                    ),
+                )
+            )
+            .order_by(merge_group_heads_current.c.updated_at)
+        )
+        if repo_full_name:
+            stmt = stmt.where(
+                merge_group_heads_current.c.repo_full_name == repo_full_name
+            )
+
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [StaleSentinelCandidateRow.model_validate(row) for row in rows]
+
     def get_latest_installation_id(self, repo_id: int) -> int | None:
         stmt = (
             select(webhook_events.c.installation_id)

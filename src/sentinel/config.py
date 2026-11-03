@@ -138,6 +138,9 @@ class Settings(BaseSettings):
     # Minimum time since a PR's sentinel check was last evaluated before
     # reconciliation treats it as stuck and forces an API refresh.
     PROJECTION_RECONCILE_STALE_SECONDS: int = 1800
+    # Same, for live merge queue entries. Kept well below the queue's own
+    # check_response_timeout so a recovered entry still reports in time.
+    PROJECTION_RECONCILE_MERGE_GROUP_STALE_SECONDS: int = 300
     # Run a periodic in-process sweep for PRs stuck behind a dropped webhook.
     PROJECTION_RECONCILE_ENABLED: bool = True
     # Interval between reconciliation sweeps.

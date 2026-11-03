@@ -14,6 +14,14 @@ class ProjectionTrigger:
     action: str | None = None
     force_api_refresh: bool = False
     pre_delay_pending: bool = False
+    # Set when the merge queue entry this SHA belongs to was destroyed: the
+    # target no longer resolves, so evaluation cannot run, but a non-terminal
+    # sentinel check run must still be closed out instead of hanging forever.
+    finalize_abandoned: bool = False
+    # A manual refresh should produce a visibly fresh check run, but an automated
+    # sweep must keep updating the existing one: replacing a merge queue entry's
+    # required check every sweep resets it to in_progress and churns the queue.
+    allow_new_check_run: bool = True
 
     @property
     def key(self) -> str:

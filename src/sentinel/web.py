@@ -230,10 +230,23 @@ async def run_reconcile_sweep(app: Sanic) -> None:
         check_name=settings.PROJECTION_CHECK_RUN_NAME,
         stale_seconds=settings.PROJECTION_RECONCILE_STALE_SECONDS,
     )
+    # A queue entry gets evicted if its required checks go quiet, and it has no
+    # second chance, so it is swept on a tighter staleness threshold than a PR.
+    merge_group_candidates = store.get_stale_merge_group_candidates(
+        app_id=settings.GITHUB_APP_ID,
+        check_name=settings.PROJECTION_CHECK_RUN_NAME,
+        stale_seconds=settings.PROJECTION_RECONCILE_MERGE_GROUP_STALE_SECONDS,
+    )
+    if merge_group_candidates:
+        logger.info(
+            "Reconcile sweep found %d stuck merge queue entry(ies)",
+            len(merge_group_candidates),
+        )
+    candidates = list(candidates) + list(merge_group_candidates)
     if not candidates:
         return
 
-    logger.info("Reconcile sweep found %d stuck PR(s)", len(candidates))
+    logger.info("Reconcile sweep found %d stuck target(s)", len(candidates))
     for candidate in candidates:
         if candidate.repo_id is None or candidate.head_sha is None:
             continue
@@ -253,6 +266,9 @@ async def run_reconcile_sweep(app: Sanic) -> None:
             event="reconcile",
             action="stale_sweep",
             force_api_refresh=True,
+            # Automated refreshes update the existing check, avoiding new check
+            # runs on every sweep while a real CI job is still running.
+            allow_new_check_run=False,
         )
         await app.ctx.projection_scheduler.enqueue(trigger)
 
@@ -348,11 +364,26 @@ def projection_trigger_from_event(
     elif event.event == "pull_request":
         head_sha = ((payload.get("pull_request") or {}).get("head") or {}).get("sha")
     elif event.event == "merge_group":
-        # A destroyed queue entry has nothing left to evaluate; the projection row is
-        # still updated by persistence so later events for the SHA resolve as inactive.
-        if payload.get("action") != "checks_requested":
+        # A destroyed queue entry has nothing left to evaluate, but its check run is
+        # still in_progress on GitHub and no later event can resolve the target, so
+        # it needs one final trigger to close out. See finalize_abandoned.
+        action = payload.get("action")
+        if action not in ("checks_requested", "destroyed"):
             return None
         head_sha = (payload.get("merge_group") or {}).get("head_sha")
+        if action == "destroyed":
+            if not head_sha:
+                return None
+            return ProjectionTrigger(
+                repo_id=int(repo_id),
+                repo_full_name=str(repo_full_name),
+                head_sha=str(head_sha),
+                installation_id=int(installation_id),
+                delivery_id=delivery_id or None,
+                event=event.event,
+                action=action,
+                finalize_abandoned=True,
+            )
     else:
         return None
 

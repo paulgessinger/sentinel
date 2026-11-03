@@ -24,7 +24,8 @@ from sentinel.github.model import (
 )
 from sentinel.projection import ProjectionEvaluator, ProjectionTrigger
 from sentinel.storage import WebhookStore
-from sentinel.storage.types import CheckRunRow
+from sentinel.model import Rule
+from sentinel.storage.types import CheckRunRow, WorkflowRunRow
 
 
 def _make_store(db_path, **updates):
@@ -1053,6 +1054,76 @@ def test_evaluate_rows_prefers_newer_active_check_run_for_same_name(tmp_path):
     assert reverse.result_items["tests"].status == "pending"
 
 
+def test_unmatched_pattern_pends_while_its_workflow_is_concurrency_held(tmp_path):
+    """A workflow held by a concurrency group has no jobs, so its pattern matches
+    nothing. Failing it there reds the check within seconds and ejects the merge
+    queue entry, so it must read as pending until the workflow actually runs."""
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+
+    async def api_factory(_installation: int):  # pragma: no cover
+        raise AssertionError("api_factory should not be called in this test")
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+    rule = Rule(required_pattern=["Builds / *", "Checks / *"])
+
+    held = evaluator._evaluate_rows(
+        check_rows=[],
+        workflow_rows=[
+            WorkflowRunRow(
+                workflow_run_id=1, name="Builds", status="pending", check_suite_id=10
+            ),
+            WorkflowRunRow(
+                workflow_run_id=2, name="Checks", status="queued", check_suite_id=11
+            ),
+        ],
+        status_rows=[],
+        rules=[rule],
+    )
+
+    assert held.result_items["Builds / *"].status == "pending"
+    assert held.result_items["Checks / *"].status == "pending"
+    assert held.failures == []
+    assert held.missing_pattern_failures == []
+    assert {item.name for item in held.in_progress} == {"Builds / *", "Checks / *"}
+
+
+def test_unmatched_pattern_still_fails_when_no_workflow_explains_it(tmp_path):
+    """The stale-pattern guard has to survive: a pattern with no corresponding
+    workflow run at all is a misconfiguration, not a workflow yet to start."""
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+
+    async def api_factory(_installation: int):  # pragma: no cover
+        raise AssertionError("api_factory should not be called in this test")
+
+    evaluator = _make_evaluator(store=store, api_factory=api_factory)
+
+    computed = evaluator._evaluate_rows(
+        check_rows=[],
+        workflow_rows=[
+            # Completed, so it will never create new jobs, and an unrelated name.
+            WorkflowRunRow(
+                workflow_run_id=1,
+                name="Builds",
+                status="completed",
+                conclusion="success",
+                check_suite_id=10,
+            ),
+        ],
+        status_rows=[],
+        rules=[Rule(required_pattern=["Builds / *", "policy-bot: *"])],
+    )
+
+    assert computed.result_items["Builds / *"].status == "failure"
+    # No " / " prefix, so there is no workflow to wait on: keeps failing closed.
+    assert computed.result_items["policy-bot: *"].status == "failure"
+    assert sorted(computed.missing_pattern_failures) == [
+        "Builds / *",
+        "policy-bot: *",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_force_api_refresh_always_creates_new_published_check_run(tmp_path):
     store = _make_store(tmp_path / "webhooks.sqlite3")
@@ -1410,6 +1481,145 @@ async def test_merge_group_head_sha_is_evaluated_and_published(tmp_path):
         ).fetchall()
 
     assert rows == [(95001, "completed", "success", "published")]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_sweep_updates_merge_group_check_run_in_place(tmp_path):
+    """The merge queue watches this check run by name, so a sweep must update the
+    existing run: replacing it would reset the entry's required check every time."""
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    # No check runs, so the entry stays in_progress across both evaluations and
+    # the lifecycle "completed -> in_progress" new-run rule is not what is tested.
+    store.persist_event(
+        delivery_id="mg-1",
+        event="merge_group",
+        payload=_merge_group_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPIRefresh(
+        config_yaml="rules:\n  - branch_filter: ['main']\n    required_checks: ['tests']\n",
+        post_id=95001,
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
+    )
+
+    await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha=MERGE_GROUP_SHA,
+            installation_id=321,
+            delivery_id="mg-d-1",
+            event="merge_group",
+            action="checks_requested",
+        )
+    )
+    assert api.post_calls[-1][1].id is None
+
+    await evaluator.evaluate_and_publish(
+        ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha=MERGE_GROUP_SHA,
+            installation_id=321,
+            event="reconcile",
+            action="stale_sweep",
+            force_api_refresh=True,
+            allow_new_check_run=False,
+        )
+    )
+
+    assert api.post_calls[-1][1].id == 95001
+
+
+@pytest.mark.asyncio
+async def test_destroyed_merge_group_concludes_abandoned_check_run(tmp_path):
+    """Once the queue entry is destroyed the target stops resolving, so without
+    this the in_progress check run would sit on GitHub forever."""
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    # Only the queue entry, no check runs: evaluation leaves sentinel in_progress,
+    # which is the state that would otherwise be stranded.
+    store.persist_event(
+        delivery_id="mg-1",
+        event="merge_group",
+        payload=_merge_group_payload(),
+        payload_json="{}",
+    )
+
+    api = _FakeAPI(
+        config_yaml="rules:\n  - branch_filter: ['main']\n    required_checks: ['tests']\n",
+        post_id=95001,
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
+    )
+
+    def trigger(
+        *, delivery_id: str, action: str, finalize_abandoned: bool = False
+    ) -> ProjectionTrigger:
+        return ProjectionTrigger(
+            repo_id=11,
+            repo_full_name="org/repo",
+            head_sha=MERGE_GROUP_SHA,
+            installation_id=321,
+            event="merge_group",
+            delivery_id=delivery_id,
+            action=action,
+            finalize_abandoned=finalize_abandoned,
+        )
+
+    seeded = await evaluator.evaluate_and_publish(
+        trigger(delivery_id="mg-d-1", action="checks_requested")
+    )
+    assert seeded.result == "published"
+    assert api.post_calls[-1][1].status == "in_progress"
+
+    store.persist_event(
+        delivery_id="mg-2",
+        event="merge_group",
+        payload=_merge_group_payload(action="destroyed"),
+        payload_json="{}",
+    )
+
+    result = await evaluator.evaluate_and_publish(
+        trigger(delivery_id="mg-d-2", action="destroyed", finalize_abandoned=True)
+    )
+
+    assert result.result == "abandoned"
+    posted = api.post_calls[-1][1]
+    assert posted.status == "completed"
+    assert posted.conclusion == "neutral"
+    assert posted.head_sha == MERGE_GROUP_SHA
+
+    with sqlite3.connect(str(tmp_path / "webhooks.sqlite3")) as conn:
+        rows = conn.execute(
+            """
+            SELECT status, conclusion FROM sentinel_check_run_state
+            WHERE repo_id = ? AND head_sha = ? AND check_name = ?
+            """,
+            (11, MERGE_GROUP_SHA, "merge-sentinel"),
+        ).fetchall()
+    assert rows == [("completed", "neutral")]
+
+    # A redelivered destroyed event must not reopen or re-post the check run.
+    posts_before = len(api.post_calls)
+    again = await evaluator.evaluate_and_publish(
+        trigger(delivery_id="mg-d-3", action="destroyed", finalize_abandoned=True)
+    )
+    assert again.result == "abandon_noop"
+    assert len(api.post_calls) == posts_before
 
 
 @pytest.mark.asyncio

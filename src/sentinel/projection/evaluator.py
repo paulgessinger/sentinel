@@ -121,6 +121,11 @@ class ProjectionEvaluator:
     _MANUAL_ACTION_IDENTIFIER_MAX_LEN = 20
     _MANUAL_ACTION_LABEL_MAX_LEN = 20
     _MANUAL_ACTION_DESCRIPTION_MAX_LEN = 40
+    # Workflow run states in which GitHub has not created the run's jobs yet, so
+    # none of its check runs exist. "pending" is the concurrency-group hold.
+    _NON_TERMINAL_WORKFLOW_STATUSES = frozenset(
+        {"pending", "queued", "requested", "waiting", "in_progress"}
+    )
 
     def __init__(
         self,
@@ -178,6 +183,9 @@ class ProjectionEvaluator:
     ) -> EvaluationResult:
         repo_id = trigger.repo_id
         head_sha = trigger.head_sha
+
+        if trigger.finalize_abandoned:
+            return await self._publish_abandoned(trigger)
 
         target = await self._resolve_target(trigger, allow_api_fallback=True)
         if target is None:
@@ -451,7 +459,7 @@ class ProjectionEvaluator:
         force_new_check_run = False
 
         # Manual refresh requests should always produce a new GitHub check run.
-        if trigger.force_api_refresh:
+        if trigger.force_api_refresh and trigger.allow_new_check_run:
             force_new_check_run = True
             check_run_id = None
 
@@ -798,6 +806,142 @@ class ProjectionEvaluator:
         )
         return EvaluationResult(
             result=publish_result,
+            check_run_id=final_id,
+            changed=True,
+            error=publish_error,
+        )
+
+    async def _publish_abandoned(self, trigger: ProjectionTrigger) -> EvaluationResult:
+        """Close out a check run whose merge queue entry was destroyed.
+
+        Once the queue entry is gone the target no longer resolves, so every later
+        event for this SHA is skipped and the check run would sit ``in_progress``
+        on GitHub forever. Nothing gates on it any more, so conclude it neutral.
+        """
+        repo_id = trigger.repo_id
+        head_sha = trigger.head_sha
+
+        sentinel_row = self.store.get_sentinel_check_run(
+            repo_id=repo_id,
+            head_sha=head_sha,
+            check_name=self.config.PROJECTION_CHECK_RUN_NAME,
+            app_id=self.config.GITHUB_APP_ID,
+        )
+        if sentinel_row is None or sentinel_row.status == "completed":
+            logger.info(
+                "Projection abandon skip repo=%s sha=%s reason=%s",
+                trigger.repo_full_name,
+                head_sha,
+                "no_check_run" if sentinel_row is None else "already_completed",
+            )
+            sentinel_projection_eval_total.labels(result="abandon_noop").inc()
+            return EvaluationResult(result="abandon_noop")
+
+        existing_id = sentinel_row.check_run_id
+        check_run_id = (
+            existing_id if isinstance(existing_id, int) and existing_id > 0 else None
+        )
+
+        title = "Merge queue entry removed"
+        output_summary = (
+            ":white_circle: The merge queue entry for this commit was removed "
+            "before evaluation completed."
+        )
+        output_text = (
+            "# Checks\n\n"
+            "This commit was a merge queue entry that GitHub removed from the "
+            "queue before all required checks reported. Evaluation stopped at "
+            "that point; this check run no longer gates anything."
+        )
+        output_checks_json = "[]"
+        summary_hash = hashlib.sha256(output_summary.encode("utf-8")).hexdigest()
+        text_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+        now_iso = utcnow_iso()
+
+        published_id: int | None = None
+        publish_result = "dry_run"
+        publish_error: str | None = None
+        publish_at: str | None = None
+
+        if self.config.PROJECTION_PUBLISH_ENABLED:
+            api = await self.api_factory(trigger.installation_id)
+            check_run = CheckRun.make_app_check_run(
+                id=check_run_id,
+                head_sha=head_sha,
+                status="completed",
+                conclusion="neutral",
+                started_at=self._dt_or_now(sentinel_row.started_at),
+                completed_at=datetime.now(timezone.utc),
+                output=CheckRunOutput(
+                    title=title,
+                    summary=output_summary,
+                    text=output_text,
+                ),
+                actions=self._build_manual_refresh_actions("completed"),
+            )
+            try:
+                posted_id = await api.post_check_run(
+                    f"/repos/{trigger.repo_full_name}",
+                    check_run,
+                )
+                published_id = posted_id or check_run.id
+                publish_result = "published"
+                publish_at = now_iso
+                sentinel_projection_publish_total.labels(result="published").inc()
+            except Exception as exc:  # noqa: BLE001
+                publish_result = "error"
+                publish_error = str(exc)
+                sentinel_projection_publish_total.labels(result="error").inc()
+                logger.error(
+                    "Publishing abandoned check run failed repo=%s sha=%s",
+                    trigger.repo_full_name,
+                    head_sha,
+                    exc_info=True,
+                )
+        else:
+            sentinel_projection_publish_total.labels(result="dry_run").inc()
+
+        final_id = int(published_id) if published_id is not None else check_run_id
+        self._record_activity(
+            trigger=trigger,
+            pr_number=None,
+            activity_type="publish_abandoned",
+            result=publish_result,
+            detail="Merge queue entry removed, concluded completed/neutral",
+        )
+        self.store.upsert_sentinel_check_run(
+            repo_id=repo_id,
+            repo_full_name=trigger.repo_full_name,
+            check_run_id=final_id,
+            head_sha=head_sha,
+            name=self.config.PROJECTION_CHECK_RUN_NAME,
+            status="completed",
+            conclusion="neutral",
+            app_id=self.config.GITHUB_APP_ID,
+            started_at=self._dt_to_iso(sentinel_row.started_at),
+            completed_at=now_iso,
+            output_title=title,
+            output_summary=output_summary,
+            output_text=output_text,
+            output_checks_json=output_checks_json,
+            output_summary_hash=summary_hash,
+            output_text_hash=text_hash,
+            last_eval_at=now_iso,
+            last_publish_at=publish_at,
+            last_publish_result=publish_result,
+            last_publish_error=publish_error,
+            last_delivery_id=trigger.delivery_id,
+        )
+        logger.info(
+            "Projection abandon published repo=%s sha=%s check_run_id=%s result=%s",
+            trigger.repo_full_name,
+            head_sha,
+            final_id,
+            publish_result,
+        )
+        sentinel_projection_eval_total.labels(result="abandoned").inc()
+        return EvaluationResult(
+            result="abandoned",
             check_run_id=final_id,
             changed=True,
             error=publish_error,
@@ -1416,6 +1560,11 @@ class ProjectionEvaluator:
             for row in workflow_rows
             if row.check_suite_id is not None and row.name
         }
+        pending_workflow_names = {
+            str(row.name)
+            for row in workflow_rows
+            if row.name and row.status in self._NON_TERMINAL_WORKFLOW_STATUSES
+        }
 
         check_by_name: Dict[str, CheckRunRow] = {}
         for row in filtered_check_rows:
@@ -1486,6 +1635,15 @@ class ProjectionEvaluator:
                         )
                         matched = True
                 if not matched:
+                    # A workflow held by a concurrency group (or merely queued) has
+                    # created no jobs yet, so its pattern matches nothing. That is
+                    # "not started", not "will never report": failing it here reds
+                    # the check within seconds and ejects the merge queue entry.
+                    if self._pattern_awaits_workflow(pattern, pending_workflow_names):
+                        result_items[pattern] = _ResultItem(
+                            name=pattern, status="pending", required=True
+                        )
+                        continue
                     result_items[pattern] = _ResultItem(
                         name=pattern, status="failure", required=True
                     )
@@ -1513,6 +1671,22 @@ class ProjectionEvaluator:
             required_successes=required_successes,
             missing_pattern_failures=missing_pattern_failures,
         )
+
+    @staticmethod
+    def _pattern_awaits_workflow(
+        pattern: str, pending_workflow_names: set[str]
+    ) -> bool:
+        """Whether an unmatched pattern is waiting on a workflow that has not run yet.
+
+        Check run names are normalized to ``<workflow> / <job>``, so a pattern
+        scoping a whole workflow carries that workflow's name as its prefix. A
+        pattern without that prefix (a commit status context, say) has no workflow
+        to wait on and keeps failing closed.
+        """
+        workflow_name, separator, _ = pattern.partition(" / ")
+        if not separator:
+            return False
+        return workflow_name in pending_workflow_names
 
     @staticmethod
     def _check_row_recency_key(
@@ -1853,6 +2027,12 @@ class ProjectionEvaluator:
         if value is None:
             return None
         return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    @staticmethod
+    def _dt_or_now(value: datetime | None) -> datetime:
+        if value is None:
+            return datetime.now(timezone.utc)
+        return value.astimezone(timezone.utc)
 
     @staticmethod
     def _status_from_check_run(row: CheckRunRow) -> str:

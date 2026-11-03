@@ -1433,6 +1433,102 @@ def test_get_stale_open_pr_candidates_finds_missing_and_non_terminal_checks(
     assert stuck_pr_numbers == {1, 2}
 
 
+
+def test_get_stale_merge_group_candidates_only_returns_live_entries(tmp_path):
+    db_path = tmp_path / "webhooks.sqlite3"
+    store = _make_store(db_path)
+    store.initialize()
+
+    def merge_group(head_sha, *, delivery_id, action="checks_requested"):
+        store.persist_event(
+            delivery_id=delivery_id,
+            event="merge_group",
+            payload={
+                "action": action,
+                "installation": {"id": 7},
+                "repository": {"id": 1, "full_name": "org/repo"},
+                "merge_group": {
+                    "head_sha": head_sha,
+                    "head_ref": f"refs/heads/gh-readonly-queue/main/pr-1-{head_sha}",
+                    "base_sha": "0" * 40,
+                    "base_ref": "refs/heads/main",
+                },
+            },
+            payload_json="{}",
+        )
+
+    def sentinel_state(head_sha, *, status, conclusion, last_eval_at, check_run_id):
+        store.upsert_sentinel_check_run(
+            repo_id=1,
+            repo_full_name="org/repo",
+            check_run_id=check_run_id,
+            head_sha=head_sha,
+            name="merge-sentinel",
+            status=status,
+            conclusion=conclusion,
+            app_id=999,
+            started_at=None,
+            completed_at=None,
+            output_title=None,
+            output_summary=None,
+            output_text=None,
+            output_checks_json=None,
+            output_summary_hash=None,
+            output_text_hash=None,
+            last_eval_at=last_eval_at,
+            last_publish_at=None,
+            last_publish_result="published",
+            last_publish_error=None,
+            last_delivery_id=f"eval-{check_run_id}",
+        )
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    # Live entry, never evaluated -> stuck.
+    merge_group("a" * 40, delivery_id="mg-a")
+
+    # Live entry, evaluated long ago and still non-terminal -> stuck.
+    merge_group("b" * 40, delivery_id="mg-b")
+    sentinel_state(
+        "b" * 40,
+        status="in_progress",
+        conclusion=None,
+        last_eval_at="2020-01-01T00:00:00.000000Z",
+        check_run_id=1,
+    )
+
+    # Live entry evaluated just now -> not stuck.
+    merge_group("c" * 40, delivery_id="mg-c")
+    sentinel_state(
+        "c" * 40,
+        status="in_progress",
+        conclusion=None,
+        last_eval_at=now,
+        check_run_id=2,
+    )
+
+    # Destroyed entry, stale and non-terminal, but nothing gates on it any more.
+    merge_group("d" * 40, delivery_id="mg-d")
+    merge_group("d" * 40, delivery_id="mg-d2", action="destroyed")
+    sentinel_state(
+        "d" * 40,
+        status="in_progress",
+        conclusion=None,
+        last_eval_at="2020-01-01T00:00:00.000000Z",
+        check_run_id=3,
+    )
+
+    candidates = store.get_stale_merge_group_candidates(
+        app_id=999,
+        check_name="merge-sentinel",
+        stale_seconds=300,
+    )
+
+    assert {candidate.head_sha for candidate in candidates} == {"a" * 40, "b" * 40}
+    assert all(candidate.repo_full_name == "org/repo" for candidate in candidates)
+
+
+
 def test_get_latest_installation_id_returns_most_recent(tmp_path):
     db_path = tmp_path / "webhooks.sqlite3"
     store = _make_store(db_path)
