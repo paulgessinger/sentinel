@@ -45,12 +45,25 @@ and fragment refresh endpoint `/state/table`. PR detail pages are available at
   refresh checks/workflows/statuses from API once before deciding)
 - `PROJECTION_AUTO_REFRESH_ON_MISSING_STALE_SECONDS` (default: `1800`)
 - `PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS` (default: `300`)
+- `PROJECTION_RECONCILE_ENABLED` (default: `true`; periodically recover unfinished
+  PR and merge queue checks by fetching checks, workflows, and statuses from GitHub)
+- `PROJECTION_RECONCILE_INTERVAL_SECONDS` (default: `60`)
+- `PROJECTION_RECONCILE_STALE_SECONDS` (default: `300`; time since the last PR evaluation)
+- `PROJECTION_RECONCILE_MERGE_GROUP_STALE_SECONDS` (default: `120`; time since the
+  last merge queue evaluation)
 - `CHECK_RUN_NAME_FILTER` (optional regex; matching `check_run` names and `status`
   contexts are skipped before persistence/dispatch)
 - `WEBHOOK_FILTER_SELF_APP_ID` (default: `true`; skip events whose source app id
   matches `GITHUB_APP_ID`)
 - `WEBHOOK_FILTER_APP_IDS` (optional comma-separated app ids; matching source app ids
   are skipped before persistence/dispatch)
+
+The **Re-evaluate now** check-run action fetches fresh checks, workflows, and commit
+statuses from GitHub before evaluating. GitHub displays this action only after a
+check completes. Automatic reconciliation uses the same API refresh path to recover
+pending checks after missed webhooks without rerunning CI. With the default
+settings, quiet unfinished checks become eligible after five minutes for PRs or
+two minutes for merge queue entries, and are picked up by the next minute's sweep.
 
 ### Tables
 

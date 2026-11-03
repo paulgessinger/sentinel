@@ -1432,6 +1432,18 @@ def test_get_stale_open_pr_candidates_finds_missing_and_non_terminal_checks(
     stuck_pr_numbers = {candidate.pr_number for candidate in candidates}
     assert stuck_pr_numbers == {1, 2}
 
+    # A locally completed result whose publication failed still needs recovery.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE sentinel_check_run_state SET last_eval_at = '2020-01-01T00:00:00.000000Z', last_publish_result = 'error' WHERE head_sha = ?",
+            ("c" * 40,),
+        )
+    assert {
+        candidate.pr_number
+        for candidate in store.get_stale_open_pr_candidates(
+            app_id=999, check_name="merge-sentinel", stale_seconds=1800
+        )
+    } == {1, 2, 3}
 
 
 def test_get_stale_merge_group_candidates_only_returns_live_entries(tmp_path):
@@ -1527,6 +1539,17 @@ def test_get_stale_merge_group_candidates_only_returns_live_entries(tmp_path):
     assert {candidate.head_sha for candidate in candidates} == {"a" * 40, "b" * 40}
     assert all(candidate.repo_full_name == "org/repo" for candidate in candidates)
 
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE sentinel_check_run_state SET status = 'completed', last_eval_at = '2020-01-01T00:00:00.000000Z', last_publish_result = 'error' WHERE head_sha = ?",
+            ("c" * 40,),
+        )
+    assert {
+        candidate.head_sha
+        for candidate in store.get_stale_merge_group_candidates(
+            app_id=999, check_name="merge-sentinel", stale_seconds=300
+        )
+    } == {"a" * 40, "b" * 40, "c" * 40}
 
 
 def test_get_latest_installation_id_returns_most_recent(tmp_path):

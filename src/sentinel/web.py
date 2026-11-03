@@ -11,7 +11,7 @@ import aiohttp
 from sanic import Sanic, response, Request
 from gidgethub import sansio
 from gidgethub.apps import get_jwt
-from gidgethub import aiohttp as gh_aiohttp
+from sentinel.github import transport as gh_aiohttp
 import humanize
 from sanic.log import logger
 import sanic.log
@@ -57,6 +57,7 @@ async def client_for_installation(app, installation_id):
         app.ctx.aiohttp_session,
         __name__,
         oauth_token=token,
+        installation_id=installation_id,
     )
 
 

@@ -46,7 +46,18 @@ class ProjectionStatusScheduler:
         async with self._lock:
             if key in self._tasks:
                 state = self._states[key]
-                state.trigger = trigger
+                # A later webhook must not discard a queued API refresh: the
+                # local projection may still be missing other deliveries.
+                state.trigger = replace(
+                    trigger,
+                    force_api_refresh=(
+                        trigger.force_api_refresh or state.trigger.force_api_refresh
+                    ),
+                    allow_new_check_run=(
+                        trigger.allow_new_check_run
+                        and state.trigger.allow_new_check_run
+                    ),
+                )
                 state.dirty = True
                 state.debounce_until = max(state.debounce_until, debounce_until)
                 previous_delay_until = state.pull_request_delay_until

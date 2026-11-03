@@ -137,6 +137,25 @@ GitHub never delivered, or one dropped before it reached the projection schedule
 Controlled by `PROJECTION_RECONCILE_ENABLED` / `_INTERVAL_SECONDS` /
 `_STALE_SECONDS` in [deploy/configmap.yaml](deploy/configmap.yaml).
 
+The sweep runs every minute. PRs become eligible after five quiet minutes and
+merge queue entries after two (`PROJECTION_RECONCILE_MERGE_GROUP_STALE_SECONDS`).
+API budget restrictions can delay recovery; these intervals are not a deadline.
+
+All GitHub HTTP requests, including pagination and check publishing, pass through
+a shared guard. Across the app, requests are serialized and spaced by at least
+one second, and writes by eight seconds. Per-installation response headers adjust pacing and retain
+100 requests of primary-limit headroom. Primary-limit responses pause that installation
+using `Retry-After` and the primary reset time. Secondary-limit responses pause the
+whole app with exponential backoff.
+Deferred evaluations can be retried by the next sweep or webhook; no retry loop
+continues sending requests during the cooldown.
+
+Budget and lock files live under `${DISKCACHE_DIR}/github-rate`. Server workers and
+CLI commands must share that directory on storage supporting advisory file locks.
+Separate volumes or other applications using the same installation credentials
+cannot be coordinated by this guard. GitHub's undisclosed secondary limits mean
+no client can promise never to receive a rate-limit response.
+
 To force a refresh for a specific repo right away instead of waiting for the next
 sweep:
 

@@ -8,7 +8,7 @@ import sqlite3
 from typing import Annotated
 
 import typer
-from gidgethub import aiohttp as gh_aiohttp
+from sentinel.github import transport as gh_aiohttp
 from gidgethub.apps import get_jwt
 import aiohttp
 import cachetools
@@ -118,6 +118,7 @@ async def installation_client(installation: int):
             session,
             __name__,
             oauth_token=token,
+            installation_id=installation,
             cache=httpcache,
         )
 
@@ -150,6 +151,7 @@ async def installation_client_for_repo(repo: str):
             session,
             __name__,
             oauth_token=token,
+            installation_id=installation_id,
             cache=httpcache,
         )
 

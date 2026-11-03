@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 from pathlib import Path
@@ -26,6 +26,7 @@ from sentinel.projection import ProjectionEvaluator, ProjectionTrigger
 from sentinel.storage import WebhookStore
 from sentinel.model import Rule
 from sentinel.storage.types import CheckRunRow, WorkflowRunRow
+from sentinel.github.transport import RateLimitDeferred
 
 
 def _make_store(db_path, **updates):
@@ -1008,6 +1009,102 @@ async def test_force_api_refresh_persists_projection_rows(tmp_path):
     assert len(status_rows) == 1
     assert status_rows[0].context == "lint"
     assert status_rows[0].last_delivery_id == "d-api-1"
+
+
+@pytest.mark.asyncio
+async def test_deferred_publish_is_retried_even_when_result_is_unchanged(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    await _seed(store)
+
+    class DeferredAPI(_FakeAPI):
+        blocked = True
+
+        async def post_check_run(self, repo_url, check_run):
+            if self.blocked:
+                raise RateLimitDeferred(4600)
+            return await super().post_check_run(repo_url, check_run)
+
+    api = DeferredAPI(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n", post_id=91234
+    )
+
+    async def api_factory(_installation):
+        return api
+
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
+    )
+    trigger = ProjectionTrigger(
+        repo_id=11, repo_full_name="org/repo", head_sha="a" * 40, installation_id=321
+    )
+    first = await evaluator.evaluate_and_publish(trigger)
+    assert first.result == "error"
+    candidates = store.get_stale_open_pr_candidates(
+        app_id=evaluator.config.GITHUB_APP_ID,
+        check_name="merge-sentinel",
+        stale_seconds=0,
+    )
+    assert [candidate.pr_number for candidate in candidates] == [42]
+    api.blocked = False
+    second = await evaluator.evaluate_and_publish(trigger)
+    assert second.result == "published"
+    assert api.post_calls[-1][1].conclusion == "success"
+
+
+@pytest.mark.asyncio
+async def test_api_refresh_recovers_pending_check_without_completion_webhook(tmp_path):
+    store = _make_store(tmp_path / "webhooks.sqlite3")
+    store.initialize()
+    store.persist_event(
+        delivery_id="pr-1",
+        event="pull_request",
+        payload=_pull_request_payload(),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="wf-1",
+        event="workflow_run",
+        payload=_workflow_payload(),
+        payload_json="{}",
+    )
+    store.persist_event(
+        delivery_id="pending-check",
+        event="check_run",
+        payload=_check_run_payload_with_status(status="in_progress"),
+        payload_json="{}",
+    )
+    api = _FakeAPIRefreshTracking(
+        config_yaml="rules:\n  - required_checks: ['Builds / tests']\n"
+    )
+
+    async def api_factory(_installation: int):
+        return api
+
+    evaluator = _make_evaluator(
+        store=store, api_factory=api_factory, publish_enabled=True
+    )
+    trigger = ProjectionTrigger(
+        repo_id=11,
+        repo_full_name="org/repo",
+        head_sha="a" * 40,
+        installation_id=321,
+        event="check_run",
+    )
+    await evaluator.evaluate_and_publish(trigger)
+    pending = api.post_calls[-1][1]
+    assert pending.status == "in_progress"
+    assert api.refresh_calls == 0
+
+    # No completion webhook is delivered; the requested action must repair the
+    # pending projection using the successful result returned by GitHub.
+    await evaluator.evaluate_and_publish(
+        replace(trigger, force_api_refresh=True, action="requested_action")
+    )
+    assert api.refresh_calls == 1
+    assert api.post_calls[-1][1].status == "completed"
+    assert api.post_calls[-1][1].conclusion == "success"
+    assert store.get_check_runs_for_head(11, "a" * 40)[0].status == "completed"
 
 
 def test_evaluate_rows_prefers_newer_active_check_run_for_same_name(tmp_path):

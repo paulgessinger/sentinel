@@ -137,14 +137,14 @@ class Settings(BaseSettings):
     PROJECTION_AUTO_REFRESH_ON_MISSING_COOLDOWN_SECONDS: int = 300
     # Minimum time since a PR's sentinel check was last evaluated before
     # reconciliation treats it as stuck and forces an API refresh.
-    PROJECTION_RECONCILE_STALE_SECONDS: int = 1800
+    PROJECTION_RECONCILE_STALE_SECONDS: int = 300
     # Same, for live merge queue entries. Kept well below the queue's own
     # check_response_timeout so a recovered entry still reports in time.
-    PROJECTION_RECONCILE_MERGE_GROUP_STALE_SECONDS: int = 300
+    PROJECTION_RECONCILE_MERGE_GROUP_STALE_SECONDS: int = 120
     # Run a periodic in-process sweep for PRs stuck behind a dropped webhook.
     PROJECTION_RECONCILE_ENABLED: bool = True
     # Interval between reconciliation sweeps.
-    PROJECTION_RECONCILE_INTERVAL_SECONDS: int = 900
+    PROJECTION_RECONCILE_INTERVAL_SECONDS: int = 60
 
     # Optional URL to redirect the index page (/) to.
     INDEX_REDIRECT_URL: str | None = None

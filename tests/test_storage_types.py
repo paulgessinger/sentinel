@@ -169,6 +169,13 @@ def test_upsert_head_snapshot_from_api_prefers_row_head_sha(tmp_path):
         status_rows=[status_row],
     )
 
-    assert counts == {"check_runs": 1, "workflow_runs": 1, "commit_statuses": 1}
+    assert counts == {
+        "check_runs": 1,
+        "workflow_runs": 1,
+        "commit_statuses": 1,
+        "pruned_check_runs": 0,
+        "pruned_workflow_runs": 0,
+        "pruned_commit_statuses": 0,
+    }
     assert len(store.get_check_runs_for_head(100, head_sha)) == 1
     assert len(store.get_workflow_runs_for_head(100, head_sha)) == 1

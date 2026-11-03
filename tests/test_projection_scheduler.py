@@ -1,8 +1,46 @@
 import asyncio
+from dataclasses import replace
 
 import pytest
 
 from sentinel.projection import ProjectionStatusScheduler, ProjectionTrigger
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow_new_check_run", [True, False])
+async def test_scheduler_preserves_refresh_when_webhook_arrives(allow_new_check_run):
+    seen = []
+    completed = asyncio.Event()
+
+    async def handler(trigger):
+        seen.append(trigger)
+        completed.set()
+
+    scheduler = ProjectionStatusScheduler(debounce_seconds=0.01, handler=handler)
+    refresh = ProjectionTrigger(
+        repo_id=10,
+        repo_full_name="org/repo",
+        head_sha="a" * 40,
+        installation_id=111,
+        force_api_refresh=True,
+        allow_new_check_run=allow_new_check_run,
+    )
+    try:
+        await scheduler.enqueue(refresh)
+        await scheduler.enqueue(
+            replace(
+                refresh,
+                event="status",
+                force_api_refresh=False,
+                allow_new_check_run=True,
+            )
+        )
+        await asyncio.wait_for(completed.wait(), timeout=1)
+    finally:
+        await scheduler.shutdown()
+    assert len(seen) == 1
+    assert seen[0].force_api_refresh is True
+    assert seen[0].allow_new_check_run is allow_new_check_run
 
 
 @pytest.mark.asyncio

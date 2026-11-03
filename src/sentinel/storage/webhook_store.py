@@ -862,6 +862,7 @@ class WebhookStore:
                     or_(
                         sentinel_check_run_state.c.status.is_(None),
                         sentinel_check_run_state.c.status != "completed",
+                        sentinel_check_run_state.c.last_publish_result == "error",
                     ),
                     or_(
                         sentinel_check_run_state.c.last_eval_at.is_(None),
@@ -922,6 +923,7 @@ class WebhookStore:
                     or_(
                         sentinel_check_run_state.c.status.is_(None),
                         sentinel_check_run_state.c.status != "completed",
+                        sentinel_check_run_state.c.last_publish_result == "error",
                     ),
                     or_(
                         sentinel_check_run_state.c.last_eval_at.is_(None),

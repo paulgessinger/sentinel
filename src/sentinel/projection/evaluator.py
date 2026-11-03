@@ -479,6 +479,7 @@ class ProjectionEvaluator:
 
         unchanged = bool(
             sentinel_row
+            and sentinel_row.last_publish_result != "error"
             and sentinel_row.status == new_status
             and sentinel_row.conclusion == new_conclusion
             and sentinel_row.output_title == title
