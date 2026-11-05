@@ -826,6 +826,31 @@ async def test_projection_publish_skips_for_draft_pr(tmp_path):
         "Draft PR, publish suppressed (completed/success)",
     ) in activity_rows
 
+    # Becoming ready must publish the cached success, even after a repeated
+    # draft evaluation has replaced skipped_draft with unchanged.
+    ready_payload = _pull_request_payload(action="ready_for_review", draft=False)
+    ready_payload["pull_request"]["updated_at"] = "2026-02-17T10:03:00Z"
+    store.persist_event(
+        delivery_id="pr-ready",
+        event="pull_request",
+        payload=ready_payload,
+        payload_json="{}",
+    )
+    trigger = ProjectionTrigger(
+        repo_id=11,
+        repo_full_name="org/repo",
+        head_sha="a" * 40,
+        installation_id=321,
+        event="pull_request",
+        action="ready_for_review",
+    )
+    ready_result = await evaluator.evaluate_and_publish(trigger)
+    assert ready_result.result == "published"
+    assert ready_result.check_run_id == 91234
+    assert len(api.post_calls) == 1
+    assert (await evaluator.evaluate_and_publish(trigger)).result == "unchanged"
+    assert len(api.post_calls) == 1
+
 
 @pytest.mark.asyncio
 async def test_projection_publish_skips_when_pr_closed_during_evaluation(tmp_path):

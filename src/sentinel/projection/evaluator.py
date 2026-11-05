@@ -480,6 +480,16 @@ class ProjectionEvaluator:
         unchanged = bool(
             sentinel_row
             and sentinel_row.last_publish_result != "error"
+            # Draft/dry-run evaluations cache output without publishing it.
+            # Once publication is enabled, identical output still needs a check.
+            and (
+                not self.config.PROJECTION_PUBLISH_ENABLED
+                or target.is_draft
+                or (
+                    check_run_id is not None
+                    and sentinel_row.last_publish_at is not None
+                )
+            )
             and sentinel_row.status == new_status
             and sentinel_row.conclusion == new_conclusion
             and sentinel_row.output_title == title

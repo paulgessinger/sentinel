@@ -2,6 +2,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 
+import pytest
+
 from sentinel.config import SETTINGS
 from sentinel.storage import WebhookStore
 
@@ -1340,8 +1342,20 @@ def test_prune_old_activity_events(tmp_path):
     assert rows == [("d-new",)]
 
 
+@pytest.mark.parametrize(
+    "publish_result, check_run_id, published_at",
+    [
+        ("error", 2, None),
+        ("unchanged", None, None),
+        ("unchanged", 2, None),
+        ("unchanged", None, "2020-01-01T00:00:00.000000Z"),
+    ],
+)
 def test_get_stale_open_pr_candidates_finds_missing_and_non_terminal_checks(
     tmp_path,
+    publish_result,
+    check_run_id,
+    published_at,
 ):
     db_path = tmp_path / "webhooks.sqlite3"
     store = _make_store(db_path)
@@ -1432,11 +1446,24 @@ def test_get_stale_open_pr_candidates_finds_missing_and_non_terminal_checks(
     stuck_pr_numbers = {candidate.pr_number for candidate in candidates}
     assert stuck_pr_numbers == {1, 2}
 
-    # A locally completed result whose publication failed still needs recovery.
+    # A stale successfully published completion needs no recovery.
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "UPDATE sentinel_check_run_state SET last_eval_at = '2020-01-01T00:00:00.000000Z', last_publish_result = 'error' WHERE head_sha = ?",
+            "UPDATE sentinel_check_run_state SET last_eval_at = '2020-01-01T00:00:00.000000Z', last_publish_at = '2020-01-01T00:00:00.000000Z' WHERE head_sha = ?",
             ("c" * 40,),
+        )
+    assert {
+        candidate.pr_number
+        for candidate in store.get_stale_open_pr_candidates(
+            app_id=999, check_name="merge-sentinel", stale_seconds=1800
+        )
+    } == {1, 2}
+
+    # A completed result with failed or missing publication needs recovery.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE sentinel_check_run_state SET last_publish_result = ?, check_run_id = ?, last_publish_at = ? WHERE head_sha = ?",
+            (publish_result, check_run_id, published_at, "c" * 40),
         )
     assert {
         candidate.pr_number
@@ -1445,8 +1472,22 @@ def test_get_stale_open_pr_candidates_finds_missing_and_non_terminal_checks(
         )
     } == {1, 2, 3}
 
+    # Deliberately unpublished draft completions should not be retried.
+    if publish_result != "error":
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("UPDATE pr_heads_current SET pr_draft = 1 WHERE pr_number = 3")
+        assert {
+            candidate.pr_number
+            for candidate in store.get_stale_open_pr_candidates(
+                app_id=999, check_name="merge-sentinel", stale_seconds=1800
+            )
+        } == {1, 2}
 
-def test_get_stale_merge_group_candidates_only_returns_live_entries(tmp_path):
+
+@pytest.mark.parametrize("publish_result", ["error", "unchanged"])
+def test_get_stale_merge_group_candidates_only_returns_live_entries(
+    tmp_path, publish_result
+):
     db_path = tmp_path / "webhooks.sqlite3"
     store = _make_store(db_path)
     store.initialize()
@@ -1541,8 +1582,8 @@ def test_get_stale_merge_group_candidates_only_returns_live_entries(tmp_path):
 
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "UPDATE sentinel_check_run_state SET status = 'completed', last_eval_at = '2020-01-01T00:00:00.000000Z', last_publish_result = 'error' WHERE head_sha = ?",
-            ("c" * 40,),
+            "UPDATE sentinel_check_run_state SET status = 'completed', last_eval_at = '2020-01-01T00:00:00.000000Z', last_publish_result = ?, check_run_id = NULL WHERE head_sha = ?",
+            (publish_result, "c" * 40),
         )
     assert {
         candidate.head_sha

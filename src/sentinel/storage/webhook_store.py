@@ -863,6 +863,13 @@ class WebhookStore:
                         sentinel_check_run_state.c.status.is_(None),
                         sentinel_check_run_state.c.status != "completed",
                         sentinel_check_run_state.c.last_publish_result == "error",
+                        and_(
+                            pr_heads_current.c.pr_draft.is_not(True),
+                            or_(
+                                sentinel_check_run_state.c.check_run_id.is_(None),
+                                sentinel_check_run_state.c.last_publish_at.is_(None),
+                            ),
+                        ),
                     ),
                     or_(
                         sentinel_check_run_state.c.last_eval_at.is_(None),
@@ -924,6 +931,8 @@ class WebhookStore:
                         sentinel_check_run_state.c.status.is_(None),
                         sentinel_check_run_state.c.status != "completed",
                         sentinel_check_run_state.c.last_publish_result == "error",
+                        sentinel_check_run_state.c.check_run_id.is_(None),
+                        sentinel_check_run_state.c.last_publish_at.is_(None),
                     ),
                     or_(
                         sentinel_check_run_state.c.last_eval_at.is_(None),
